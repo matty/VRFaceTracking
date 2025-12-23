@@ -4,22 +4,19 @@ use std::io::BufReader;
 use std::path::Path;
 
 use crate::calibration_manager::CalibrationManager;
-use crate::{CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData};
+use crate::{
+    CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputMode {
     #[serde(alias = "VRChat", alias = "VRChatOSC")]
+    #[default]
     VRChat,
     #[serde(alias = "Resonite")]
     Resonite,
     #[serde(alias = "Generic", alias = "GenericUDP")]
     Generic,
-}
-
-impl Default for OutputMode {
-    fn default() -> Self {
-        Self::VRChat
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,7 +193,11 @@ impl UnifiedTrackingMutator {
             return;
         }
 
-        if let CalibrationState::Collecting { mut timer, duration } = self.calibration_state {
+        if let CalibrationState::Collecting {
+            mut timer,
+            duration,
+        } = self.calibration_state
+        {
             timer += dt;
             if timer >= duration {
                 self.calibration_state = CalibrationState::Calibrated;

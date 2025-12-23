@@ -395,7 +395,7 @@ impl LiveLinkModule {
         logger: &Option<ModuleLogger>,
     ) -> Option<HashMap<&'static str, f32>> {
         // Minimal size check
-        if buf.len() < 1 {
+        if buf.is_empty() {
             return None;
         }
 
@@ -498,6 +498,12 @@ impl LiveLinkModule {
         }
 
         Some(values)
+    }
+}
+
+impl Default for LiveLinkModule {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

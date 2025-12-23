@@ -34,7 +34,7 @@ impl OscQueryHost {
             actual_port,
             &properties[..],
         )?
-            .enable_addr_auto();
+        .enable_addr_auto();
 
         mdns.register(service_info)?;
         info!(

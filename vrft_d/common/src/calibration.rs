@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::UnifiedExpressions;
+use serde::{Deserialize, Serialize};
 
 pub const POINTS: usize = 64;
 pub const S_DELTA: f32 = 0.15;
@@ -59,7 +59,7 @@ impl CalibrationParameter {
             }
 
             self.data_points[self.rolling_index] = current_value;
-            if !self.finished || (self.finished && continuous) {
+            if !self.finished || continuous {
                 self.rolling_index = (self.rolling_index + 1) % self.data_points.len();
                 self.calculate_stats();
             }
@@ -99,7 +99,8 @@ impl CalibrationParameter {
         }
 
         let confidence = k * self.progress;
-        let adjusted_value = confidence * self.normalize(current_value) + (1.0 - confidence) * current_value;
+        let adjusted_value =
+            confidence * self.normalize(current_value) + (1.0 - confidence) * current_value;
 
         if adjusted_value.is_nan() {
             return current_value;
