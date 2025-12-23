@@ -110,7 +110,7 @@ fn main() -> Result<()> {
         info!("Received Ctrl-C, shutting down...");
         r.store(false, Ordering::SeqCst);
     })
-        .expect("Error setting Ctrl-C handler");
+    .expect("Error setting Ctrl-C handler");
 
     let mut data = UnifiedTrackingData::default();
 
@@ -126,8 +126,8 @@ fn main() -> Result<()> {
             let entry = entry?;
             let path = entry.path();
             if path
-              .extension()
-              .is_some_and(|ext| ext == "dll" || ext == "so" || ext == "dylib")
+                .extension()
+                .is_some_and(|ext| ext == "dll" || ext == "so" || ext == "dylib")
             {
                 let filename = path
                     .file_name()
@@ -317,8 +317,7 @@ fn main() -> Result<()> {
                         if let Some(name) = ParameterSolver::get_expression_name(i) {
                             if let Some(&val) = debug.get(name) {
                                 received_data.shapes[i].weight = val;
-                            }
-                            else if let Some(short_name) = name.strip_prefix("v2/") {
+                            } else if let Some(short_name) = name.strip_prefix("v2/") {
                                 if let Some(&val) = debug.get(short_name) {
                                     received_data.shapes[i].weight = val;
                                 }

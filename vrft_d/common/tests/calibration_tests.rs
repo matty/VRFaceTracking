@@ -1,6 +1,5 @@
 use common::CalibrationParameter;
 
-
 #[test]
 fn test_progress_saturates_at_1() {
     let mut p = CalibrationParameter::default();

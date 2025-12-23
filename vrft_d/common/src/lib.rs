@@ -3,8 +3,8 @@ pub use api::{
     UnifiedSingleEyeData, UnifiedTrackingData,
 };
 
-pub mod calibration_manager;
 mod calibration;
+pub mod calibration_manager;
 mod euro_filter;
 mod mutator;
 
