@@ -378,7 +378,7 @@ impl ParameterSolver {
 
         params.push((
             "v2/MouthCornerYLeft",
-            w(UnifiedExpressions::MouthCornerSlantLeft) - w(UnifiedExpressions::MrownLeft),
+            w(UnifiedExpressions::MouthCornerSlantLeft) - w(UnifiedExpressions::MouthFrownLeft),
         ));
         params.push((
             "v2/MouthCornerYRight",
