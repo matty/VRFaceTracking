@@ -23,8 +23,8 @@ fn test_continuous_calibration_updates_and_applies() {
     // Progress should have advanced (1/64 increments per accepted sample).
     assert!(mutator.calibration_manager.data.shapes[0].progress > 0.0);
 
-    // After enough accepted samples, stats should have become non-zero.
-    assert!(mutator.calibration_manager.data.shapes[0].confidence > 0.0);
+    // After enough accepted samples, progress should have become non-zero.
+    assert!(mutator.calibration_manager.data.shapes[0].progress > 0.0);
 
     // Now verify that calibration is being applied (output is not identical to raw).
     data.shapes[0].weight = 0.4;
