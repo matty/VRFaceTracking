@@ -1,3 +1,3 @@
 pub mod query;
-pub mod vrchat;
 pub mod resonite;
+pub mod vrchat;

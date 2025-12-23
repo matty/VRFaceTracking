@@ -76,6 +76,12 @@ impl SRanipalModule {
     }
 }
 
+impl Default for SRanipalModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingModule for SRanipalModule {
     fn initialize(&mut self, logger: ModuleLogger) -> Result<()> {
         logger.info("Initializing SRanipal Module");
