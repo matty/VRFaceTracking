@@ -10,9 +10,9 @@ impl ParameterSolver {
 
         let w = |expr: UnifiedExpressions| s[expr as usize].weight;
 
-        for i in 0..UnifiedExpressions::Max as usize {
+        for (i, shape) in s.iter().enumerate().take(UnifiedExpressions::Max as usize) {
             if let Some(name) = Self::get_expression_name(i) {
-                params.push((name, s[i].weight));
+                params.push((name, shape.weight));
             }
         }
 

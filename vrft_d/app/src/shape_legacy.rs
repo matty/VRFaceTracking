@@ -31,7 +31,7 @@ fn calculate_composite_bipolar_weight(
             .iter()
             .map(|&e| get_shape_weight(data, e))
             .fold(0.0f32, |a, b| a.max(b));
-        pos_max + (-1.0 * neg_max)
+        pos_max - neg_max
     }
 }
 
@@ -541,7 +541,7 @@ pub fn get_v1_parameters(data: &UnifiedTrackingData) -> Vec<(&'static str, f32)>
 
     let tongue_out = get_shape_weight(data, UnifiedExpressions::TongueOut);
     let tongue_long_step1 = (tongue_out * 2.0).min(1.0);
-    let tongue_long_step2 = ((tongue_out * 2.0) - 1.0).max(0.0).min(1.0);
+    let tongue_long_step2 = ((tongue_out * 2.0) - 1.0).clamp(0.0, 1.0);
     params.push(("TongueSteps", (tongue_long_step1 - tongue_long_step2) - 1.0));
 
     params
@@ -719,8 +719,7 @@ pub fn get_v1_sranipal_lip_parameters(data: &UnifiedTrackingData) -> Vec<(&'stat
         "JawOpen",
         (get_shape_weight(data, UnifiedExpressions::JawOpen)
             - get_shape_weight(data, UnifiedExpressions::MouthClosed))
-            .max(0.0)
-            .min(1.0),
+            .clamp(0.0, 1.0),
     ));
     params.push((
         "MouthApeShape",
@@ -886,8 +885,7 @@ pub fn get_v1_sranipal_lip_parameters(data: &UnifiedTrackingData) -> Vec<(&'stat
     params.push((
         "TongueLongStep2",
         ((get_shape_weight(data, UnifiedExpressions::TongueOut) * 2.0) - 1.0)
-            .max(0.0)
-            .min(1.0),
+            .clamp(0.0, 1.0),
     ));
 
     params.push((

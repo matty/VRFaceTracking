@@ -126,8 +126,8 @@ fn main() -> Result<()> {
             let entry = entry?;
             let path = entry.path();
             if path
-                .extension()
-                .map_or(false, |ext| ext == "dll" || ext == "so" || ext == "dylib")
+              .extension()
+              .is_some_and(|ext| ext == "dll" || ext == "so" || ext == "dylib")
             {
                 let filename = path
                     .file_name()
@@ -501,7 +501,7 @@ fn main() -> Result<()> {
             let _ = tx.try_send(data.clone());
 
             frame_count += 1;
-            if frame_count % log_interval == 0 {
+            if frame_count.is_multiple_of(log_interval) {
                 let elapsed = last_log.elapsed().as_secs_f32();
                 let fps = log_interval as f32 / elapsed;
                 info!(

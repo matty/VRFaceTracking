@@ -6,9 +6,10 @@ use std::path::Path;
 use crate::calibration_manager::CalibrationManager;
 use crate::{CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputMode {
     #[serde(alias = "VRChat", alias = "VRChatOSC")]
+    #[default]
     VRChat,
     #[serde(alias = "Resonite")]
     Resonite,
@@ -16,11 +17,6 @@ pub enum OutputMode {
     Generic,
 }
 
-impl Default for OutputMode {
-    fn default() -> Self {
-        Self::VRChat
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

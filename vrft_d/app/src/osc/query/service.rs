@@ -136,7 +136,7 @@ impl OscQueryService {
         if let Some(change_rx) = self.change_receiver.take() {
             thread::spawn(move || {
                 info!("Starting Avatar Change Listener Thread...");
-                while let Ok(_) = change_rx.recv() {
+                while change_rx.recv().is_ok() {
                     info!("Avatar Change Signal Received. Re-fetching...");
 
                     let url_opt = {
