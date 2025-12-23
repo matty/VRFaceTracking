@@ -1,0 +1,18 @@
+{
+    "source": "builtin",
+    "applications": [
+        {
+            "app_key": "org.vrft.vrft_d",
+            "launch_type": "binary",
+            "binary_path_windows": "vrft_d.exe",
+            "is_dashboard_overlay": false,
+            "name": "VRFaceTracking Daemon",
+            "strings": {
+                "en_us": {
+                    "name": "VRFaceTracking Daemon",
+                    "description": "Daemon for VRFaceTracking"
+                }
+            }
+        }
+    ]
+}

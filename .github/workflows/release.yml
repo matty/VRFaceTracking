@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Release - ${{ matrix.platform.os-name }}
+    strategy:
+      matrix:
+        platform:
+          - os-name: Windows-x86_64
+            runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform.runs-on }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Release
+        run: cargo build --release --target ${{ matrix.platform.target }} -p vrft_d
+
+      - name: Prepare Package
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.platform.target }}"
+          $release_dir = "target/$target/release"
+          $package_dir = "vrft_d-$target"
+          New-Item -ItemType Directory -Force -Path $package_dir
+          
+          # Copy executable
+          Copy-Item "$release_dir/vrft_d.exe" "$package_dir/"
+          
+          # Copy manifest and config if they exist
+          if (Test-Path "vrft_d/vrft_d.vrmanifest") {
+            Copy-Item "vrft_d/vrft_d.vrmanifest" "$package_dir/"
+          }
+          if (Test-Path "vrft_d/app/config.json") {
+            Copy-Item "vrft_d/app/config.json" "$package_dir/"
+          }
+          
+          # Create zip
+          Compress-Archive -Path "$package_dir/*" -DestinationPath "$package_dir.zip"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vrft_d-${{ matrix.platform.target }}
+          path: vrft_d-${{ matrix.platform.target }}.zip
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: vrft_d-${{ matrix.platform.target }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

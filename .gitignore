@@ -1,0 +1,21 @@
+# IDEs
+.idea
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Rust
+target/
+debug/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Web
+node_modules/
+
+# VRFT Specific
+vrft_d/calibration_*.json
+vrft_d/config.json
+vrft_d/plugins/*.dll

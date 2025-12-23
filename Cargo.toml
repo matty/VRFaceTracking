@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "vrft_d/api",
+    "vrft_d/common",
+    "vrft_d/app",
+    "vd_module",
+    "livelink_module",
+    "test_logger",
+    "experimental/sranipal_module",
+    "experimental/pico_module",
+]
+resolver = "2"
