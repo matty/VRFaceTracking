@@ -4,7 +4,9 @@ use std::io::BufReader;
 use std::path::Path;
 
 use crate::calibration_manager::CalibrationManager;
-use crate::{CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData};
+use crate::{
+    CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputMode {
@@ -16,7 +18,6 @@ pub enum OutputMode {
     #[serde(alias = "Generic", alias = "GenericUDP")]
     Generic,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -192,7 +193,11 @@ impl UnifiedTrackingMutator {
             return;
         }
 
-        if let CalibrationState::Collecting { mut timer, duration } = self.calibration_state {
+        if let CalibrationState::Collecting {
+            mut timer,
+            duration,
+        } = self.calibration_state
+        {
             timer += dt;
             if timer >= duration {
                 self.calibration_state = CalibrationState::Calibrated;

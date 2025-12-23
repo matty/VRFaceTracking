@@ -187,7 +187,7 @@ impl ParameterSolver {
             "v2/CheekPuffSuck",
             (w(UnifiedExpressions::CheekPuffRight) + w(UnifiedExpressions::CheekPuffLeft)) / 2.0
                 - (w(UnifiedExpressions::CheekSuckRight) + w(UnifiedExpressions::CheekSuckLeft))
-                / 2.0,
+                    / 2.0,
         ));
         params.push((
             "v2/CheekSuck",
@@ -287,16 +287,16 @@ impl ParameterSolver {
             (w(UnifiedExpressions::LipSuckUpperRight) + w(UnifiedExpressions::LipSuckUpperLeft))
                 / 2.0
                 - (w(UnifiedExpressions::LipFunnelUpperRight)
-                + w(UnifiedExpressions::LipFunnelUpperLeft))
-                / 2.0,
+                    + w(UnifiedExpressions::LipFunnelUpperLeft))
+                    / 2.0,
         ));
         params.push((
             "v2/LipSuckFunnelLower",
             (w(UnifiedExpressions::LipSuckLowerRight) + w(UnifiedExpressions::LipSuckLowerLeft))
                 / 2.0
                 - (w(UnifiedExpressions::LipFunnelLowerRight)
-                + w(UnifiedExpressions::LipFunnelLowerLeft))
-                / 2.0,
+                    + w(UnifiedExpressions::LipFunnelLowerLeft))
+                    / 2.0,
         ));
         params.push((
             "v2/LipSuckFunnelLowerLeft",
@@ -364,8 +364,8 @@ impl ParameterSolver {
                 + w(UnifiedExpressions::MouthTightenerLeft))
                 / 2.0
                 - (w(UnifiedExpressions::MouthStretchRight)
-                + w(UnifiedExpressions::MouthStretchLeft))
-                / 2.0,
+                    + w(UnifiedExpressions::MouthStretchLeft))
+                    / 2.0,
         ));
         params.push((
             "v2/MouthTightenerStretchLeft",
