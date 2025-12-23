@@ -404,6 +404,12 @@ impl VirtualDesktopModule {
     }
 }
 
+impl Default for VirtualDesktopModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingModule for VirtualDesktopModule {
     fn initialize(&mut self, logger: ModuleLogger) -> Result<()> {
         logger.info("Initializing Virtual Desktop Module (Background Mode)");
@@ -413,12 +419,10 @@ impl TrackingModule for VirtualDesktopModule {
     }
 
     fn update(&mut self, data: &mut UnifiedTrackingData) -> Result<()> {
-        if !self.is_connected() {
-            if let Err(_) = self.connect() {
-                // Sleep to avoid busy loop when not connected
-                thread::sleep(Duration::from_secs(1));
-                return Err(anyhow::anyhow!("Not connected to Virtual Desktop"));
-            }
+        if !self.is_connected() && self.connect().is_err() {
+            // Sleep to avoid busy loop when not connected
+            thread::sleep(Duration::from_secs(1));
+            return Err(anyhow::anyhow!("Not connected to Virtual Desktop"));
         }
 
         unsafe {

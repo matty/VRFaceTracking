@@ -59,7 +59,7 @@ impl CalibrationParameter {
             }
 
             self.data_points[self.rolling_index] = current_value;
-            if !self.finished || (self.finished && continuous) {
+            if !self.finished || continuous {
                 self.rolling_index = (self.rolling_index + 1) % self.data_points.len();
                 self.calculate_stats();
             }
