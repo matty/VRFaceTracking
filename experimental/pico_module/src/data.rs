@@ -24,6 +24,7 @@ pub struct DataPackBody {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(usize)]
+#[allow(dead_code)]
 pub enum PicoBlendShape {
     EyeLookDownL = 0,
     NoseSneerL = 1,
