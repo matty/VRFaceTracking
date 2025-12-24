@@ -38,6 +38,12 @@ jobs:
       - name: Build Release
         run: cargo build --release --target ${{ matrix.platform.target }} -p vrft_d
 
+      - name: Build Plugins
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }} -p vd_module
+          cargo build --release --target ${{ matrix.platform.target }} -p livelink_module
+          cargo build --release --target ${{ matrix.platform.target }} -p test_logger
+
       - name: Prepare Package
         shell: pwsh
         run: |
@@ -56,6 +62,12 @@ jobs:
           if (Test-Path "vrft_d/app/config.json") {
             Copy-Item "vrft_d/app/config.json" "$package_dir/"
           }
+          
+          # Create plugins directory and copy plugin DLLs
+          $plugins_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins"
+          Copy-Item "$release_dir/vd_module.dll" "$plugins_dir/"
+          Copy-Item "$release_dir/livelink_module.dll" "$plugins_dir/"
+          Copy-Item "$release_dir/test_logger.dll" "$plugins_dir/"
           
           # Create zip
           Compress-Archive -Path "$package_dir/*" -DestinationPath "$package_dir.zip"
