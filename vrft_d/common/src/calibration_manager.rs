@@ -13,17 +13,11 @@ pub struct CalibrationManager {
 
 impl CalibrationManager {
     pub fn new(storage_dir: PathBuf) -> Self {
-        let mut manager = Self {
+        Self {
             current_profile_id: "default".to_string(),
             data: CalibrationData::default(),
             storage_dir,
-        };
-
-        if let Err(e) = manager.load_profile("default") {
-            info!("No default calibration found, starting fresh. ({})", e);
         }
-
-        manager
     }
 
     fn get_profile_path(&self, profile_id: &str) -> PathBuf {
@@ -53,8 +47,10 @@ impl CalibrationManager {
     pub fn save_current_profile(&self) -> Result<()> {
         let path = self.get_profile_path(&self.current_profile_id);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create calibration dir: {:?}", parent))?;
+            if parent.as_os_str().len() > 0 {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create calibration dir: {:?}", parent))?;
+            }
         }
         let file = File::create(&path).context("Failed to create calibration file")?;
         let sanitized = self.sanitized_for_save();
@@ -87,16 +83,18 @@ impl CalibrationManager {
         Ok(())
     }
 
-    pub fn switch_profile(&mut self, new_profile_id: &str) -> Result<()> {
+    pub fn switch_profile(&mut self, new_profile_id: &str, save_current: bool) -> Result<()> {
         if self.current_profile_id == new_profile_id {
             return Ok(());
         }
 
-        if let Err(e) = self.save_current_profile() {
-            error!(
-                "Failed to save current profile '{}' before switching: {}",
-                self.current_profile_id, e
-            );
+        if save_current {
+            if let Err(e) = self.save_current_profile() {
+                error!(
+                    "Failed to save current profile '{}' before switching: {}",
+                    self.current_profile_id, e
+                );
+            }
         }
 
         match self.load_profile(new_profile_id) {
