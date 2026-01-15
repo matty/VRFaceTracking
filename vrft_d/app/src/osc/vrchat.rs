@@ -20,6 +20,7 @@ pub struct VRChatOsc {
     change_tx_calibration: Sender<String>,
     change_tx_query: Sender<String>,
     pub change_rx: Mutex<Option<Receiver<String>>>,
+    pub parameter_buffer: Mutex<Vec<(&'static str, f32)>>,
 }
 
 impl VRChatOsc {
@@ -40,6 +41,7 @@ impl VRChatOsc {
             change_tx_calibration,
             change_tx_query,
             change_rx: Mutex::new(Some(change_rx_calibration)),
+            parameter_buffer: Mutex::new(Vec::with_capacity(200)),
         }
     }
 
@@ -159,14 +161,16 @@ impl VRChatOsc {
             });
         }
 
-        let calculated = ParameterSolver::solve(data);
-        for (name, value) in calculated {
-            let addr = format!("/avatar/parameters/FT/{}", name);
-            if self.is_allowed(&addr, allowed_ref) {
-                messages.push(OscMessage {
-                    addr,
-                    args: vec![OscType::Float(value)],
-                });
+        if let Ok(mut buffer) = self.parameter_buffer.lock() {
+             ParameterSolver::solve(data, &mut buffer);
+             for (name, value) in buffer.iter() {
+                let addr = format!("/avatar/parameters/FT/{}", name);
+                if self.is_allowed(&addr, allowed_ref) {
+                    messages.push(OscMessage {
+                        addr,
+                        args: vec![OscType::Float(*value)],
+                    });
+                }
             }
         }
 
