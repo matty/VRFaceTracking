@@ -162,8 +162,8 @@ impl VRChatOsc {
         }
 
         if let Ok(mut buffer) = self.parameter_buffer.lock() {
-             ParameterSolver::solve(data, &mut buffer);
-             for (name, value) in buffer.iter() {
+            ParameterSolver::solve(data, &mut buffer);
+            for (name, value) in buffer.iter() {
                 let addr = format!("/avatar/parameters/FT/{}", name);
                 if self.is_allowed(&addr, allowed_ref) {
                     messages.push(OscMessage {

@@ -59,7 +59,11 @@ pub fn create_strategy(
                 config.osc_send_port + 1,
                 context,
             );
-            (PlatformBackend::VRChat(Box::new(strategy)), Some(router), change_rx)
+            (
+                PlatformBackend::VRChat(Box::new(strategy)),
+                Some(router),
+                change_rx,
+            )
         }
         OutputMode::Resonite => {
             let strategy = ResoniteOscStrategy::new(&format!(
