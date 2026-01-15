@@ -47,7 +47,7 @@ impl CalibrationManager {
     pub fn save_current_profile(&self) -> Result<()> {
         let path = self.get_profile_path(&self.current_profile_id);
         if let Some(parent) = path.parent() {
-            if parent.as_os_str().len() > 0 {
+            if parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create calibration dir: {:?}", parent))?;
             }
