@@ -15,9 +15,11 @@ fn test_progress_saturates_at_1() {
 
 #[test]
 fn test_calculate_parameter_matches_formula() {
-    let mut p = CalibrationParameter::default();
-    p.max = 0.8;
-    p.progress = 1.0;
+    let p = CalibrationParameter {
+        max: 0.8,
+        progress: 1.0,
+        ..Default::default()
+    };
 
     let current_value: f32 = 0.4;
     let k = 1.0;

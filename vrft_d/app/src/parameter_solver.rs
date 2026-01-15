@@ -4,8 +4,8 @@ use common::{UnifiedExpressions, UnifiedTrackingData};
 pub struct ParameterSolver;
 
 impl ParameterSolver {
-    pub fn solve(data: &UnifiedTrackingData) -> Vec<(&'static str, f32)> {
-        let mut params = Vec::with_capacity(200);
+    pub fn solve(data: &UnifiedTrackingData, params: &mut Vec<(&'static str, f32)>) {
+        params.clear();
         let s = &data.shapes;
 
         let w = |expr: UnifiedExpressions| s[expr as usize].weight;
@@ -438,8 +438,6 @@ impl ParameterSolver {
         params.extend(shape_legacy::get_v1_parameters(data));
         params.extend(shape_legacy::get_v1_eye_parameters(data));
         params.extend(shape_legacy::get_v1_sranipal_lip_parameters(data));
-
-        params
     }
 
     pub fn get_expression_name(idx: usize) -> Option<&'static str> {
