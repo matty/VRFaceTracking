@@ -438,8 +438,7 @@ impl ParameterSolver {
         params.extend(shape_legacy::get_v1_parameters(data));
         params.extend(shape_legacy::get_v1_eye_parameters(data));
         params.extend(shape_legacy::get_v1_sranipal_lip_parameters(data));
-
-
+    }
 
     pub fn get_expression_name(idx: usize) -> Option<&'static str> {
         if idx >= UnifiedExpressions::Max as usize {
