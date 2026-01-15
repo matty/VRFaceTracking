@@ -238,18 +238,14 @@ fn main() -> Result<()> {
 
     let mut mutator = UnifiedTrackingMutator::new(config.clone());
 
-    let calibration_path = Path::new("calibration.json");
+    let calibration_path = Path::new("calibration_default.json");
     if calibration_path.exists() {
         info!("Loading calibration from {:?}", calibration_path);
         if let Err(e) = mutator.load_calibration(calibration_path) {
             error!("Failed to load calibration: {}", e);
         }
-    } else if mutator.config.calibration_enabled {
-        info!("No calibration found; calibration is enabled and will learn continuously.");
     } else {
-        info!(
-            "No calibration file found and calibration is disabled in config. Skipping initial calibration."
-        );
+        info!("No calibration found; using defaults.");
     }
 
     info!("Initializing Modules...");
@@ -395,8 +391,8 @@ fn main() -> Result<()> {
                 CalibrationState::Collecting { .. }
             );
             if was_calibrating && !is_calibrating_now {
-                info!("Calibration finished! Saving to calibration.json");
-                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
+                info!("Calibration finished! Saving to calibration_default.json");
+                if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
                     error!("Failed to save calibration: {}", e);
                 }
             }
@@ -424,7 +420,7 @@ fn main() -> Result<()> {
             if let Some(rx) = &avatar_change_rx {
                 while let Ok(avatar_id) = rx.try_recv() {
                     info!("Switching calibration profile to avatar: {}", avatar_id);
-                    if let Err(e) = mutator.calibration_manager.switch_profile(&avatar_id) {
+                    if let Err(e) = mutator.switch_profile(&avatar_id) {
                         error!("Failed to switch calibration profile: {}", e);
                     }
                 }
@@ -443,7 +439,7 @@ fn main() -> Result<()> {
             };
 
             if should_save && mutator.config.calibration_enabled && mutator.has_calibration_data() {
-                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
+                if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
                     error!("Failed to auto-save calibration: {}", e);
                 } else {
                     #[cfg(feature = "xtralog")]

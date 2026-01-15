@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 
 use crate::calibration_manager::CalibrationManager;
@@ -178,14 +176,19 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn save_calibration(&self, _path: &Path) -> anyhow::Result<()> {
+        if !self.config.calibration_enabled {
+            return Ok(());
+        }
         self.calibration_manager.save_current_profile()
     }
 
-    pub fn load_calibration(&mut self, path: &Path) -> anyhow::Result<()> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        self.calibration_manager.data = serde_json::from_reader(reader)?;
-        Ok(())
+    pub fn load_calibration(&mut self, _path: &Path) -> anyhow::Result<()> {
+        self.calibration_manager.load_profile("default")
+    }
+
+    pub fn switch_profile(&mut self, new_profile_id: &str) -> anyhow::Result<()> {
+        let should_save = self.config.calibration_enabled && self.has_calibration_data();
+        self.calibration_manager.switch_profile(new_profile_id, should_save)
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
