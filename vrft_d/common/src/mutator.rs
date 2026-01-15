@@ -188,7 +188,8 @@ impl UnifiedTrackingMutator {
 
     pub fn switch_profile(&mut self, new_profile_id: &str) -> anyhow::Result<()> {
         let should_save = self.config.calibration_enabled && self.has_calibration_data();
-        self.calibration_manager.switch_profile(new_profile_id, should_save)
+        self.calibration_manager
+            .switch_profile(new_profile_id, should_save)
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
