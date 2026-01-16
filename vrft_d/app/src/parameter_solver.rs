@@ -441,11 +441,7 @@ impl ParameterSolver {
     }
 
     pub fn get_expression_name(idx: usize) -> Option<&'static str> {
-        if idx >= UnifiedExpressions::Max as usize {
-            return None;
-        }
-
-        let expr: UnifiedExpressions = unsafe { std::mem::transmute(idx) };
+        let expr = UnifiedExpressions::try_from(idx).ok()?;
 
         match expr {
             UnifiedExpressions::EyeSquintRight => Some("v2/EyeSquintRight"),
