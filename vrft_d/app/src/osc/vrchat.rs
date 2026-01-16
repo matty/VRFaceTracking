@@ -229,26 +229,33 @@ fn is_allowed_static(addr: &str, allowed_params: &Option<HashSet<String>>) -> bo
 
 /// Cache for OSC address strings to avoid per-frame allocations
 fn get_cached_osc_address(name: &'static str) -> &'static str {
-    static ADDRESS_CACHE: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
-    
+    static ADDRESS_CACHE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+
     let cache = ADDRESS_CACHE.get_or_init(|| {
-        let mut map = HashMap::with_capacity(200);
-        // Pre-populate with all known parameter names
+        let mut map = HashMap::with_capacity(300);
+
+        // Pre-populate with all v2 expression names
         for i in 0..api::UnifiedExpressions::Max as usize {
             if let Some(expr_name) = ParameterSolver::get_expression_name(i) {
-                map.insert(expr_name, format!("/avatar/parameters/FT/{}", expr_name));
+                let addr = format!("/avatar/parameters/FT/{}", expr_name);
+                map.insert(expr_name, Box::leak(addr.into_boxed_str()) as &'static str);
             }
         }
+
+        // Pre-populate with all legacy parameter names from shape_legacy
+        for name in crate::shape_legacy::get_all_parameter_names() {
+            if !map.contains_key(name) {
+                let addr = format!("/avatar/parameters/FT/{}", name);
+                map.insert(name, Box::leak(addr.into_boxed_str()) as &'static str);
+            }
+        }
+
         map
     });
-    
-    // Return cached address or leak a new one (happens rarely for dynamic names)
-    if let Some(addr) = cache.get(name) {
-        // The cache lives for 'static, so we can extend the lifetime
-        unsafe { std::mem::transmute::<&str, &'static str>(addr.as_str()) }
-    } else {
-        // For any uncached names, create and leak (this should be rare after warmup)
+
+    cache.get(name).copied().unwrap_or_else(|| {
+        log::warn!("OSC address cache miss for parameter: {}", name);
         let addr = format!("/avatar/parameters/FT/{}", name);
         Box::leak(addr.into_boxed_str())
-    }
+    })
 }
