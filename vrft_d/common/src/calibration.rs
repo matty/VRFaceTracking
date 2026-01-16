@@ -119,7 +119,7 @@ impl Default for CalibrationData {
     fn default() -> Self {
         let mut shapes = Vec::with_capacity(UnifiedExpressions::Max as usize);
         for i in 0..UnifiedExpressions::Max as usize {
-            let expr: UnifiedExpressions = unsafe { std::mem::transmute(i) };
+            let expr = UnifiedExpressions::try_from(i).expect("index within valid enum range");
             shapes.push(CalibrationParameter {
                 name: format!("{:?}", expr),
                 max: 0.0,
@@ -133,7 +133,7 @@ impl Default for CalibrationData {
 impl CalibrationData {
     pub fn clear(&mut self) {
         for i in 0..self.shapes.len() {
-            let expr: UnifiedExpressions = unsafe { std::mem::transmute(i) };
+            let expr = UnifiedExpressions::try_from(i).expect("index within valid enum range");
             self.shapes[i] = CalibrationParameter {
                 name: format!("{:?}", expr),
                 max: 0.0,

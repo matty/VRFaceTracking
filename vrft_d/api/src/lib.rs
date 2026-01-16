@@ -178,6 +178,19 @@ pub enum UnifiedExpressions {
     Max,
 }
 
+impl TryFrom<usize> for UnifiedExpressions {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        if value >= Self::Max as usize {
+            return Err(());
+        }
+        // We've verified the value is in range [0, Max)
+        // and the enum is repr(usize) with contiguous discriminants starting from 0
+        Ok(unsafe { std::mem::transmute::<usize, UnifiedExpressions>(value) })
+    }
+}
+
 /// log level for module logging
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

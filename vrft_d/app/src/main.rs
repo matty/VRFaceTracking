@@ -293,17 +293,18 @@ fn main() -> Result<()> {
                 if !debug.is_empty() {
                     #[cfg(feature = "xtralog")]
                     {
-                        static mut LAST_DEBUG_WARN: Option<std::time::Instant> = None;
+                        use std::cell::Cell;
+                        thread_local! {
+                            static LAST_DEBUG_WARN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+                        }
                         let now = std::time::Instant::now();
-                        let should_log = unsafe {
-                            match LAST_DEBUG_WARN {
-                                Some(last) if now.duration_since(last).as_secs() < 5 => false,
-                                _ => {
-                                    LAST_DEBUG_WARN = Some(now);
-                                    true
-                                }
+                        let should_log = LAST_DEBUG_WARN.with(|cell| match cell.get() {
+                            Some(last) if now.duration_since(last).as_secs() < 5 => false,
+                            _ => {
+                                cell.set(Some(now));
+                                true
                             }
-                        };
+                        });
                         if should_log {
                             warn!("Debug overrides are being applied to tracking data.");
                         }
@@ -426,17 +427,18 @@ fn main() -> Result<()> {
                 }
             }
 
-            static mut LAST_SAVE: Option<std::time::Instant> = None;
+            use std::cell::Cell;
+            thread_local! {
+                static LAST_SAVE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+            }
             let now = std::time::Instant::now();
-            let should_save = unsafe {
-                match LAST_SAVE {
-                    Some(last) if now.duration_since(last).as_secs() < 30 => false,
-                    _ => {
-                        LAST_SAVE = Some(now);
-                        true
-                    }
+            let should_save = LAST_SAVE.with(|cell| match cell.get() {
+                Some(last) if now.duration_since(last).as_secs() < 30 => false,
+                _ => {
+                    cell.set(Some(now));
+                    true
                 }
-            };
+            });
 
             if should_save && mutator.config.calibration_enabled && mutator.has_calibration_data() {
                 if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
@@ -473,17 +475,18 @@ fn main() -> Result<()> {
         }
 
         if !active_module_found && !modules.is_empty() {
-            static mut LAST_PLUGIN_WARN: Option<std::time::Instant> = None;
+            use std::cell::Cell;
+            thread_local! {
+                static LAST_PLUGIN_WARN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+            }
             let now = std::time::Instant::now();
-            let should_log = unsafe {
-                match LAST_PLUGIN_WARN {
-                    Some(last) if now.duration_since(last).as_secs() < 5 => false,
-                    _ => {
-                        LAST_PLUGIN_WARN = Some(now);
-                        true
-                    }
+            let should_log = LAST_PLUGIN_WARN.with(|cell| match cell.get() {
+                Some(last) if now.duration_since(last).as_secs() < 5 => false,
+                _ => {
+                    cell.set(Some(now));
+                    true
                 }
-            };
+            });
             if should_log {
                 warn!(
                     "Active plugin '{}' not found among loaded modules!",
