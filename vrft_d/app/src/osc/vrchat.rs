@@ -4,10 +4,10 @@ use anyhow::Result;
 use common::UnifiedTrackingData;
 use log::{error, info};
 use rosc::{decoder, encoder, OscBundle, OscMessage, OscPacket, OscType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 pub struct VRChatOsc {
@@ -44,14 +44,6 @@ impl VRChatOsc {
             parameter_buffer: Mutex::new(Vec::with_capacity(200)),
         }
     }
-
-    fn is_allowed(&self, addr: &str, allowed_params: &Option<HashSet<String>>) -> bool {
-        match allowed_params {
-            Some(allowed) => allowed.contains(addr),
-            None => true,
-        }
-    }
-
     pub fn initialize(&mut self) -> Result<()> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
 
@@ -92,6 +84,7 @@ impl VRChatOsc {
     }
 
     pub fn send(&self, data: &UnifiedTrackingData) -> Result<()> {
+        // Check for parameter updates (quick lock)
         if let Ok(rx) = self.query_rx.lock() {
             while let Ok(update) = rx.try_recv() {
                 if let Ok(mut params) = self.allowed_parameters.lock() {
@@ -100,35 +93,18 @@ impl VRChatOsc {
             }
         }
 
-        let mut socket_guard = self.socket.lock().unwrap();
+        // Clone allowed parameters to release lock quickly
+        let allowed_params = self.allowed_parameters.lock().unwrap().clone();
 
-        if socket_guard.is_none() {
-            match UdpSocket::bind("0.0.0.0:0") {
-                Ok(s) => {
-                    info!("Re-bound OSC socket successfully.");
-                    *socket_guard = Some(s);
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Failed to re-bind OSC socket: {}", e));
-                }
-            }
-        }
-
-        let socket = socket_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("VRChatOsc socket not available"))?;
-
+        // Build messages without holding any locks
         let mut messages = Vec::with_capacity(100);
-
-        let allowed_guard = self.allowed_parameters.lock().unwrap();
-        let allowed_ref = &*allowed_guard;
 
         macro_rules! add_msg {
             ($addr:expr, $val:expr) => {
-                let addr_str = $addr.to_string();
-                if self.is_allowed(&addr_str, allowed_ref) {
+                let addr_str: &str = $addr;
+                if is_allowed_static(addr_str, &allowed_params) {
                     messages.push(OscMessage {
-                        addr: addr_str,
+                        addr: addr_str.to_string(),
                         args: vec![OscType::Float($val)],
                     });
                 }
@@ -149,7 +125,7 @@ impl VRChatOsc {
         );
 
         let lrpy_addr = "/tracking/eye/LeftRightPitchYaw";
-        if self.is_allowed(lrpy_addr, allowed_ref) {
+        if is_allowed_static(lrpy_addr, &allowed_params) {
             messages.push(OscMessage {
                 addr: lrpy_addr.to_string(),
                 args: vec![
@@ -164,29 +140,46 @@ impl VRChatOsc {
         if let Ok(mut buffer) = self.parameter_buffer.lock() {
             ParameterSolver::solve(data, &mut buffer);
             for (name, value) in buffer.iter() {
-                let addr = format!("/avatar/parameters/FT/{}", name);
-                if self.is_allowed(&addr, allowed_ref) {
+                let addr = get_cached_osc_address(name);
+                if is_allowed_static(addr, &allowed_params) {
                     messages.push(OscMessage {
-                        addr,
+                        addr: addr.to_string(),
                         args: vec![OscType::Float(*value)],
                     });
                 }
             }
         }
 
-        drop(allowed_guard);
-
         if messages.is_empty() {
             return Ok(());
         }
 
+        // Encode the bundle before acquiring socket lock
         let bundle = OscBundle {
             timetag: rosc::OscTime::from((0, 0)),
             content: messages.into_iter().map(OscPacket::Message).collect(),
         };
-
         let packet = OscPacket::Bundle(bundle);
         let msg_buf = encoder::encode(&packet)?;
+
+        // Now acquire socket lock only for sending
+        let mut socket_guard = self.socket.lock().unwrap();
+
+        if socket_guard.is_none() {
+            match UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => {
+                    info!("Re-bound OSC socket successfully.");
+                    *socket_guard = Some(s);
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Failed to re-bind OSC socket: {}", e));
+                }
+            }
+        }
+
+        let socket = socket_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VRChatOsc socket not available"))?;
 
         match socket.send_to(&msg_buf, &self.target_addr) {
             Ok(_) => Ok(()),
@@ -224,5 +217,38 @@ fn handle_packet(packet: OscPacket, tx_calib: &Sender<String>, tx_query: &Sender
                 handle_packet(packet, tx_calib, tx_query);
             }
         }
+    }
+}
+
+fn is_allowed_static(addr: &str, allowed_params: &Option<HashSet<String>>) -> bool {
+    match allowed_params {
+        Some(allowed) => allowed.contains(addr),
+        None => true,
+    }
+}
+
+/// Cache for OSC address strings to avoid per-frame allocations
+fn get_cached_osc_address(name: &'static str) -> &'static str {
+    static ADDRESS_CACHE: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
+    
+    let cache = ADDRESS_CACHE.get_or_init(|| {
+        let mut map = HashMap::with_capacity(200);
+        // Pre-populate with all known parameter names
+        for i in 0..api::UnifiedExpressions::Max as usize {
+            if let Some(expr_name) = ParameterSolver::get_expression_name(i) {
+                map.insert(expr_name, format!("/avatar/parameters/FT/{}", expr_name));
+            }
+        }
+        map
+    });
+    
+    // Return cached address or leak a new one (happens rarely for dynamic names)
+    if let Some(addr) = cache.get(name) {
+        // The cache lives for 'static, so we can extend the lifetime
+        unsafe { std::mem::transmute::<&str, &'static str>(addr.as_str()) }
+    } else {
+        // For any uncached names, create and leak (this should be rare after warmup)
+        let addr = format!("/avatar/parameters/FT/{}", name);
+        Box::leak(addr.into_boxed_str())
     }
 }

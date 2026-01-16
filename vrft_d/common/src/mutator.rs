@@ -211,7 +211,6 @@ impl UnifiedTrackingMutator {
         }
 
         if self.config.calibration_enabled {
-            let cal_dt = 100.0 / 1000.0;
             for i in 0..data.shapes.len() {
                 if i < self.calibration_manager.data.shapes.len() {
                     let raw_weight = data.shapes[i].weight;
@@ -219,7 +218,7 @@ impl UnifiedTrackingMutator {
                     self.calibration_manager.data.shapes[i].update_calibration(
                         raw_weight,
                         self.config.calibration_continuous,
-                        cal_dt,
+                        dt,
                     );
 
                     data.shapes[i].weight = self.calibration_manager.data.shapes[i]
