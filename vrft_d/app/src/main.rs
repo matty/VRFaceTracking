@@ -406,8 +406,11 @@ fn main() -> Result<()> {
                 st.duration = duration;
                 st.progress = progress;
             }
-            if let Ok(mut cd) = calibration_data_for_consumer.write() {
-                *cd = mutator.get_calibration_data();
+
+            if is_calibrating_now {
+                if let Ok(mut cd) = calibration_data_for_consumer.write() {
+                    *cd = mutator.get_calibration_data();
+                }
             }
 
             if let Ok(mut write_guard) = shared_data_for_consumer.write() {
