@@ -6,6 +6,7 @@ mod parameter_solver;
 mod shape_legacy;
 mod strategies;
 
+use netclr::{init_dotnet_host, DotNetModuleWrapper};
 use anyhow::Result;
 use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
 use common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
@@ -120,6 +121,12 @@ fn main() -> Result<()> {
     }
 
     let mut modules: Vec<LoadedModule> = Vec::new();
+
+    // Initialize .NET runtime for VRCFT modules
+    if let Err(e) = init_dotnet_host() {
+        warn!("Failed to initialize .NET runtime: {}. VRCFT modules will not load.", e);
+    }
+
     let modules_dir = Path::new("plugins");
     if modules_dir.exists() {
         for entry in fs::read_dir(modules_dir)? {
@@ -163,6 +170,36 @@ fn main() -> Result<()> {
     } else {
         warn!("'plugins' directory not found. Creating it.");
         fs::create_dir("plugins")?;
+    }
+
+    // Load VRCFT .NET modules from plugins/vrcft/
+    let vrcft_modules_dir = Path::new("plugins/vrcft");
+    if vrcft_modules_dir.exists() {
+        if let Ok(entries) = fs::read_dir(vrcft_modules_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "dll") {
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        // Ignore VrcftBridge.dll itself if it's there
+                        if filename.eq_ignore_ascii_case("VrcftBridge.dll") {
+                            continue;
+                        }
+
+                        match DotNetModuleWrapper::load(&path) {
+                            Ok(module) => {
+                                info!("✓ Loaded VRCFT module: {:?}", path);
+                                modules.push(LoadedModule {
+                                    name: filename,
+                                    module: Box::new(module),
+                                });
+                            }
+                            Err(e) => error!("✗ Failed to load VRCFT module {:?}: {}", path, e),
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if modules.is_empty() {
