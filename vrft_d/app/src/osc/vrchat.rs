@@ -232,7 +232,7 @@ fn get_cached_osc_address(name: &'static str) -> &'static str {
     static ADDRESS_CACHE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
 
     let cache = ADDRESS_CACHE.get_or_init(|| {
-        let mut map = HashMap::with_capacity(300);
+        let mut map = HashMap::with_capacity(400);
 
         // Pre-populate with all v2 expression names
         for i in 0..api::UnifiedExpressions::Max as usize {
@@ -250,11 +250,127 @@ fn get_cached_osc_address(name: &'static str) -> &'static str {
             }
         }
 
+        // Pre-populate with all v2 computed parameters from ParameterSolver::solve()
+        let v2_computed_params: &[&'static str] = &[
+            // Head tracking
+            "v2/Head/Yaw",
+            "v2/Head/Pitch",
+            "v2/Head/Roll",
+            "v2/Head/PosX",
+            "v2/Head/PosY",
+            "v2/Head/PosZ",
+            // Brow computed
+            "v2/BrowUpRight",
+            "v2/BrowUpLeft",
+            "v2/BrowDownRight",
+            "v2/BrowDownLeft",
+            "v2/BrowUp",
+            "v2/BrowDown",
+            "v2/BrowInnerUp",
+            "v2/BrowOuterUp",
+            "v2/BrowExpressionRight",
+            "v2/BrowExpressionLeft",
+            "v2/BrowExpression",
+            // Mouth smile/sad
+            "v2/MouthSmileRight",
+            "v2/MouthSmileLeft",
+            "v2/MouthSadRight",
+            "v2/MouthSadLeft",
+            // Eye computed
+            "v2/EyesClosedAmount",
+            "v2/PupilDiameterLeft",
+            "v2/PupilDiameterRight",
+            "v2/PupilDiameter",
+            "v2/PupilDilation",
+            "v2/EyeOpenLeft",
+            "v2/EyeOpenRight",
+            "v2/EyeOpen",
+            "v2/EyeClosedLeft",
+            "v2/EyeClosedRight",
+            "v2/EyeClosed",
+            "v2/EyeWide",
+            "v2/EyeLidLeft",
+            "v2/EyeLidRight",
+            "v2/EyeLid",
+            "v2/EyeSquint",
+            "v2/EyesSquint",
+            // Jaw computed
+            "v2/JawX",
+            "v2/JawZ",
+            // Cheek computed
+            "v2/CheekSquint",
+            "v2/CheekPuffSuckLeft",
+            "v2/CheekPuffSuckRight",
+            "v2/CheekPuffSuck",
+            "v2/CheekSuck",
+            // Mouth computed
+            "v2/MouthUpperX",
+            "v2/MouthLowerX",
+            "v2/MouthX",
+            "v2/LipSuckUpper",
+            "v2/LipSuckLower",
+            "v2/LipSuck",
+            "v2/LipFunnelUpper",
+            "v2/LipFunnelLower",
+            "v2/LipFunnel",
+            "v2/LipPuckerUpper",
+            "v2/LipPuckerLower",
+            "v2/LipPuckerRight",
+            "v2/LipPuckerLeft",
+            "v2/LipPucker",
+            "v2/LipSuckFunnelUpper",
+            "v2/LipSuckFunnelLower",
+            "v2/LipSuckFunnelLowerLeft",
+            "v2/LipSuckFunnelLowerRight",
+            "v2/LipSuckFunnelUpperLeft",
+            "v2/LipSuckFunnelUpperRight",
+            "v2/MouthUpperUp",
+            "v2/MouthLowerDown",
+            "v2/MouthOpen",
+            "v2/MouthStretch",
+            "v2/MouthTightener",
+            "v2/MouthPress",
+            "v2/MouthDimple",
+            "v2/NoseSneer",
+            "v2/MouthTightenerStretch",
+            "v2/MouthTightenerStretchLeft",
+            "v2/MouthTightenerStretchRight",
+            "v2/MouthCornerYLeft",
+            "v2/MouthCornerYRight",
+            "v2/MouthCornerY",
+            "v2/SmileFrownRight",
+            "v2/SmileFrownLeft",
+            "v2/SmileFrown",
+            "v2/SmileSadRight",
+            "v2/SmileSadLeft",
+            "v2/SmileSad",
+            // Tongue computed
+            "v2/TongueX",
+            "v2/TongueY",
+            "v2/TongueArchY",
+            "v2/TongueShape",
+            // Tracking active flags
+            "EyeTrackingActive",
+            "ExpressionTrackingActive",
+            "LipTrackingActive",
+            // sranipal params that may be missing
+            "MouthLowerOverlay",
+            "TongueLongStep1",
+            "TongueLongStep2",
+        ];
+
+        for name in v2_computed_params {
+            if !map.contains_key(name) {
+                let addr = format!("/avatar/parameters/FT/{}", name);
+                map.insert(*name, Box::leak(addr.into_boxed_str()) as &'static str);
+            }
+        }
+
         map
     });
 
+    // Fallback for truly unknown names - no warning since it still works correctly
     cache.get(name).copied().unwrap_or_else(|| {
-        log::warn!("OSC address cache miss for parameter: {}", name);
         let addr = format!("/avatar/parameters/FT/{}", name);
         Box::leak(addr.into_boxed_str())
     })
