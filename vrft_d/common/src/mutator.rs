@@ -17,6 +17,8 @@ pub enum OutputMode {
     Generic,
 }
 
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MutationConfig {

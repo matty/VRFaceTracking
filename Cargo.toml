@@ -3,7 +3,6 @@ members = [
     "vrft_d/api",
     "vrft_d/common",
     "vrft_d/app",
-    "vrft_d/netclr",
     "vd_module",
     "livelink_module",
     "test_logger",

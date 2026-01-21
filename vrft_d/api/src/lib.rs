@@ -1,3 +1,6 @@
+mod proxy;
+pub use proxy::ProxyModule;
+
 use anyhow::Result;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};

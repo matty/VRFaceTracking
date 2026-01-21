@@ -6,9 +6,8 @@ mod parameter_solver;
 mod shape_legacy;
 mod strategies;
 
-use netclr::{init_dotnet_host, DotNetModuleWrapper};
 use anyhow::Result;
-use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
+use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData, ProxyModule};
 use common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
@@ -113,23 +112,23 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut data = UnifiedTrackingData::default();
-
     struct LoadedModule {
         name: String,
         module: Box<dyn TrackingModule>,
     }
 
+    let config_path = Path::new("config.json");
+    let config = load_config(config_path).unwrap_or_else(|e| {
+        error!("Failed to load config: {}. Using defaults.", e);
+        MutationConfig::default()
+    });
+    info!("Loaded Config: {:?}", config);
+
     let mut modules: Vec<LoadedModule> = Vec::new();
 
-    // Initialize .NET runtime for VRCFT modules
-    if let Err(e) = init_dotnet_host() {
-        warn!("Failed to initialize .NET runtime: {}. VRCFT modules will not load.", e);
-    }
-
-    let modules_dir = Path::new("plugins");
-    if modules_dir.exists() {
-        for entry in fs::read_dir(modules_dir)? {
+    let native_plugins_dir = Path::new("plugins/native");
+    if native_plugins_dir.exists() {
+        for entry in fs::read_dir(native_plugins_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path
@@ -168,38 +167,43 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        warn!("'plugins' directory not found. Creating it.");
-        fs::create_dir("plugins")?;
+        warn!("'plugins/native' directory not found. Creating it.");
+        fs::create_dir_all(native_plugins_dir)?;
     }
 
-    // Load VRCFT .NET modules from plugins/vrcft/
-    let vrcft_modules_dir = Path::new("plugins/vrcft");
-    if vrcft_modules_dir.exists() {
-        if let Ok(entries) = fs::read_dir(vrcft_modules_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "dll") {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        // Ignore VrcftBridge.dll itself if it's there
-                        if filename.eq_ignore_ascii_case("VrcftBridge.dll") {
-                            continue;
-                        }
+    // Check if the active plugin is already satisfied by a native module
+    let native_active_found = modules.iter().any(|m| m.name == config.active_plugin);
 
-                        match DotNetModuleWrapper::load(&path) {
-                            Ok(module) => {
-                                info!("✓ Loaded VRCFT module: {:?}", path);
-                                modules.push(LoadedModule {
-                                    name: filename,
-                                    module: Box::new(module),
-                                });
-                            }
-                            Err(e) => error!("✗ Failed to load VRCFT module {:?}: {}", path, e),
+    if !native_active_found {
+        info!("Checking for VRCFT module '{}' in 'plugins/dotnet/modules/'...", config.active_plugin);
+        
+        let vrcft_dir = Path::new("plugins/dotnet/modules");
+        if vrcft_dir.exists() {
+            let target_dll = vrcft_dir.join(&config.active_plugin);
+            if target_dll.exists() {
+                let proxy_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe");
+                if proxy_exe.exists() {
+                    let mut proxy = ProxyModule::new();
+                    info!("Starting VrcftRuntime for module: {:?}", target_dll);
+                    match proxy.start(proxy_exe, &target_dll) {
+                        Ok(_) => {
+                            info!("✓ VrcftRuntime started successfully.");
+                            modules.push(LoadedModule {
+                                name: config.active_plugin.clone(),
+                                module: Box::new(proxy),
+                            });
                         }
+                        Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
                     }
+                } else {
+                    error!("✗ VrcftRuntime.exe not found at {:?}", proxy_exe);
                 }
+            } else {
+                debug!("No VRCFT module found matching '{}' in 'plugins/dotnet/modules/'", config.active_plugin);
             }
         }
+    } else {
+        info!("Active plugin '{}' is a native module. Skipping VRCFT search.", config.active_plugin);
     }
 
     if modules.is_empty() {
@@ -228,12 +232,7 @@ fn main() -> Result<()> {
     let calibration_request_for_host = calibration_request.clone();
     let calibration_request_for_consumer = calibration_request.clone();
 
-    let config_path = Path::new("config.json");
-    let config = load_config(config_path).unwrap_or_else(|e| {
-        error!("Failed to load config: {}. Using defaults.", e);
-        MutationConfig::default()
-    });
-    info!("Loaded Config: {:?}", config);
+    let mut data = UnifiedTrackingData::default();
 
     let osc_context = strategies::OscContext {
         tracking_data: shared_data_for_host.clone(),
@@ -339,7 +338,7 @@ fn main() -> Result<()> {
                             Some(last) if now.duration_since(last).as_secs() < 5 => false,
                             _ => {
                                 cell.set(Some(now));
-                                true
+                                  true
                             }
                         });
                         if should_log {
