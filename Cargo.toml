@@ -4,8 +4,8 @@ members = [
     "vrft_d/common",
     "vrft_d/app",
     "vd_module",
-    "livelink_module",
     "test_logger",
+    "experimental/livelink_module",
     "experimental/sranipal_module",
     "experimental/pico_module",
 ]
