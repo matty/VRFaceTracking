@@ -28,53 +28,108 @@ pub enum ModuleRuntime {
     Vrcft,
 }
 
+/// Module loading configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct MutationConfig {
+pub struct ModuleConfig {
     /// Which module runtime to use (Native or Vrcft)
-    #[serde(default)]
-    pub module_runtime: ModuleRuntime,
-
-    pub smoothness: f32,
-    pub mutator_enabled: bool,
-    pub calibration_enabled: bool,
-    #[serde(default = "default_calibration_continuous")]
-    pub calibration_continuous: bool,
-    #[serde(default = "default_calibration_blend")]
-    pub calibration_blend: f32,
-
-    #[serde(default, alias = "transport_type")]
-    pub output_mode: OutputMode,
-    #[serde(default = "default_osc_address")]
-    pub osc_send_address: String,
-    #[serde(default = "default_osc_port")]
-    pub osc_send_port: u16,
-
-    #[serde(default = "default_active_plugin")]
-    pub active_plugin: String,
-
-    #[serde(default = "default_max_fps")]
-    pub max_fps: Option<f32>,
+    pub runtime: ModuleRuntime,
+    /// The active module/plugin to load
+    #[serde(default = "default_active_module")]
+    pub active: String,
 }
 
-fn default_active_plugin() -> String {
+impl Default for ModuleConfig {
+    fn default() -> Self {
+        Self {
+            runtime: ModuleRuntime::default(),
+            active: default_active_module(),
+        }
+    }
+}
+
+fn default_active_module() -> String {
     "vd_module.dll".to_string()
 }
 
-fn default_calibration_continuous() -> bool {
-    false
+/// Mutator/processing configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MutatorConfig {
+    /// Whether the mutator is enabled
+    pub enabled: bool,
+    /// Smoothness factor for filtering (0.0 = no smoothing)
+    pub smoothness: f32,
 }
 
-fn default_calibration_blend() -> f32 {
-    1.0
+impl Default for MutatorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            smoothness: 0.0,
+        }
+    }
 }
 
-fn default_osc_address() -> String {
-    "127.0.0.1".to_string()
+/// Calibration configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalibrationConfig {
+    /// Whether calibration is enabled
+    pub enabled: bool,
+    /// Whether to continuously update calibration
+    pub continuous: bool,
+    /// Blend factor for calibration (0.0-1.0)
+    pub blend: f32,
 }
 
-fn default_osc_port() -> u16 {
-    9000
+impl Default for CalibrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            continuous: false,
+            blend: 1.0,
+        }
+    }
+}
+
+/// OSC output configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OscConfig {
+    /// Output mode (VRChat, Resonite, Generic)
+    pub output_mode: OutputMode,
+    /// OSC send address
+    pub send_address: String,
+    /// OSC send port
+    pub send_port: u16,
+}
+
+impl Default for OscConfig {
+    fn default() -> Self {
+        Self {
+            output_mode: OutputMode::default(),
+            send_address: "127.0.0.1".to_string(),
+            send_port: 9000,
+        }
+    }
+}
+
+/// Main application configuration with nested groups
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MutationConfig {
+    /// Module loading settings
+    pub module: ModuleConfig,
+    /// Mutator/processing settings
+    pub mutator: MutatorConfig,
+    /// Calibration settings
+    pub calibration: CalibrationConfig,
+    /// OSC output settings
+    pub osc: OscConfig,
+    /// Maximum FPS limit
+    #[serde(default = "default_max_fps")]
+    pub max_fps: Option<f32>,
 }
 
 fn default_max_fps() -> Option<f32> {
@@ -84,16 +139,10 @@ fn default_max_fps() -> Option<f32> {
 impl Default for MutationConfig {
     fn default() -> Self {
         Self {
-            module_runtime: ModuleRuntime::default(),
-            smoothness: 0.0,
-            mutator_enabled: true,
-            calibration_enabled: false,
-            calibration_continuous: default_calibration_continuous(),
-            calibration_blend: default_calibration_blend(),
-            output_mode: OutputMode::default(),
-            osc_send_address: default_osc_address(),
-            osc_send_port: default_osc_port(),
-            active_plugin: default_active_plugin(),
+            module: ModuleConfig::default(),
+            mutator: MutatorConfig::default(),
+            calibration: CalibrationConfig::default(),
+            osc: OscConfig::default(),
             max_fps: default_max_fps(),
         }
     }
@@ -122,15 +171,15 @@ pub struct UnifiedTrackingMutator {
 
 impl UnifiedTrackingMutator {
     pub fn new(config: MutationConfig) -> Self {
-        let min_cutoff = if config.smoothness <= 0.0 {
+        let min_cutoff = if config.mutator.smoothness <= 0.0 {
             10.0
         } else {
-            1.0 / (config.smoothness * 10.0)
+            1.0 / (config.mutator.smoothness * 10.0)
         };
-        let beta = if config.smoothness <= 0.0 {
+        let beta = if config.mutator.smoothness <= 0.0 {
             1.0
         } else {
-            0.5 * (1.0 - config.smoothness)
+            0.5 * (1.0 - config.mutator.smoothness)
         };
 
         Self {
@@ -192,7 +241,7 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn save_calibration(&self, _path: &Path) -> anyhow::Result<()> {
-        if !self.config.calibration_enabled {
+        if !self.config.calibration.enabled {
             return Ok(());
         }
         self.calibration_manager.save_current_profile()
@@ -203,13 +252,13 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn switch_profile(&mut self, new_profile_id: &str) -> anyhow::Result<()> {
-        let should_save = self.config.calibration_enabled && self.has_calibration_data();
+        let should_save = self.config.calibration.enabled && self.has_calibration_data();
         self.calibration_manager
             .switch_profile(new_profile_id, should_save)
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
-        if !self.config.mutator_enabled {
+        if !self.config.mutator.enabled {
             return;
         }
 
@@ -226,19 +275,19 @@ impl UnifiedTrackingMutator {
             }
         }
 
-        if self.config.calibration_enabled {
+        if self.config.calibration.enabled {
             for i in 0..data.shapes.len() {
                 if i < self.calibration_manager.data.shapes.len() {
                     let raw_weight = data.shapes[i].weight;
 
                     self.calibration_manager.data.shapes[i].update_calibration(
                         raw_weight,
-                        self.config.calibration_continuous,
+                        self.config.calibration.continuous,
                         dt,
                     );
 
                     data.shapes[i].weight = self.calibration_manager.data.shapes[i]
-                        .calculate_parameter(raw_weight, self.config.calibration_blend);
+                        .calculate_parameter(raw_weight, self.config.calibration.blend);
                 }
             }
         }

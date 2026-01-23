@@ -75,13 +75,34 @@ jobs:
           # Copy executable
           Copy-Item "$release_dir/vrft_d.exe" "$package_dir/"
           
-          # Copy manifest and config if they exist
+          # Copy manifest if it exists
           if (Test-Path "vrft_d/vrft_d.vrmanifest") {
             Copy-Item "vrft_d/vrft_d.vrmanifest" "$package_dir/"
           }
-          if (Test-Path "vrft_d/app/config.json") {
-            Copy-Item "vrft_d/app/config.json" "$package_dir/"
-          }
+          
+          # Generate default config with nested structure
+          $config = @{
+            module = @{
+              runtime = "Vrcft"
+              active = "VirtualDesktop.FaceTracking.dll"
+            }
+            mutator = @{
+              enabled = $true
+              smoothness = 0.0
+            }
+            calibration = @{
+              enabled = $false
+              continuous = $false
+              blend = 1.0
+            }
+            osc = @{
+              output_mode = "VRChat"
+              send_address = "127.0.0.1"
+              send_port = 9000
+            }
+            max_fps = 200.0
+          } | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText("$package_dir/config.json", $config)
           
           # Create plugins structure
           $native_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/native"
