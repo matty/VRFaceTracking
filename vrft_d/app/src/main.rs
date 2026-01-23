@@ -7,8 +7,12 @@ mod shape_legacy;
 mod strategies;
 
 use anyhow::Result;
-use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
-use common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
+use api::{
+    LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
+};
+use common::{
+    CalibrationData, CalibrationState, ModuleRuntime, MutationConfig, UnifiedTrackingMutator,
+};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::{CalibrationStatus, OscQueryHost};
@@ -112,17 +116,30 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut data = UnifiedTrackingData::default();
-
     struct LoadedModule {
         name: String,
         module: Box<dyn TrackingModule>,
     }
 
+    let config_path = Path::new("config.json");
+    let config = load_config(config_path).unwrap_or_else(|e| {
+        error!("Failed to load config: {}. Using defaults.", e);
+        MutationConfig::default()
+    });
+    info!("Loaded Config: {:?}", config);
+
     let mut modules: Vec<LoadedModule> = Vec::new();
-    let modules_dir = Path::new("plugins");
-    if modules_dir.exists() {
-        for entry in fs::read_dir(modules_dir)? {
+
+    let mut native_plugins_dir = Path::new("plugins/native").to_path_buf();
+    if !native_plugins_dir.exists() {
+        let parent_native = Path::new("../plugins/native");
+        if parent_native.exists() {
+            native_plugins_dir = parent_native.to_path_buf();
+        }
+    }
+
+    if native_plugins_dir.exists() {
+        for entry in fs::read_dir(&native_plugins_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path
@@ -161,8 +178,67 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        warn!("'plugins' directory not found. Creating it.");
-        fs::create_dir("plugins")?;
+        warn!("'plugins/native' directory not found. Creating it.");
+        fs::create_dir_all(native_plugins_dir)?;
+    }
+
+    // Check if the active plugin is already satisfied by a native module
+    let native_active_found = modules.iter().any(|m| m.name == config.active_plugin);
+
+    // Only attempt VRCFT loading if module_runtime is Vrcft and native module wasn't found
+    if config.module_runtime == ModuleRuntime::Vrcft && !native_active_found {
+        let mut vrcft_dir = Path::new("plugins/dotnet/modules").to_path_buf();
+        let mut host_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe").to_path_buf();
+
+        if !vrcft_dir.exists() {
+            let parent_vrcft = Path::new("../plugins/dotnet/modules");
+            if parent_vrcft.exists() {
+                vrcft_dir = parent_vrcft.to_path_buf();
+            }
+        }
+        if !host_exe.exists() {
+            let parent_host = Path::new("../plugins/dotnet/host/VrcftRuntime.exe");
+            if parent_host.exists() {
+                host_exe = parent_host.to_path_buf();
+            }
+        }
+
+        if vrcft_dir.exists() {
+            let target_dll = vrcft_dir.join(&config.active_plugin);
+            if target_dll.exists() {
+                if host_exe.exists() {
+                    let mut proxy = ProxyModule::new();
+                    info!("Starting VrcftRuntime for module: {:?}", target_dll);
+                    match proxy.start(&host_exe, &target_dll) {
+                        Ok(_) => {
+                            info!("✓ VrcftRuntime started successfully.");
+                            modules.push(LoadedModule {
+                                name: config.active_plugin.clone(),
+                                module: Box::new(proxy),
+                            });
+                        }
+                        Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
+                    }
+                } else {
+                    error!("✗ VrcftRuntime.exe not found at {:?}", host_exe);
+                }
+            } else {
+                debug!(
+                    "No VRCFT module found matching '{}' in '{:?}'",
+                    config.active_plugin, vrcft_dir
+                );
+            }
+        }
+    } else if config.module_runtime == ModuleRuntime::Native && !native_active_found {
+        debug!(
+            "module_runtime is Native but active plugin '{}' not found in native modules.",
+            config.active_plugin
+        );
+    } else if native_active_found {
+        info!(
+            "Active plugin '{}' is a native module. Skipping VRCFT search.",
+            config.active_plugin
+        );
     }
 
     if modules.is_empty() {
@@ -191,12 +267,7 @@ fn main() -> Result<()> {
     let calibration_request_for_host = calibration_request.clone();
     let calibration_request_for_consumer = calibration_request.clone();
 
-    let config_path = Path::new("config.json");
-    let config = load_config(config_path).unwrap_or_else(|e| {
-        error!("Failed to load config: {}. Using defaults.", e);
-        MutationConfig::default()
-    });
-    info!("Loaded Config: {:?}", config);
+    let mut data = UnifiedTrackingData::default();
 
     let osc_context = strategies::OscContext {
         tracking_data: shared_data_for_host.clone(),
