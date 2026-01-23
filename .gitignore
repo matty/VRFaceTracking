@@ -19,3 +19,7 @@ node_modules/
 vrft_d/calibration_*.json
 vrft_d/config.json
 vrft_d/plugins/*.dll
+
+# Dotnet
+obj/
+bin/

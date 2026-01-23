@@ -17,9 +17,9 @@ jobs:
     strategy:
       matrix:
         platform:
-          - os-name: Windows-x86_64
+          - target: x86_64-pc-windows-msvc
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
+        bundle_dotnet: [true, false]
 
     runs-on: ${{ matrix.platform.runs-on }}
 
@@ -35,6 +35,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Build Release
         run: cargo build --release --target ${{ matrix.platform.target }} -p vrft_d
 
@@ -44,12 +49,27 @@ jobs:
           cargo build --release --target ${{ matrix.platform.target }} -p livelink_module
           cargo build --release --target ${{ matrix.platform.target }} -p test_logger
 
+      - name: Build .NET Host
+        if: matrix.bundle_dotnet == true
+        run: |
+          dotnet publish vrft_d/dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -o vrft_d/dotnet/publish
+
       - name: Prepare Package
         shell: pwsh
         run: |
           $target = "${{ matrix.platform.target }}"
+          # Aligning with requested names:
+          # Bundled: vrft_d-x86_64-windows-vrcft-runtime
+          # Std: vrft_d-x86_64-pc-windows-std
+          if ("${{ matrix.bundle_dotnet }}" -eq "true") {
+            $artifact_name = "vrft_d-x86_64-windows-vrcft-runtime"
+          } else {
+            $artifact_name = "vrft_d-x86_64-pc-windows-std"
+          }
+          
+          $package_dir = $artifact_name
           $release_dir = "target/$target/release"
-          $package_dir = "vrft_d-$target"
+          
           New-Item -ItemType Directory -Force -Path $package_dir
           
           # Copy executable
@@ -63,25 +83,35 @@ jobs:
             Copy-Item "vrft_d/app/config.json" "$package_dir/"
           }
           
-          # Create plugins directory and copy plugin DLLs
-          $plugins_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins"
-          Copy-Item "$release_dir/vd_module.dll" "$plugins_dir/"
-          Copy-Item "$release_dir/livelink_module.dll" "$plugins_dir/"
-          Copy-Item "$release_dir/test_logger.dll" "$plugins_dir/"
+          # Create plugins structure
+          $native_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/native"
+          $dotnet_host_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/dotnet/host"
+          $dotnet_modules_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/dotnet/modules"
+          
+          # Copy native plugin DLLs
+          Copy-Item "$release_dir/vd_module.dll" "$native_dir/"
+          Copy-Item "$release_dir/livelink_module.dll" "$native_dir/"
+          Copy-Item "$release_dir/test_logger.dll" "$native_dir/"
+          
+          # Copy .NET Runtime if bundled
+          if ("${{ matrix.bundle_dotnet }}" -eq "true") {
+            Copy-Item "vrft_d/dotnet/publish/VrcftRuntime.exe" "$dotnet_host_dir/"
+          }
           
           # Create zip
-          Compress-Archive -Path "$package_dir/*" -DestinationPath "$package_dir.zip"
+          Compress-Archive -Path "$package_dir/*" -DestinationPath "$artifact_name.zip"
+          echo "ARTIFACT_NAME=$artifact_name" >> $env:GITHUB_ENV
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vrft_d-${{ matrix.platform.target }}
-          path: vrft_d-${{ matrix.platform.target }}.zip
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_NAME }}.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: vrft_d-${{ matrix.platform.target }}.zip
+          files: ${{ env.ARTIFACT_NAME }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
