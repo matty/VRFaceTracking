@@ -17,11 +17,26 @@ pub enum OutputMode {
     Generic,
 }
 
+/// Which module runtime to use for loading tracking modules.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ModuleRuntime {
+    /// Only load native (.dll/.so) modules from plugins/native
+    Native,
+    /// Use the .NET VRCFT runtime for .NET modules (default)
+    #[default]
+    #[serde(alias = "VRCFT", alias = "vrcft", alias = "DotNet", alias = "dotnet")]
+    Vrcft,
+}
+
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MutationConfig {
+    /// Which module runtime to use (Native or Vrcft)
+    #[serde(default)]
+    pub module_runtime: ModuleRuntime,
+
     pub smoothness: f32,
     pub mutator_enabled: bool,
     pub calibration_enabled: bool,
@@ -71,6 +86,7 @@ fn default_max_fps() -> Option<f32> {
 impl Default for MutationConfig {
     fn default() -> Self {
         Self {
+            module_runtime: ModuleRuntime::default(),
             smoothness: 0.0,
             mutator_enabled: true,
             calibration_enabled: false,

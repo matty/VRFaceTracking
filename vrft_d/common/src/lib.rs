@@ -10,4 +10,4 @@ mod mutator;
 
 pub use calibration::{CalibrationData, CalibrationParameter, CalibrationState};
 pub use euro_filter::EuroFilter;
-pub use mutator::{IntegrationAdapter, MutationConfig, OutputMode, UnifiedTrackingMutator};
+pub use mutator::{IntegrationAdapter, ModuleRuntime, MutationConfig, OutputMode, UnifiedTrackingMutator};

@@ -18,6 +18,10 @@ pub struct ProxyModule {
     child: Option<Child>,
     shmem_handle: Option<windows::Win32::Foundation::HANDLE>,
     shmem_ptr: Option<*mut std::ffi::c_void>,
+    proxy_exe: Option<std::path::PathBuf>,
+    module_dll: Option<std::path::PathBuf>,
+    last_runtime_heartbeat: u64,
+    last_runtime_update: std::time::Instant,
 }
 
 // SAFETY: The shared memory pointer is only accessed from a single thread.
@@ -50,6 +54,8 @@ struct MarshaledTrackingData {
     head_pos_z: f32,
 
     shapes: [f32; 200],
+    main_app_heartbeat: u64,
+    runtime_heartbeat: u64,
 }
 
 impl ProxyModule {
@@ -58,17 +64,49 @@ impl ProxyModule {
             child: None,
             shmem_handle: None,
             shmem_ptr: None,
+            proxy_exe: None,
+            module_dll: None,
+            last_runtime_heartbeat: 0,
+            last_runtime_update: std::time::Instant::now(),
         }
     }
 
     pub fn start(&mut self, proxy_exe: &Path, module_dll: &Path) -> Result<()> {
+        self.proxy_exe = Some(proxy_exe.to_path_buf());
+        self.module_dll = Some(module_dll.to_path_buf());
+
+        self.spawn_child()?;
+        self.connect_shmem()?;
+
+        log::info!("Successfully connected to shared memory: {}", SHMEM_NAME);
+        Ok(())
+    }
+
+    fn spawn_child(&mut self) -> Result<()> {
+        let proxy_exe = self.proxy_exe.as_ref().context("proxy_exe not set")?;
+        let module_dll = self.module_dll.as_ref().context("module_dll not set")?;
+
+        // Get current Rust log level and pass it to the .NET host
+        let log_level = match log::max_level() {
+            log::LevelFilter::Trace => "trace",
+            log::LevelFilter::Debug => "debug",
+            log::LevelFilter::Info => "info",
+            log::LevelFilter::Warn => "warn",
+            log::LevelFilter::Error => "error",
+            log::LevelFilter::Off => "error",
+        };
+
         let child = Command::new(proxy_exe)
             .arg(module_dll)
+            .arg(log_level)
             .spawn()
             .context("Failed to spawn VrcftRuntime")?;
 
         self.child = Some(child);
+        Ok(())
+    }
 
+    fn connect_shmem(&mut self) -> Result<()> {
         // Wait for the host to create shared memory, then open it
         let mut retry = 0;
         let max_retries = 100; // 10 seconds total
@@ -91,8 +129,7 @@ impl ProxyModule {
 
         self.shmem_handle = Some(handle);
         self.shmem_ptr = Some(ptr);
-
-        log::info!("Successfully connected to shared memory: {}", SHMEM_NAME);
+        self.last_runtime_update = std::time::Instant::now();
         Ok(())
     }
 
@@ -145,7 +182,18 @@ impl TrackingModule for ProxyModule {
     fn update(&mut self, data: &mut UnifiedTrackingData) -> Result<()> {
         if let Some(ptr) = self.shmem_ptr {
             unsafe {
-                let m_data = &*(ptr as *const MarshaledTrackingData);
+                let m_data_mut = &mut *(ptr as *mut MarshaledTrackingData);
+                
+                // Increment main app heartbeat
+                m_data_mut.main_app_heartbeat = m_data_mut.main_app_heartbeat.wrapping_add(1);
+
+                let m_data = &*m_data_mut;
+
+                // Check runtime heartbeat
+                if m_data.runtime_heartbeat != self.last_runtime_heartbeat {
+                    self.last_runtime_heartbeat = m_data.runtime_heartbeat;
+                    self.last_runtime_update = std::time::Instant::now();
+                }
 
                 data.eye.left.gaze.x = m_data.left_eye_gaze_x;
                 data.eye.left.gaze.y = m_data.left_eye_gaze_y;
@@ -176,6 +224,44 @@ impl TrackingModule for ProxyModule {
                 }
             }
         }
+
+        // Check for crash or timeout
+        let should_restart = if let Some(child) = &mut self.child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    log::warn!("VrcftRuntime exited with status: {}. Restarting...", status);
+                    true
+                }
+                Ok(None) => {
+                    // Still running, check heartbeat
+                    if self.last_runtime_update.elapsed() > std::time::Duration::from_secs(5) {
+                        log::warn!("VrcftRuntime heartbeat lost. Restarting...");
+                        let _ = self.child.as_mut().unwrap().kill();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error checking child process: {}. Restarting...", e);
+                    true
+                }
+            }
+        } else {
+            true
+        };
+
+        if should_restart {
+            self.unload();
+            if let Err(e) = self.spawn_child() {
+                log::error!("Failed to restart VrcftRuntime: {}", e);
+            } else if let Err(e) = self.connect_shmem() {
+                log::error!("Failed to reconnect to shared memory: {}", e);
+            } else {
+                log::info!("VrcftRuntime restarted successfully.");
+            }
+        }
+
         Ok(())
     }
 

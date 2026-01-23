@@ -8,7 +8,7 @@ mod strategies;
 
 use anyhow::Result;
 use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData, ProxyModule};
-use common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
+use common::{CalibrationData, CalibrationState, ModuleRuntime, MutationConfig, UnifiedTrackingMutator};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::{CalibrationStatus, OscQueryHost};
@@ -126,9 +126,16 @@ fn main() -> Result<()> {
 
     let mut modules: Vec<LoadedModule> = Vec::new();
 
-    let native_plugins_dir = Path::new("plugins/native");
+    let mut native_plugins_dir = Path::new("plugins/native").to_path_buf();
+    if !native_plugins_dir.exists() {
+        let parent_native = Path::new("../plugins/native");
+        if parent_native.exists() {
+            native_plugins_dir = parent_native.to_path_buf();
+        }
+    }
+
     if native_plugins_dir.exists() {
-        for entry in fs::read_dir(native_plugins_dir)? {
+        for entry in fs::read_dir(&native_plugins_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path
@@ -174,18 +181,31 @@ fn main() -> Result<()> {
     // Check if the active plugin is already satisfied by a native module
     let native_active_found = modules.iter().any(|m| m.name == config.active_plugin);
 
-    if !native_active_found {
-        info!("Checking for VRCFT module '{}' in 'plugins/dotnet/modules/'...", config.active_plugin);
-        
-        let vrcft_dir = Path::new("plugins/dotnet/modules");
+    // Only attempt VRCFT loading if module_runtime is Vrcft and native module wasn't found
+    if config.module_runtime == ModuleRuntime::Vrcft && !native_active_found {
+        let mut vrcft_dir = Path::new("plugins/dotnet/modules").to_path_buf();
+        let mut host_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe").to_path_buf();
+
+        if !vrcft_dir.exists() {
+            let parent_vrcft = Path::new("../plugins/dotnet/modules");
+            if parent_vrcft.exists() {
+                vrcft_dir = parent_vrcft.to_path_buf();
+            }
+        }
+        if !host_exe.exists() {
+            let parent_host = Path::new("../plugins/dotnet/host/VrcftRuntime.exe");
+            if parent_host.exists() {
+                host_exe = parent_host.to_path_buf();
+            }
+        }
+
         if vrcft_dir.exists() {
             let target_dll = vrcft_dir.join(&config.active_plugin);
             if target_dll.exists() {
-                let proxy_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe");
-                if proxy_exe.exists() {
+                if host_exe.exists() {
                     let mut proxy = ProxyModule::new();
                     info!("Starting VrcftRuntime for module: {:?}", target_dll);
-                    match proxy.start(proxy_exe, &target_dll) {
+                    match proxy.start(&host_exe, &target_dll) {
                         Ok(_) => {
                             info!("✓ VrcftRuntime started successfully.");
                             modules.push(LoadedModule {
@@ -196,13 +216,15 @@ fn main() -> Result<()> {
                         Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
                     }
                 } else {
-                    error!("✗ VrcftRuntime.exe not found at {:?}", proxy_exe);
+                    error!("✗ VrcftRuntime.exe not found at {:?}", host_exe);
                 }
             } else {
-                debug!("No VRCFT module found matching '{}' in 'plugins/dotnet/modules/'", config.active_plugin);
+                debug!("No VRCFT module found matching '{}' in '{:?}'", config.active_plugin, vrcft_dir);
             }
         }
-    } else {
+    } else if config.module_runtime == ModuleRuntime::Native && !native_active_found {
+        debug!("module_runtime is Native but active plugin '{}' not found in native modules.", config.active_plugin);
+    } else if native_active_found {
         info!("Active plugin '{}' is a native module. Skipping VRCFT search.", config.active_plugin);
     }
 

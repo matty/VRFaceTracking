@@ -36,6 +36,8 @@ public unsafe struct MarshaledTrackingData
     public float head_pos_z;
 
     public fixed float shapes[200];
+    public ulong main_app_heartbeat;
+    public ulong runtime_heartbeat;
 }
 
 class Program
@@ -53,12 +55,27 @@ class Program
 
     static void Main(string[] args)
     {
-        _loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        // Parse log level from second argument (matches Rust log levels)
+        LogLevel logLevel = LogLevel.Information;
+        if (args.Length >= 2)
+        {
+            logLevel = args[1].ToLowerInvariant() switch
+            {
+                "trace" => LogLevel.Trace,
+                "debug" => LogLevel.Debug,
+                "info" => LogLevel.Information,
+                "warn" => LogLevel.Warning,
+                "error" => LogLevel.Error,
+                _ => LogLevel.Information
+            };
+        }
+
+        _loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(logLevel));
         _logger = _loggerFactory.CreateLogger("ProxyHost");
 
         if (args.Length < 1)
         {
-            _logger.LogError("Usage: VrcftRuntime.exe <module_path>");
+            _logger.LogError("Usage: VrcftRuntime.exe <module_path> [log_level]");
             return;
         }
 
@@ -141,6 +158,23 @@ class Program
                     throw new Exception("Failed to get UnifiedTracking.Data from SDK assembly");
                 }
                 
+                // Set Status to Active if initialization succeeded
+                if (eyeSuccess || exprSuccess)
+                {
+                    var statusField = extTrackingModuleType.GetField("Status");
+                    if (statusField != null)
+                    {
+                        // Get ModuleState.Active from the SDK's ModuleState enum
+                        var moduleStateType = _sdkAssembly.GetType("VRCFaceTracking.Core.Library.ModuleState");
+                        if (moduleStateType != null)
+                        {
+                            var activeValue = Enum.Parse(moduleStateType, "Active");
+                            statusField.SetValue(_module, activeValue);
+                            _logger.LogInformation("Module Status set to Active");
+                        }
+                    }
+                }
+                
                 return;
             }
         }
@@ -160,8 +194,8 @@ class Program
 
         protected override Assembly Load(AssemblyName assemblyName)
         {
-            // System and Microsoft assemblies fallback to the default context
-            if (assemblyName.Name.StartsWith("System.") || assemblyName.Name == "netstandard" || assemblyName.Name.StartsWith("Microsoft."))
+            // System, Microsoft, and VRCFaceTracking.Core assemblies fallback to the default context (provided by the host)
+            if (assemblyName.Name.StartsWith("System.") || assemblyName.Name == "netstandard" || assemblyName.Name.StartsWith("Microsoft.") || assemblyName.Name == "VRCFaceTracking.Core")
             {
                 return null;
             }
@@ -189,6 +223,8 @@ class Program
     {
         _logger.LogInformation("Entering update loop...");
         var data = new MarshaledTrackingData();
+        ulong lastMainAppHeartbeat = 0;
+        DateTime lastMainAppUpdate = DateTime.UtcNow;
 
         while (true)
         {
@@ -230,16 +266,36 @@ class Program
                 data.head_pos_z = (float)head.HeadPosZ;
 
                 // Sync shapes
-                MarshaledTrackingData* dataPtr = &data;
-                float* shapesPtr = dataPtr->shapes;
                 int count = Math.Min(200, shapes.Length);
                 for (int i = 0; i < count; i++)
                 {
-                    shapesPtr[i] = (float)shapes[i].Weight;
+                    data.shapes[i] = (float)shapes[i].Weight;
                 }
 
-                // Write to shared memory
+                // Update runtime heartbeat
+                data.runtime_heartbeat++;
+
+                // Read current main_app_heartbeat from shared memory BEFORE writing,
+                // so we don't overwrite it with a stale value
+                MarshaledTrackingData currentShmem;
+                _accessor.Read(0, out currentShmem);
+                data.main_app_heartbeat = currentShmem.main_app_heartbeat;
+
+                // Write to shared memory (preserving main_app_heartbeat)
                 _accessor.Write(0, ref data);
+
+                // Check main app heartbeat for timeout detection
+                if (data.main_app_heartbeat != lastMainAppHeartbeat)
+                {
+                    lastMainAppHeartbeat = data.main_app_heartbeat;
+                    lastMainAppUpdate = DateTime.UtcNow;
+                }
+                else if (lastMainAppHeartbeat > 0 && (DateTime.UtcNow - lastMainAppUpdate).TotalSeconds > 10)
+                {
+                    // Only check timeout if we've ever seen a heartbeat (lastMainAppHeartbeat > 0)
+                    _logger.LogWarning("Main app heartbeat lost. Shutting down.");
+                    break;
+                }
                 
                 Thread.Sleep(10);
             }
