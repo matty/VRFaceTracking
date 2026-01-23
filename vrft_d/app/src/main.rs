@@ -7,8 +7,12 @@ mod shape_legacy;
 mod strategies;
 
 use anyhow::Result;
-use api::{LogLevel, ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData, ProxyModule};
-use common::{CalibrationData, CalibrationState, ModuleRuntime, MutationConfig, UnifiedTrackingMutator};
+use api::{
+    LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
+};
+use common::{
+    CalibrationData, CalibrationState, ModuleRuntime, MutationConfig, UnifiedTrackingMutator,
+};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::{CalibrationStatus, OscQueryHost};
@@ -219,13 +223,22 @@ fn main() -> Result<()> {
                     error!("✗ VrcftRuntime.exe not found at {:?}", host_exe);
                 }
             } else {
-                debug!("No VRCFT module found matching '{}' in '{:?}'", config.active_plugin, vrcft_dir);
+                debug!(
+                    "No VRCFT module found matching '{}' in '{:?}'",
+                    config.active_plugin, vrcft_dir
+                );
             }
         }
     } else if config.module_runtime == ModuleRuntime::Native && !native_active_found {
-        debug!("module_runtime is Native but active plugin '{}' not found in native modules.", config.active_plugin);
+        debug!(
+            "module_runtime is Native but active plugin '{}' not found in native modules.",
+            config.active_plugin
+        );
     } else if native_active_found {
-        info!("Active plugin '{}' is a native module. Skipping VRCFT search.", config.active_plugin);
+        info!(
+            "Active plugin '{}' is a native module. Skipping VRCFT search.",
+            config.active_plugin
+        );
     }
 
     if modules.is_empty() {
@@ -360,7 +373,7 @@ fn main() -> Result<()> {
                             Some(last) if now.duration_since(last).as_secs() < 5 => false,
                             _ => {
                                 cell.set(Some(now));
-                                  true
+                                true
                             }
                         });
                         if should_log {

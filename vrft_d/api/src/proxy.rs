@@ -134,8 +134,7 @@ impl ProxyModule {
     }
 
     /// Opens the shared memory created by the .NET proxy host using Windows API.
-    fn open_shared_memory(
-    ) -> Result<(windows::Win32::Foundation::HANDLE, *mut std::ffi::c_void)> {
+    fn open_shared_memory() -> Result<(windows::Win32::Foundation::HANDLE, *mut std::ffi::c_void)> {
         use windows::core::PCSTR;
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Memory::{
@@ -143,8 +142,7 @@ impl ProxyModule {
         };
 
         // Convert the name to a null-terminated C string
-        let name_cstr =
-            std::ffi::CString::new(SHMEM_NAME).context("Invalid shared memory name")?;
+        let name_cstr = std::ffi::CString::new(SHMEM_NAME).context("Invalid shared memory name")?;
 
         unsafe {
             // Open existing file mapping
@@ -183,7 +181,7 @@ impl TrackingModule for ProxyModule {
         if let Some(ptr) = self.shmem_ptr {
             unsafe {
                 let m_data_mut = &mut *(ptr as *mut MarshaledTrackingData);
-                
+
                 // Increment main app heartbeat
                 m_data_mut.main_app_heartbeat = m_data_mut.main_app_heartbeat.wrapping_add(1);
 
@@ -271,9 +269,10 @@ impl TrackingModule for ProxyModule {
 
         unsafe {
             if let Some(ptr) = self.shmem_ptr.take() {
-                let _ = UnmapViewOfFile(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
-                    Value: ptr,
-                });
+                let _ =
+                    UnmapViewOfFile(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: ptr,
+                    });
             }
             if let Some(handle) = self.shmem_handle.take() {
                 let _ = CloseHandle(handle);

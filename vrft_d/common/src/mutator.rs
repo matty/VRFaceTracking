@@ -28,8 +28,6 @@ pub enum ModuleRuntime {
     Vrcft,
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MutationConfig {
