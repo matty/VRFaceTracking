@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "../vrft_d/api" }
+api = { path = "../../vrft_d/api" }
 glam = "0.24"
 anyhow = "1.0"
 log = "0.4"
