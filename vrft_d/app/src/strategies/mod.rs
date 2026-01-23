@@ -44,19 +44,19 @@ pub fn create_strategy(
     config: &MutationConfig,
     context: OscContext,
 ) -> (PlatformBackend, Option<Router>, Option<Receiver<String>>) {
-    match config.output_mode {
+    match config.osc.output_mode {
         OutputMode::Generic => (
             PlatformBackend::Generic(GenericUdpStrategy::new(format!(
                 "{}:{}",
-                config.osc_send_address, config.osc_send_port
+                config.osc.send_address, config.osc.send_port
             ))),
             None,
             None,
         ),
         OutputMode::VRChat => {
             let (strategy, router, change_rx) = VRChatOscStrategy::new(
-                &format!("{}:{}", config.osc_send_address, config.osc_send_port),
-                config.osc_send_port + 1,
+                &format!("{}:{}", config.osc.send_address, config.osc.send_port),
+                config.osc.send_port + 1,
                 context,
             );
             (
@@ -68,7 +68,7 @@ pub fn create_strategy(
         OutputMode::Resonite => {
             let strategy = ResoniteOscStrategy::new(&format!(
                 "{}:{}",
-                config.osc_send_address, config.osc_send_port
+                config.osc.send_address, config.osc.send_port
             ));
             (PlatformBackend::Resonite(strategy), None, None)
         }

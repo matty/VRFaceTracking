@@ -23,3 +23,5 @@ vrft_d/plugins/*.dll
 # Dotnet
 obj/
 bin/
+
+.local/

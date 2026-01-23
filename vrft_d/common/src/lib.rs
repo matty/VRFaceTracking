@@ -11,5 +11,6 @@ mod mutator;
 pub use calibration::{CalibrationData, CalibrationParameter, CalibrationState};
 pub use euro_filter::EuroFilter;
 pub use mutator::{
-    IntegrationAdapter, ModuleRuntime, MutationConfig, OutputMode, UnifiedTrackingMutator,
+    CalibrationConfig, IntegrationAdapter, ModuleConfig, ModuleRuntime, MutationConfig,
+    MutatorConfig, OscConfig, OutputMode, UnifiedTrackingMutator,
 };

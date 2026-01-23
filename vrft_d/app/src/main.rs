@@ -38,12 +38,7 @@ fn load_config(path: &Path) -> Result<MutationConfig> {
         Ok(config)
     } else {
         info!("Config not found. Creating default at {:?}", path);
-        let config = MutationConfig {
-            smoothness: 0.0,
-            mutator_enabled: true,
-            calibration_enabled: false,
-            ..Default::default()
-        };
+        let config = MutationConfig::default();
         let file = fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
         serde_json::to_writer_pretty(writer, &config)?;
@@ -183,10 +178,10 @@ fn main() -> Result<()> {
     }
 
     // Check if the active plugin is already satisfied by a native module
-    let native_active_found = modules.iter().any(|m| m.name == config.active_plugin);
+    let native_active_found = modules.iter().any(|m| m.name == config.module.active);
 
     // Only attempt VRCFT loading if module_runtime is Vrcft and native module wasn't found
-    if config.module_runtime == ModuleRuntime::Vrcft && !native_active_found {
+    if config.module.runtime == ModuleRuntime::Vrcft && !native_active_found {
         let mut vrcft_dir = Path::new("plugins/dotnet/modules").to_path_buf();
         let mut host_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe").to_path_buf();
 
@@ -204,7 +199,7 @@ fn main() -> Result<()> {
         }
 
         if vrcft_dir.exists() {
-            let target_dll = vrcft_dir.join(&config.active_plugin);
+            let target_dll = vrcft_dir.join(&config.module.active);
             if target_dll.exists() {
                 if host_exe.exists() {
                     let mut proxy = ProxyModule::new();
@@ -213,7 +208,7 @@ fn main() -> Result<()> {
                         Ok(_) => {
                             info!("✓ VrcftRuntime started successfully.");
                             modules.push(LoadedModule {
-                                name: config.active_plugin.clone(),
+                                name: config.module.active.clone(),
                                 module: Box::new(proxy),
                             });
                         }
@@ -225,19 +220,19 @@ fn main() -> Result<()> {
             } else {
                 debug!(
                     "No VRCFT module found matching '{}' in '{:?}'",
-                    config.active_plugin, vrcft_dir
+                    config.module.active, vrcft_dir
                 );
             }
         }
-    } else if config.module_runtime == ModuleRuntime::Native && !native_active_found {
+    } else if config.module.runtime == ModuleRuntime::Native && !native_active_found {
         debug!(
             "module_runtime is Native but active plugin '{}' not found in native modules.",
-            config.active_plugin
+            config.module.active
         );
     } else if native_active_found {
         info!(
             "Active plugin '{}' is a native module. Skipping VRCFT search.",
-            config.active_plugin
+            config.module.active
         );
     }
 
@@ -282,7 +277,7 @@ fn main() -> Result<()> {
     }
     info!(
         "Transport Manager initialized with {:?} Strategy.",
-        config.output_mode
+        config.osc.output_mode
     );
 
     thread::spawn(move || {
@@ -514,7 +509,7 @@ fn main() -> Result<()> {
                 }
             });
 
-            if should_save && mutator.config.calibration_enabled && mutator.has_calibration_data() {
+            if should_save && mutator.config.calibration.enabled && mutator.has_calibration_data() {
                 if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
                     error!("Failed to auto-save calibration: {}", e);
                 } else {
@@ -536,7 +531,7 @@ fn main() -> Result<()> {
     while running.load(Ordering::SeqCst) {
         let mut any_updated = false;
 
-        let active_plugin = &config.active_plugin;
+        let active_plugin = &config.module.active;
         let mut active_module_found = false;
 
         for module_wrapper in &mut modules {
