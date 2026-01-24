@@ -207,6 +207,9 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn start_calibration(&mut self, duration_seconds: f32) {
+        if !self.config.calibration.enabled {
+            return;
+        }
         self.calibration_state = CalibrationState::Collecting {
             timer: 0.0,
             duration: duration_seconds,
@@ -248,11 +251,17 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn load_calibration(&mut self, _path: &Path) -> anyhow::Result<()> {
+        if !self.config.calibration.enabled {
+            return Ok(());
+        }
         self.calibration_manager.load_profile("default")
     }
 
     pub fn switch_profile(&mut self, new_profile_id: &str) -> anyhow::Result<()> {
-        let should_save = self.config.calibration.enabled && self.has_calibration_data();
+        if !self.config.calibration.enabled {
+            return Ok(());
+        }
+        let should_save = self.has_calibration_data();
         self.calibration_manager
             .switch_profile(new_profile_id, should_save)
     }
