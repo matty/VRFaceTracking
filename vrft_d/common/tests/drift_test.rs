@@ -3,12 +3,10 @@ use common::{MutationConfig, UnifiedTrackingMutator};
 
 #[test]
 fn test_continuous_calibration_updates_and_applies() {
-    let config = MutationConfig {
-        calibration_enabled: true,
-        calibration_continuous: true,
-        mutator_enabled: true,
-        ..Default::default()
-    };
+    let mut config = MutationConfig::default();
+    config.calibration.enabled = true;
+    config.calibration.continuous = true;
+    config.mutator.enabled = true;
 
     let mut mutator = UnifiedTrackingMutator::new(config);
 
