@@ -70,7 +70,7 @@ impl Parameter for EParam {
         let binary_relevant = self
             .binary_param
             .as_mut()
-            .map_or(false, |b| b.reset(avatar_params, param_types));
+            .is_some_and(|b| b.reset(avatar_params, param_types));
 
         bool_relevant || float_relevant || binary_relevant
     }

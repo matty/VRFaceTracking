@@ -67,7 +67,7 @@ impl Parameter for FloatParam {
                 matches_address(&self.name, addr)
                     && param_types
                         .get(*addr)
-                        .map_or(true, |t| *t == ParamType::Float)
+                        .is_none_or(|t| *t == ParamType::Float)
             })
             .cloned()
             .collect();
@@ -152,7 +152,7 @@ impl Parameter for BoolParam {
                 matches_address(&self.name, addr)
                     && param_types
                         .get(*addr)
-                        .map_or(true, |t| *t == ParamType::Bool)
+                        .is_none_or(|t| *t == ParamType::Bool)
             })
             .cloned()
             .collect();
