@@ -292,20 +292,15 @@ impl LiveLinkModule {
             };
         }
 
-        // map!(MouthUpperOverturn, lips.mouth_shrug_upper);
-        // map!(MouthLowerOverturn, lips.mouth_shrug_lower);
-        // MouthPout not supported directly
-        // map!(MouthPout, (lips.mouth_funnel + lips.mouth_pucker) / 2.0);
         map!(MouthCornerPullRight, lips.mouth_smile_right);
         map!(MouthCornerPullLeft, lips.mouth_smile_left);
         map!(MouthFrownRight, lips.mouth_frown_right);
         map!(MouthFrownLeft, lips.mouth_frown_left);
         map!(CheekPuffRight, lips.cheek_puff);
         map!(CheekPuffLeft, lips.cheek_puff);
-        map!(CheekSuckRight, lips.cheek_puff); // Mapping puff to suck? C# mapped CheekPuff to CheekPuff. Wait, C# mapped CheekPuff to CheekPuffRight/Left.
-        map!(CheekSuckLeft, lips.cheek_puff); // Wait, C# mapped CheekPuff to CheekPuffRight/Left.
-                                              // C# had: { LipShape_v2.CheekSuck, 0 },
-                                              // So CheekSuck was 0.
+        map!(CheekSuckRight, lips.cheek_puff);
+        map!(CheekSuckLeft, lips.cheek_puff); 
+
         map!(CheekSuckRight, 0.0);
         map!(CheekSuckLeft, 0.0);
         map!(MouthUpperUpRight, lips.mouth_upper_up_right);
@@ -316,21 +311,13 @@ impl LiveLinkModule {
         map!(LipSuckUpperLeft, lips.mouth_roll_upper);
         map!(LipSuckLowerRight, lips.mouth_roll_lower);
         map!(LipSuckLowerLeft, lips.mouth_roll_lower);
-        // MouthLowerOverlay not supported
-        // map!(MouthLowerOverlay, 0.0);
-        // TongueLongStep1/2 not supported
-        // map!(TongueLongStep1, lips.tongue_out);
+
         map!(TongueLeft, 0.0);
         map!(TongueRight, 0.0);
         map!(TongueUp, 0.0);
         map!(TongueDown, 0.0);
         map!(TongueRoll, 0.0);
-        // map!(TongueLongStep2, lips.tongue_out);
-        // Tongue morphs not supported
-        // map!(TongueUpRightMorph, 0.0);
-        // map!(TongueUpLeftMorph, 0.0);
-        // map!(TongueDownRightMorph, 0.0);
-        // map!(TongueDownLeftMorph, 0.0);
+        
     }
 
     fn parse_livelink_packet_v1(

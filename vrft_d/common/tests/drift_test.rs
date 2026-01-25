@@ -22,10 +22,9 @@ fn test_continuous_calibration_updates_and_applies() {
     }
 
     // Progress should have advanced (1/64 increments per accepted sample).
-    assert!(mutator.calibration_manager.data.shapes[0].progress > 0.0);
-
-    // After enough accepted samples, progress should have become non-zero.
-    assert!(mutator.calibration_manager.data.shapes[0].progress > 0.0);
+    // Use the new accessor method instead of direct field access.
+    let cal_data = mutator.get_calibration_data();
+    assert!(cal_data.shapes[0].progress > 0.0);
 
     // Now verify that calibration is being applied (output is not identical to raw).
     data.shapes[0].weight = 0.4;

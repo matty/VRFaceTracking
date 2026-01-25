@@ -2,10 +2,38 @@ use anyhow::Result;
 use log::{error, info, warn};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::Duration;
+
+/// OSC type tag to Rust type mapping
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OscParamType {
+    Float,
+    Bool,
+    Int,
+    Unknown,
+}
+
+impl OscParamType {
+    /// Parse OSC type tag string (e.g., "f", "i", "T", "F", "s")
+    pub fn from_osc_type_tag(tag: &str) -> Self {
+        match tag {
+            "f" | "d" => OscParamType::Float, // float or double
+            "i" | "h" => OscParamType::Int,   // int32 or int64
+            "T" | "F" => OscParamType::Bool,  // True or False constants
+            _ => OscParamType::Unknown,
+        }
+    }
+}
+
+/// Parameter info returned from OSC Query
+#[derive(Debug, Clone)]
+pub struct OscParameterInfo {
+    pub address: String,
+    pub param_type: OscParamType,
+}
 
 #[derive(Deserialize, Debug)]
 struct OscQueryNode {
@@ -18,13 +46,13 @@ struct OscQueryNode {
 }
 
 pub struct OscQueryService {
-    update_sender: Sender<Option<HashSet<String>>>,
+    update_sender: Sender<Option<Vec<OscParameterInfo>>>,
     change_receiver: Option<Receiver<String>>,
 }
 
 impl OscQueryService {
     pub fn new(
-        update_sender: Sender<Option<HashSet<String>>>,
+        update_sender: Sender<Option<Vec<OscParameterInfo>>>,
         change_receiver: Receiver<String>,
     ) -> Self {
         Self {
@@ -157,7 +185,7 @@ impl OscQueryService {
     }
 }
 
-fn fetch_with_retry(url: &str, sender: &Sender<Option<HashSet<String>>>) {
+fn fetch_with_retry(url: &str, sender: &Sender<Option<Vec<OscParameterInfo>>>) {
     let max_retries = 5;
     let retry_delay = Duration::from_secs(1);
     let url = url.to_string();
@@ -189,31 +217,34 @@ fn fetch_with_retry(url: &str, sender: &Sender<Option<HashSet<String>>>) {
             "Failed to fetch avatar parameters after {} attempts.",
             max_retries
         );
-        // Optionally reset to allow all if we can't determine parameters?
-        // Or keep previous state.
-        // let _ = sender.send(None);
     });
 }
 
-fn fetch_avatar_parameters(url: &str) -> Result<HashSet<String>> {
+fn fetch_avatar_parameters(url: &str) -> Result<Vec<OscParameterInfo>> {
     let resp = ureq::get(url).call()?;
     let root: OscQueryNode = resp.into_json()?;
 
-    let mut params = HashSet::new();
-    flatten_node(&root, &mut params);
+    let mut params = Vec::new();
+
+    // Navigate to /avatar/parameters
+    if let Some(contents) = &root.contents {
+        if let Some(parameters_node) = contents.get("parameters") {
+            flatten_node(parameters_node, &mut params);
+        }
+    }
 
     Ok(params)
 }
 
-fn flatten_node(node: &OscQueryNode, params: &mut HashSet<String>) {
-    // If it has a TYPE, it's a parameter (leaf or intermediate with value)
-    if node.type_.is_some() {
-        params.insert(node.full_path.clone());
-    }
-
+fn flatten_node(node: &OscQueryNode, params: &mut Vec<OscParameterInfo>) {
     if let Some(contents) = &node.contents {
         for child in contents.values() {
             flatten_node(child, params);
         }
+    } else if let Some(type_tag) = &node.type_ {
+        params.push(OscParameterInfo {
+            address: node.full_path.clone(),
+            param_type: OscParamType::from_osc_type_tag(type_tag),
+        });
     }
 }
