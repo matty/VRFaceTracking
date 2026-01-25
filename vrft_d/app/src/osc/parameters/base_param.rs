@@ -150,9 +150,7 @@ impl Parameter for BoolParam {
             .iter()
             .filter(|addr| {
                 matches_address(&self.name, addr)
-                    && param_types
-                        .get(*addr)
-                        .is_none_or(|t| *t == ParamType::Bool)
+                    && param_types.get(*addr).is_none_or(|t| *t == ParamType::Bool)
             })
             .cloned()
             .collect();

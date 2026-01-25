@@ -54,7 +54,7 @@ impl SmoothingMutation {
 impl Mutation for SmoothingMutation {
     fn initialize(&mut self, config: &MutationConfig) -> Result<()> {
         let (_min_cutoff, _beta) = Self::calculate_params(config.mutator.smoothness);
-        
+
         *self = Self::new(config);
         Ok(())
     }

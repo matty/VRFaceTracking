@@ -138,8 +138,6 @@ impl VRChatOsc {
             return Ok(());
         }
 
-
-
         // Encode the bundle
         let bundle = OscBundle {
             timetag: rosc::OscTime::from((0, 0)),
