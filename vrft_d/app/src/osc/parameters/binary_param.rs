@@ -105,7 +105,7 @@ impl Parameter for BinaryBaseParameter {
         for param_addr in avatar_params.iter() {
             let is_bool = param_types
                 .get(param_addr)
-                .map_or(false, |t| *t == ParamType::Bool);
+                .is_some_and(|t| *t == ParamType::Bool);
             if !is_bool {
                 continue;
             }

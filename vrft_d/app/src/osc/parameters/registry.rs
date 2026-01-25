@@ -464,7 +464,7 @@ impl ParameterRegistry {
         // ===== All Base Expressions (v2/{ExpressionName}) =====
         // Generate EParam for each UnifiedExpression
         for i in 0..UnifiedExpressions::Max as usize {
-            if let Some(expr) = UnifiedExpressions::try_from(i).ok() {
+            if let Ok(expr) = UnifiedExpressions::try_from(i) {
                 if expr != UnifiedExpressions::Max {
                     let name = format!("v2/{:?}", expr);
                     // Capture i for the closure
