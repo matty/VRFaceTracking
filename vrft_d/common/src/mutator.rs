@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::calibration_manager::CalibrationManager;
-use crate::{
-    CalibrationData, CalibrationState, EuroFilter, UnifiedExpressions, UnifiedTrackingData,
-};
+use crate::mutation_trait::Mutation;
+use crate::mutations::{CalibrationMutation, NormalizationMutation, SmoothingMutation};
+use crate::{CalibrationData, CalibrationState, UnifiedTrackingData};
+use anyhow::Result;
+use log::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputMode {
@@ -52,14 +53,31 @@ fn default_active_module() -> String {
     "vd_module.dll".to_string()
 }
 
+/// Configuration for a single pipeline step
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum PipelineStepConfig {
+    Smoothing {
+        #[serde(default)]
+        smoothness: Option<f32>,
+    },
+    Calibration {
+        #[serde(default)]
+        enabled: Option<bool>,
+    },
+    Normalization,
+}
+
 /// Mutator/processing configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MutatorConfig {
     /// Whether the mutator is enabled
     pub enabled: bool,
-    /// Smoothness factor for filtering (0.0 = no smoothing)
+    /// Smoothness factor for filtering (legacy, used if pipeline not specified)
     pub smoothness: f32,
+    /// Optional explicit pipeline configuration
+    pub pipeline: Option<Vec<PipelineStepConfig>>,
 }
 
 impl Default for MutatorConfig {
@@ -67,6 +85,7 @@ impl Default for MutatorConfig {
         Self {
             enabled: true,
             smoothness: 0.0,
+            pipeline: None,
         }
     }
 }
@@ -133,7 +152,7 @@ pub struct MutationConfig {
 }
 
 fn default_max_fps() -> Option<f32> {
-    Some(200.0)
+    Some(60.0)
 }
 
 impl Default for MutationConfig {
@@ -148,122 +167,136 @@ impl Default for MutationConfig {
     }
 }
 
+/// Factory function to create a mutation from pipeline step config
+fn create_mutation_from_step(
+    step: &PipelineStepConfig,
+    config: &MutationConfig,
+) -> Box<dyn Mutation> {
+    match step {
+        PipelineStepConfig::Smoothing { smoothness } => {
+            let mut cfg = config.clone();
+            if let Some(s) = smoothness {
+                cfg.mutator.smoothness = *s;
+            }
+            Box::new(SmoothingMutation::new(&cfg))
+        }
+        PipelineStepConfig::Calibration { enabled } => {
+            let mut cfg = config.clone();
+            if let Some(e) = enabled {
+                cfg.calibration.enabled = *e;
+            }
+            Box::new(CalibrationMutation::new(&cfg))
+        }
+        PipelineStepConfig::Normalization => Box::new(NormalizationMutation::new(config)),
+    }
+}
+
 pub struct UnifiedTrackingMutator {
     pub config: MutationConfig,
-    pub calibration_manager: CalibrationManager,
-    pub calibration_state: CalibrationState,
-
-    shapes: Vec<EuroFilter>,
-    gaze_left_x: EuroFilter,
-    gaze_left_y: EuroFilter,
-    gaze_right_x: EuroFilter,
-    gaze_right_y: EuroFilter,
-    pupil_left: EuroFilter,
-    pupil_right: EuroFilter,
-    openness_left: EuroFilter,
-    openness_right: EuroFilter,
-
-    min_pupil_l: f32,
-    max_pupil_l: f32,
-    min_pupil_r: f32,
-    max_pupil_r: f32,
+    pipeline: Vec<Box<dyn Mutation>>,
 }
 
 impl UnifiedTrackingMutator {
     pub fn new(config: MutationConfig) -> Self {
-        let min_cutoff = if config.mutator.smoothness <= 0.0 {
-            10.0
+        let pipeline = if let Some(ref steps) = config.mutator.pipeline {
+            info!(
+                "Building mutation pipeline from config ({} steps)",
+                steps.len()
+            );
+            steps
+                .iter()
+                .map(|step| create_mutation_from_step(step, &config))
+                .collect()
         } else {
-            1.0 / (config.mutator.smoothness * 10.0)
-        };
-        let beta = if config.mutator.smoothness <= 0.0 {
-            1.0
-        } else {
-            0.5 * (1.0 - config.mutator.smoothness)
+            info!("Using default mutation pipeline");
+            vec![
+                Box::new(SmoothingMutation::new(&config)) as Box<dyn Mutation>,
+                Box::new(CalibrationMutation::new(&config)),
+                Box::new(NormalizationMutation::new(&config)),
+            ]
         };
 
-        Self {
-            config,
-            calibration_manager: CalibrationManager::new(std::path::PathBuf::from(".")),
-            calibration_state: CalibrationState::Uncalibrated,
-            shapes: vec![
-                EuroFilter::new_with_config(min_cutoff, beta);
-                UnifiedExpressions::Max as usize
-            ],
-            gaze_left_x: EuroFilter::new_with_config(min_cutoff, beta),
-            gaze_left_y: EuroFilter::new_with_config(min_cutoff, beta),
-            gaze_right_x: EuroFilter::new_with_config(min_cutoff, beta),
-            gaze_right_y: EuroFilter::new_with_config(min_cutoff, beta),
-            pupil_left: EuroFilter::new_with_config(min_cutoff, beta),
-            pupil_right: EuroFilter::new_with_config(min_cutoff, beta),
-            openness_left: EuroFilter::new_with_config(min_cutoff, beta),
-            openness_right: EuroFilter::new_with_config(min_cutoff, beta),
+        Self { config, pipeline }
+    }
 
-            min_pupil_l: 999.0,
-            max_pupil_l: 0.0,
-            min_pupil_r: 999.0,
-            max_pupil_r: 0.0,
+    fn get_calibration_mutation(&self) -> Option<&CalibrationMutation> {
+        for m in &self.pipeline {
+            if let Some(c) = m.as_any().downcast_ref::<CalibrationMutation>() {
+                return Some(c);
+            }
         }
+        None
+    }
+
+    fn get_calibration_mutation_mut(&mut self) -> Option<&mut CalibrationMutation> {
+        for m in &mut self.pipeline {
+            if let Some(c) = m.as_any_mut().downcast_mut::<CalibrationMutation>() {
+                return Some(c);
+            }
+        }
+        None
     }
 
     pub fn start_calibration(&mut self, duration_seconds: f32) {
-        if !self.config.calibration.enabled {
-            return;
+        if let Some(c) = self.get_calibration_mutation_mut() {
+            c.start_calibration(duration_seconds);
         }
-        self.calibration_state = CalibrationState::Collecting {
-            timer: 0.0,
-            duration: duration_seconds,
-        };
-        self.calibration_manager.data.clear();
     }
 
     pub fn has_calibration_data(&self) -> bool {
-        self.calibration_manager
-            .data
-            .shapes
-            .iter()
-            .any(|p| p.max > 0.0)
+        if let Some(c) = self.get_calibration_mutation() {
+            c.has_calibration_data()
+        } else {
+            false
+        }
     }
 
     pub fn calibration_status(&self) -> (bool, f32, f32, f32) {
-        match self.calibration_state {
-            CalibrationState::Collecting { timer, duration } => {
-                let progress = if duration > 0.0 {
-                    (timer / duration).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                (true, timer, duration, progress)
-            }
-            _ => (false, 0.0, 0.0, 0.0),
+        if let Some(c) = self.get_calibration_mutation() {
+            c.calibration_status()
+        } else {
+            (false, 0.0, 0.0, 0.0)
+        }
+    }
+
+    pub fn get_calibration_state(&self) -> CalibrationState {
+        if let Some(c) = self.get_calibration_mutation() {
+            c.state.clone()
+        } else {
+            CalibrationState::Uncalibrated
         }
     }
 
     pub fn get_calibration_data(&self) -> CalibrationData {
-        self.calibration_manager.data.clone()
+        if let Some(c) = self.get_calibration_mutation() {
+            c.get_calibration_data()
+        } else {
+            CalibrationData::default()
+        }
     }
 
-    pub fn save_calibration(&self, _path: &Path) -> anyhow::Result<()> {
-        if !self.config.calibration.enabled {
-            return Ok(());
+    pub fn save_calibration(&self, path: &Path) -> Result<()> {
+        if let Some(c) = self.get_calibration_mutation() {
+            c.save_calibration(path)
+        } else {
+            Ok(())
         }
-        self.calibration_manager.save_current_profile()
     }
 
-    pub fn load_calibration(&mut self, _path: &Path) -> anyhow::Result<()> {
-        if !self.config.calibration.enabled {
-            return Ok(());
+    pub fn load_calibration(&mut self, path: &Path) -> Result<()> {
+        if let Some(c) = self.get_calibration_mutation_mut() {
+            c.load_calibration(path)
+        } else {
+            Ok(())
         }
-        self.calibration_manager.load_profile("default")
     }
 
-    pub fn switch_profile(&mut self, new_profile_id: &str) -> anyhow::Result<()> {
-        if !self.config.calibration.enabled {
-            return Ok(());
+    pub fn switch_profile(&mut self, new_profile_id: &str) -> Result<()> {
+        if let Some(c) = self.get_calibration_mutation_mut() {
+            c.switch_profile(new_profile_id)
+        } else {
+            Ok(())
         }
-        let should_save = self.has_calibration_data();
-        self.calibration_manager
-            .switch_profile(new_profile_id, should_save)
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
@@ -271,86 +304,8 @@ impl UnifiedTrackingMutator {
             return;
         }
 
-        if let CalibrationState::Collecting {
-            mut timer,
-            duration,
-        } = self.calibration_state
-        {
-            timer += dt;
-            if timer >= duration {
-                self.calibration_state = CalibrationState::Calibrated;
-            } else {
-                self.calibration_state = CalibrationState::Collecting { timer, duration };
-            }
-        }
-
-        if self.config.calibration.enabled {
-            for i in 0..data.shapes.len() {
-                if i < self.calibration_manager.data.shapes.len() {
-                    let raw_weight = data.shapes[i].weight;
-
-                    self.calibration_manager.data.shapes[i].update_calibration(
-                        raw_weight,
-                        self.config.calibration.continuous,
-                        dt,
-                    );
-
-                    data.shapes[i].weight = self.calibration_manager.data.shapes[i]
-                        .calculate_parameter(raw_weight, self.config.calibration.blend);
-                }
-            }
-        }
-
-        data.eye.left.openness = self.openness_left.filter(data.eye.left.openness);
-        data.eye.right.openness = self.openness_right.filter(data.eye.right.openness);
-
-        data.eye.left.gaze.x = self.gaze_left_x.filter(data.eye.left.gaze.x);
-        data.eye.left.gaze.y = self.gaze_left_y.filter(data.eye.left.gaze.y);
-        data.eye.right.gaze.x = self.gaze_right_x.filter(data.eye.right.gaze.x);
-        data.eye.right.gaze.y = self.gaze_right_y.filter(data.eye.right.gaze.y);
-
-        data.eye.left.pupil_diameter_mm = self.pupil_left.filter(data.eye.left.pupil_diameter_mm);
-        data.eye.right.pupil_diameter_mm =
-            self.pupil_right.filter(data.eye.right.pupil_diameter_mm);
-
-        for i in 0..data.shapes.len() {
-            if i < self.shapes.len() {
-                data.shapes[i].weight = self.shapes[i].filter(data.shapes[i].weight);
-            }
-        }
-
-        let curr_l = data.eye.left.pupil_diameter_mm;
-        let curr_r = data.eye.right.pupil_diameter_mm;
-
-        if curr_l > 0.0 {
-            if curr_l < self.min_pupil_l {
-                self.min_pupil_l = curr_l;
-            }
-            if curr_l > self.max_pupil_l {
-                self.max_pupil_l = curr_l;
-            }
-        }
-        if curr_r > 0.0 {
-            if curr_r < self.min_pupil_r {
-                self.min_pupil_r = curr_r;
-            }
-            if curr_r > self.max_pupil_r {
-                self.max_pupil_r = curr_r;
-            }
-        }
-
-        if (self.max_pupil_l - self.min_pupil_l) > 0.001 {
-            data.eye.left.pupil_diameter_mm =
-                (curr_l - self.min_pupil_l) / (self.max_pupil_l - self.min_pupil_l);
-        } else {
-            data.eye.left.pupil_diameter_mm = 0.5;
-        }
-
-        if (self.max_pupil_r - self.min_pupil_r) > 0.001 {
-            data.eye.right.pupil_diameter_mm =
-                (curr_r - self.min_pupil_r) / (self.max_pupil_r - self.min_pupil_r);
-        } else {
-            data.eye.right.pupil_diameter_mm = 0.5;
+        for mutation in &mut self.pipeline {
+            mutation.mutate(data, dt);
         }
     }
 }

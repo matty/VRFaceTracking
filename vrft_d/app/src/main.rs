@@ -2,8 +2,6 @@ mod osc;
 mod steamvr;
 
 mod dispatcher;
-mod parameter_solver;
-mod shape_legacy;
 mod strategies;
 
 use anyhow::Result;
@@ -16,7 +14,6 @@ use common::{
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::{CalibrationStatus, OscQueryHost};
-use parameter_solver::ParameterSolver;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -377,8 +374,9 @@ fn main() -> Result<()> {
                     }
 
                     for i in 0..UnifiedExpressions::Max as usize {
-                        if let Some(name) = ParameterSolver::get_expression_name(i) {
-                            if let Some(&val) = debug.get(name) {
+                        if let Ok(expr) = UnifiedExpressions::try_from(i) {
+                            let name = format!("v2/{:?}", expr);
+                            if let Some(&val) = debug.get(&name) {
                                 received_data.shapes[i].weight = val;
                             } else if let Some(short_name) = name.strip_prefix("v2/") {
                                 if let Some(&val) = debug.get(short_name) {
@@ -441,7 +439,7 @@ fn main() -> Result<()> {
             if let Ok(mut req) = calibration_request_for_consumer.write() {
                 if let Some(duration) = *req {
                     if matches!(
-                        mutator.calibration_state,
+                        mutator.get_calibration_state(),
                         CalibrationState::Uncalibrated | CalibrationState::Calibrated
                     ) {
                         info!("Starting calibration from HTTP request: {}s", duration);
@@ -454,7 +452,7 @@ fn main() -> Result<()> {
             mutator.mutate(&mut received_data, dt);
 
             let is_calibrating_now = matches!(
-                mutator.calibration_state,
+                mutator.get_calibration_state(),
                 CalibrationState::Collecting { .. }
             );
             if was_calibrating && !is_calibrating_now {
@@ -489,9 +487,11 @@ fn main() -> Result<()> {
 
             if let Some(rx) = &avatar_change_rx {
                 while let Ok(avatar_id) = rx.try_recv() {
-                    info!("Switching calibration profile to avatar: {}", avatar_id);
-                    if let Err(e) = mutator.switch_profile(&avatar_id) {
-                        error!("Failed to switch calibration profile: {}", e);
+                    if config.calibration.enabled {
+                        info!("Switching calibration profile to avatar: {}", avatar_id);
+                        if let Err(e) = mutator.switch_profile(&avatar_id) {
+                            error!("Failed to switch calibration profile: {}", e);
+                        }
                     }
                 }
             }
