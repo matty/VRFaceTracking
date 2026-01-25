@@ -299,7 +299,7 @@ impl LiveLinkModule {
         map!(CheekPuffRight, lips.cheek_puff);
         map!(CheekPuffLeft, lips.cheek_puff);
         map!(CheekSuckRight, lips.cheek_puff);
-        map!(CheekSuckLeft, lips.cheek_puff); 
+        map!(CheekSuckLeft, lips.cheek_puff);
 
         map!(CheekSuckRight, 0.0);
         map!(CheekSuckLeft, 0.0);
@@ -317,7 +317,6 @@ impl LiveLinkModule {
         map!(TongueUp, 0.0);
         map!(TongueDown, 0.0);
         map!(TongueRoll, 0.0);
-        
     }
 
     fn parse_livelink_packet_v1(
