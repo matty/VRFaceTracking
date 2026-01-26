@@ -44,8 +44,6 @@ class Program
 {
     private static ILoggerFactory _loggerFactory;
     private static ILogger _logger;
-    
-    // Dynamic dispatch - no compile-time SDK type dependencies
     private static dynamic _module;
     private static dynamic _unifiedTracking;
     private static Assembly _sdkAssembly;
@@ -55,7 +53,6 @@ class Program
 
     static void Main(string[] args)
     {
-        // Parse log level from second argument (matches Rust log levels)
         LogLevel logLevel = LogLevel.Information;
         if (args.Length >= 2)
         {
@@ -140,7 +137,6 @@ class Program
                 bool exprSuccess = result.Item2;
                 _logger.LogInformation("Initialized {Module}. Eye: {Eye}, Expr: {Expr}", type.Name, eyeSuccess, exprSuccess);
                 
-                // Get the SDK assembly and UnifiedTracking class from the module's context
                 _sdkAssembly = extTrackingModuleType.Assembly;
                 var unifiedTrackingType = _sdkAssembly.GetType("VRCFaceTracking.UnifiedTracking");
                 if (unifiedTrackingType != null)
@@ -230,7 +226,6 @@ class Program
         {
             try
             {
-                // Call Update on module (dynamic dispatch)
                 _module.Update();
                 
                 // Access UnifiedTracking.Data dynamically
