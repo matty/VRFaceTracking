@@ -52,7 +52,7 @@ jobs:
       - name: Build .NET Host
         if: matrix.bundle_dotnet == true
         run: |
-          dotnet publish vrft_d/dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -o vrft_d/dotnet/publish
+          dotnet publish vrft_d/dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o vrft_d/dotnet/publish
 
       - name: Prepare Package
         shell: pwsh
@@ -100,7 +100,7 @@ jobs:
               send_address = "127.0.0.1"
               send_port = 9000
             }
-            max_fps = 200.0
+            max_fps = 60.0
           } | ConvertTo-Json -Depth 10
           [System.IO.File]::WriteAllText("$package_dir/config.json", $config)
           
