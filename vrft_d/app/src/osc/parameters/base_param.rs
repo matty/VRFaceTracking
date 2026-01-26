@@ -285,8 +285,7 @@ mod tests {
             "Fallback should use /FT/ prefix"
         );
         assert_eq!(
-            param.addresses[0],
-            "/avatar/parameters/FT/v2/TongueOut",
+            param.addresses[0], "/avatar/parameters/FT/v2/TongueOut",
             "Fallback address should be correct"
         );
     }
@@ -312,11 +311,15 @@ mod tests {
             "Should have matched + FT fallback"
         );
         assert!(
-            param.addresses.contains(&"/avatar/parameters/v2/TongueOut".to_string()),
+            param
+                .addresses
+                .contains(&"/avatar/parameters/v2/TongueOut".to_string()),
             "Should include matched address"
         );
         assert!(
-            param.addresses.contains(&"/avatar/parameters/FT/v2/TongueOut".to_string()),
+            param
+                .addresses
+                .contains(&"/avatar/parameters/FT/v2/TongueOut".to_string()),
             "Should include /FT/ fallback"
         );
     }
@@ -473,6 +476,9 @@ mod tests {
 
         // Second send with same value
         let messages2 = param.process(&data);
-        assert!(messages2.is_empty(), "Second send should be empty (delta check)");
+        assert!(
+            messages2.is_empty(),
+            "Second send should be empty (delta check)"
+        );
     }
 }
