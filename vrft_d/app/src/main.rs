@@ -1,8 +1,7 @@
-mod osc;
-mod steamvr;
+use vrft_d::osc;
 
-mod dispatcher;
-mod strategies;
+use vrft_d::dispatcher;
+use vrft_d::strategies;
 
 use anyhow::Result;
 use api::{
@@ -22,7 +21,6 @@ use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
-use steamvr::SteamVRManager;
 
 use dispatcher::Dispatcher;
 
@@ -72,33 +70,6 @@ fn main() -> Result<()> {
     debug!("Debug logging is active");
     trace!("Trace logging is active");
 
-    let args: Vec<String> = std::env::args().collect();
-    let enable_steamvr = args.iter().any(|arg| arg == "--enable-steamvr");
-
-    let _steamvr_manager = if enable_steamvr {
-        match SteamVRManager::init() {
-            Ok(Some(manager)) => {
-                let manifest_path = std::env::current_dir()?.join("vrft_d.vrmanifest");
-                if manifest_path.exists() {
-                    if let Err(e) = manager.register_manifest(&manifest_path) {
-                        warn!("Failed to register SteamVR manifest: {}", e);
-                    }
-                } else {
-                    warn!("SteamVR manifest not found at {:?}", manifest_path);
-                }
-                Some(manager)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                warn!("Error initializing SteamVR: {}", e);
-                None
-            }
-        }
-    } else {
-        info!("SteamVR integration disabled by default. Use --enable-steamvr to enable.");
-        None
-    };
-
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
@@ -111,6 +82,8 @@ fn main() -> Result<()> {
     struct LoadedModule {
         name: String,
         module: Box<dyn TrackingModule>,
+        #[allow(dead_code)]
+        _lib: Option<Library>, // Keep library loaded; dropped on shutdown
     }
 
     let config_path = Path::new("config.json");
@@ -146,21 +119,21 @@ fn main() -> Result<()> {
 
                 info!("Loading module: {:?}", path);
 
-                match (|| -> Result<Box<dyn TrackingModule>> {
+                match (|| -> Result<(Box<dyn TrackingModule>, Library)> {
                     unsafe {
                         let lib = Library::new(&path)?;
                         let func: Symbol<unsafe extern "C" fn() -> Box<dyn TrackingModule>> =
                             lib.get(b"create_module")?;
                         let module = func();
-                        std::mem::forget(lib);
-                        Ok(module)
+                        Ok((module, lib))
                     }
                 })() {
-                    Ok(module) => {
+                    Ok((module, lib)) => {
                         info!("✓ Successfully loaded module: {}", filename);
                         modules.push(LoadedModule {
                             name: filename,
                             module,
+                            _lib: Some(lib),
                         });
                     }
                     Err(e) => {
@@ -177,7 +150,7 @@ fn main() -> Result<()> {
     // Check if the active plugin is already satisfied by a native module
     let native_active_found = modules.iter().any(|m| m.name == config.module.active);
 
-    // Only attempt VRCFT loading if module_runtime is Vrcft and native module wasn't found
+    // Attempt .NET module loading if configured and native module not found
     if config.module.runtime == ModuleRuntime::Vrcft && !native_active_found {
         let mut vrcft_dir = Path::new("plugins/dotnet/modules").to_path_buf();
         let mut host_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe").to_path_buf();
@@ -207,6 +180,7 @@ fn main() -> Result<()> {
                             modules.push(LoadedModule {
                                 name: config.module.active.clone(),
                                 module: Box::new(proxy),
+                                _lib: None,
                             });
                         }
                         Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
@@ -342,15 +316,26 @@ fn main() -> Result<()> {
         let mut last_frame_time = std::time::Instant::now();
         let mut was_calibrating = false;
 
+        // Hold last received data to prevent glitches on tracking loss
+        let mut last_received_data: Option<UnifiedTrackingData> = None;
+
         while running_consumer.load(Ordering::SeqCst) {
-            let mut received_data =
-                rx.recv_timeout(Duration::from_millis(100))
-                    .unwrap_or_else(|_| {
+            let mut received_data = match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(data) => {
+                    last_received_data = Some(data.clone());
+                    data
+                }
+                Err(_) => {
+                    // On timeout, use last known data to prevent glitches
+                    // Only fall back to default if we've never received any data
+                    last_received_data.clone().unwrap_or_else(|| {
                         let mut d = UnifiedTrackingData::default();
                         d.eye.left.openness = 1.0;
                         d.eye.right.openness = 1.0;
                         d
-                    });
+                    })
+                }
+            };
 
             if let Ok(debug) = debug_state_for_consumer.read() {
                 if !debug.is_empty() {
@@ -477,7 +462,9 @@ fn main() -> Result<()> {
                 }
             }
 
-            if let Ok(mut write_guard) = shared_data_for_consumer.write() {
+            // Update shared data for OSC Query host (non-blocking)
+            // Skip update if lock is held - host doesn't need every frame
+            if let Ok(mut write_guard) = shared_data_for_consumer.try_write() {
                 *write_guard = received_data.clone();
             }
 

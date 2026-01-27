@@ -7,9 +7,11 @@ use log::{error, info};
 use rosc::{decoder, encoder, OscBundle, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub struct VRChatOsc {
     socket: Mutex<Option<UdpSocket>>,
@@ -21,6 +23,7 @@ pub struct VRChatOsc {
     change_tx_query: Sender<String>,
     pub change_rx: Mutex<Option<Receiver<String>>>,
     pub param_registry: Mutex<ParameterRegistry>,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl VRChatOsc {
@@ -41,6 +44,7 @@ impl VRChatOsc {
             change_tx_query,
             change_rx: Mutex::new(Some(change_rx_calibration)),
             param_registry: Mutex::new(ParameterRegistry::new()),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -58,25 +62,37 @@ impl VRChatOsc {
         }
 
         let recv_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.receive_port))?;
+        // Set socket timeout for graceful shutdown (500ms)
+        recv_socket.set_read_timeout(Some(Duration::from_millis(500)))?;
+
         let tx_calib = self.change_tx_calibration.clone();
         let tx_query = self.change_tx_query.clone();
         let port = self.receive_port;
+        let shutdown = self.shutdown_flag.clone();
 
         thread::spawn(move || {
             info!("Listening for OSC messages on port {}", port);
             let mut buf = [0u8; 2048];
-            loop {
+            while !shutdown.load(Ordering::Relaxed) {
                 match recv_socket.recv_from(&mut buf) {
                     Ok((size, _addr)) => {
                         if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
                             handle_packet(packet, &tx_calib, &tx_query);
                         }
                     }
+                    Err(ref e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        // Timeout - check shutdown flag and continue
+                        continue;
+                    }
                     Err(e) => {
                         error!("Error receiving OSC packet: {}", e);
                     }
                 }
             }
+            info!("OSC listener thread exiting gracefully");
         });
 
         *self.socket.lock().unwrap() = Some(socket);
@@ -176,6 +192,12 @@ impl VRChatOsc {
                 Err(anyhow::anyhow!("OSC Send failed: {}", e))
             }
         }
+    }
+
+    /// Signal the OSC listener thread to shut down gracefully
+    pub fn shutdown(&self) {
+        info!("Shutting down OSC listener...");
+        self.shutdown_flag.store(true, Ordering::Relaxed);
     }
 }
 

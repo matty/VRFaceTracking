@@ -13,13 +13,11 @@ public unsafe struct MarshaledTrackingData
 {
     public float left_eye_gaze_x;
     public float left_eye_gaze_y;
-    public float left_eye_gaze_z;
     public float left_eye_pupil_diameter_mm;
     public float left_eye_openness;
 
     public float right_eye_gaze_x;
     public float right_eye_gaze_y;
-    public float right_eye_gaze_z;
     public float right_eye_pupil_diameter_mm;
     public float right_eye_openness;
 

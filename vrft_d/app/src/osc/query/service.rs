@@ -160,12 +160,24 @@ impl OscQueryService {
             }
         });
 
-        // Change Listener Thread
+        // Change Listener Thread (with debounce)
         if let Some(change_rx) = self.change_receiver.take() {
             thread::spawn(move || {
                 info!("Starting Avatar Change Listener Thread...");
+                let mut last_fetch_time: Option<std::time::Instant> = None;
+                const DEBOUNCE_MS: u64 = 500;
+
                 while change_rx.recv().is_ok() {
+                    // Debounce: skip if last fetch was less than DEBOUNCE_MS ago
+                    if let Some(last) = last_fetch_time {
+                        if last.elapsed().as_millis() < DEBOUNCE_MS as u128 {
+                            info!("Avatar change debounced (too rapid).");
+                            continue;
+                        }
+                    }
+
                     info!("Avatar Change Signal Received. Re-fetching...");
+                    last_fetch_time = Some(std::time::Instant::now());
 
                     let url_opt = {
                         let lock = current_url_change.lock().unwrap();
@@ -221,8 +233,8 @@ fn fetch_with_retry(url: &str, sender: &Sender<Option<Vec<OscParameterInfo>>>) {
 }
 
 fn fetch_avatar_parameters(url: &str) -> Result<Vec<OscParameterInfo>> {
-    let resp = ureq::get(url).call()?;
-    let root: OscQueryNode = resp.into_json()?;
+    let mut resp = ureq::get(url).call()?;
+    let root: OscQueryNode = resp.body_mut().read_json()?;
 
     let mut params = Vec::new();
 
@@ -237,14 +249,21 @@ fn fetch_avatar_parameters(url: &str) -> Result<Vec<OscParameterInfo>> {
 }
 
 fn flatten_node(node: &OscQueryNode, params: &mut Vec<OscParameterInfo>) {
+    // First, recurse into any child contents
     if let Some(contents) = &node.contents {
         for child in contents.values() {
             flatten_node(child, params);
         }
-    } else if let Some(type_tag) = &node.type_ {
-        params.push(OscParameterInfo {
-            address: node.full_path.clone(),
-            param_type: OscParamType::from_osc_type_tag(type_tag),
-        });
+    }
+
+    // Then, add this node as a parameter if it has a TYPE tag.
+    // A node can have both contents AND a type, so check type_ independently.
+    if let Some(type_tag) = &node.type_ {
+        if !type_tag.is_empty() {
+            params.push(OscParameterInfo {
+                address: node.full_path.clone(),
+                param_type: OscParamType::from_osc_type_tag(type_tag),
+            });
+        }
     }
 }

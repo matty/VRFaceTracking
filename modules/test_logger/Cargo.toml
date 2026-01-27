@@ -1,5 +1,5 @@
 [package]
-name = "livelink_module"
+name = "test_logger"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 api = { path = "../../vrft_d/api" }
-glam = "0.24"
-anyhow = "1.0"
 log = "0.4"
+anyhow = "1.0"

@@ -30,6 +30,8 @@ pub struct BinaryBaseParameter {
     get_value: Arc<dyn Fn(&UnifiedTrackingData) -> f32 + Send + Sync>,
     last_bits: HashMap<String, bool>,
     negative_relevant: bool,
+    send_on_load: bool,
+    needs_initial_send: bool,
 }
 
 impl BinaryBaseParameter {
@@ -46,14 +48,43 @@ impl BinaryBaseParameter {
             get_value: Arc::new(get_value),
             last_bits: HashMap::new(),
             negative_relevant: false,
+            send_on_load: false,
+            needs_initial_send: false,
         }
     }
 
-    /// Matches `{prefix}{name}N` or `{prefix}FT/{name}N` where N is a number.
+    /// Create a parameter that sends all bit values immediately when it becomes relevant
+    pub fn new_with_send_on_load(
+        name: &str,
+        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            bit_params: Vec::new(),
+            negative_param: None,
+            max_binary_int: 0,
+            relevant: false,
+            get_value: Arc::new(get_value),
+            last_bits: HashMap::new(),
+            negative_relevant: false,
+            send_on_load: true,
+            needs_initial_send: false,
+        }
+    }
+
+    /// Matches binary parameter patterns:
+    /// - `/avatar/parameters/{name}N`
+    /// - `/avatar/parameters/FT/{name}N`
+    /// - `/avatar/parameters/OSCm/Binary/FT/{name}N` (VRChat OSCmooth format)
     fn matches_binary_pattern(&self, addr: &str) -> Option<u32> {
         let stripped = addr.strip_prefix(DEFAULT_PREFIX)?;
 
-        let after_prefix = stripped.strip_prefix("FT/").unwrap_or(stripped);
+        // Try various prefix combinations
+        let after_prefix = stripped
+            .strip_prefix("OSCm/Binary/FT/") // VRChat OSCmooth binary format
+            .or_else(|| stripped.strip_prefix("OSCm/Binary/"))
+            .or_else(|| stripped.strip_prefix("FT/"))
+            .unwrap_or(stripped);
 
         if !after_prefix.starts_with(&self.name) {
             return None;
@@ -85,16 +116,22 @@ impl Parameter for BinaryBaseParameter {
         &mut self,
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
-    ) -> bool {
+    ) -> usize {
         self.bit_params.clear();
         self.last_bits.clear();
         self.negative_relevant = false;
 
-        let neg_name = format!("{}Negative", self.name);
-        let neg_addr = format!("{}{}", DEFAULT_PREFIX, neg_name);
-        if avatar_params.contains(&neg_addr) || avatar_params.iter().any(|a| a.ends_with(&neg_name))
-        {
-            self.negative_param = Some(neg_addr.clone());
+        // Check for negative param in various prefix formats
+        let neg_suffix = format!("{}Negative", self.name);
+
+        // Find the negative param address - try different prefix patterns
+        let neg_addr = avatar_params
+            .iter()
+            .find(|a| a.ends_with(&neg_suffix))
+            .cloned();
+
+        if let Some(addr) = neg_addr {
+            self.negative_param = Some(addr);
             self.negative_relevant = true;
         } else {
             self.negative_param = None;
@@ -119,7 +156,7 @@ impl Parameter for BinaryBaseParameter {
 
         if params_to_create.is_empty() {
             self.relevant = false;
-            return false;
+            return 0;
         }
 
         self.max_binary_int = 2u32.pow(params_to_create.len() as u32);
@@ -133,7 +170,13 @@ impl Parameter for BinaryBaseParameter {
         );
 
         self.relevant = true;
-        true
+
+        // Mark for initial send if sendOnLoad is enabled
+        if self.send_on_load {
+            self.needs_initial_send = true;
+        }
+        // Count: number of bit params + 1 for negative param if present
+        self.bit_params.len() + if self.negative_relevant { 1 } else { 0 }
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
@@ -144,12 +187,18 @@ impl Parameter for BinaryBaseParameter {
         let value = (self.get_value)(data);
         let mut messages = Vec::new();
 
+        // Force send all bits on first call after reset if sendOnLoad is enabled
+        let force_send = self.needs_initial_send;
+        if self.needs_initial_send {
+            self.needs_initial_send = false;
+        }
+
         if let Some(neg_addr) = &self.negative_param {
             if self.negative_relevant {
                 let is_negative = value < 0.0;
                 let last_neg = self.last_bits.get(neg_addr).copied();
 
-                if last_neg != Some(is_negative) {
+                if force_send || last_neg != Some(is_negative) {
                     messages.push(OscMessage {
                         addr: neg_addr.clone(),
                         args: vec![OscType::Bool(is_negative)],
@@ -163,7 +212,7 @@ impl Parameter for BinaryBaseParameter {
             let bit_value = self.process_binary(value, *shift_index);
             let last_bit = self.last_bits.get(addr).copied();
 
-            if last_bit != Some(bit_value) {
+            if force_send || last_bit != Some(bit_value) {
                 messages.push(OscMessage {
                     addr: addr.clone(),
                     args: vec![OscType::Bool(bit_value)],
@@ -277,6 +326,8 @@ mod tests {
             get_value: Arc::new(|_| 0.5),
             last_bits: HashMap::new(),
             negative_relevant: false,
+            send_on_load: false,
+            needs_initial_send: false,
         };
 
         // 0.5 * 16 = 8 = 1000 in binary

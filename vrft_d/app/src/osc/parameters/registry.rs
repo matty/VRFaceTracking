@@ -1,5 +1,9 @@
 use super::base_param::FloatParam;
 use super::eparam::EParam;
+use super::legacy_eye::create_legacy_eye_parameters;
+use super::legacy_lip::create_legacy_lip_parameters;
+use super::native_param::create_native_parameters;
+use super::unified_expressions::create_unified_expression_params;
 use super::{ParamType, Parameter};
 use common::{UnifiedExpressions, UnifiedTrackingData};
 use rosc::OscMessage;
@@ -18,7 +22,7 @@ impl ParameterRegistry {
             data.shapes[expr as usize].weight
         }
 
-        // ===== Head Tracking =====
+        // Head Tracking
         parameters.push(Box::new(FloatParam::new("v2/Head/Yaw", |d| {
             d.head.head_yaw
         })));
@@ -38,27 +42,27 @@ impl ParameterRegistry {
             d.head.head_pos_z
         })));
 
-        // ===== Eye Gaze =====
+        // Eye Gaze
         parameters.push(Box::new(EParam::simple("v2/EyeLeftX", |d| {
-            -d.eye.left.gaze.x
+            d.eye.left.gaze.x
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeLeftY", |d| {
-            -d.eye.left.gaze.y
+            d.eye.left.gaze.y
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeRightX", |d| {
-            -d.eye.right.gaze.x
+            d.eye.right.gaze.x
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeRightY", |d| {
-            -d.eye.right.gaze.y
+            d.eye.right.gaze.y
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeX", |d| {
-            -(d.eye.left.gaze.x + d.eye.right.gaze.x) / 2.0
+            (d.eye.left.gaze.x + d.eye.right.gaze.x) / 2.0
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeY", |d| {
-            -(d.eye.left.gaze.y + d.eye.right.gaze.y) / 2.0
+            (d.eye.left.gaze.y + d.eye.right.gaze.y) / 2.0
         })));
 
-        // ===== Eye Pupils =====
+        // Eye Pupils
         parameters.push(Box::new(EParam::simple("v2/PupilDilation", |d| {
             (d.eye.left.pupil_diameter_mm + d.eye.right.pupil_diameter_mm) / 2.0
         })));
@@ -72,7 +76,7 @@ impl ParameterRegistry {
             (d.eye.left.pupil_diameter_mm + d.eye.right.pupil_diameter_mm) * 0.05
         })));
 
-        // ===== Eye Openness =====
+        // Eye Openness
         parameters.push(Box::new(EParam::simple("v2/EyeOpenLeft", |d| {
             d.eye.left.openness
         })));
@@ -92,12 +96,12 @@ impl ParameterRegistry {
             1.0 - (d.eye.left.openness + d.eye.right.openness) / 2.0
         })));
 
-        // ===== Eye Wide =====
+        // Eye Wide
         parameters.push(Box::new(EParam::simple("v2/EyeWide", |d| {
             w(d, UnifiedExpressions::EyeWideLeft).max(w(d, UnifiedExpressions::EyeWideRight))
         })));
 
-        // ===== Eye Lid =====
+        // Eye Lid
         parameters.push(Box::new(EParam::simple("v2/EyeLidLeft", |d| {
             d.eye.left.openness * 0.75 + w(d, UnifiedExpressions::EyeWideLeft) * 0.25
         })));
@@ -111,7 +115,7 @@ impl ParameterRegistry {
                     * 0.25
         })));
 
-        // ===== Eye Squint =====
+        // Eye Squint
         parameters.push(Box::new(EParam::simple("v2/EyeSquint", |d| {
             w(d, UnifiedExpressions::EyeSquintLeft).max(w(d, UnifiedExpressions::EyeSquintRight))
         })));
@@ -119,7 +123,7 @@ impl ParameterRegistry {
             w(d, UnifiedExpressions::EyeSquintLeft).max(w(d, UnifiedExpressions::EyeSquintRight))
         })));
 
-        // ===== Brow Simple Shapes =====
+        // Brow Simple Shapes
         fn brow_up_right(d: &UnifiedTrackingData) -> f32 {
             w(d, UnifiedExpressions::BrowOuterUpRight) * 0.6
                 + w(d, UnifiedExpressions::BrowInnerUpRight) * 0.4
@@ -137,7 +141,7 @@ impl ParameterRegistry {
                 + w(d, UnifiedExpressions::BrowPinchLeft) * 0.25
         }
 
-        // ===== Eyebrows Compacted =====
+        // Eyebrows Compacted
         parameters.push(Box::new(EParam::simple("v2/BrowUp", |d| {
             (brow_up_right(d) + brow_up_left(d)) * 0.5
         })));
@@ -175,7 +179,7 @@ impl ParameterRegistry {
             (right.min(1.0) - brow_down_right(d) + left.min(1.0) - brow_down_left(d)) * 0.5
         })));
 
-        // ===== Jaw Combined =====
+        // Jaw Combined
         parameters.push(Box::new(EParam::simple("v2/JawX", |d| {
             w(d, UnifiedExpressions::JawRight) - w(d, UnifiedExpressions::JawLeft)
         })));
@@ -183,7 +187,7 @@ impl ParameterRegistry {
             w(d, UnifiedExpressions::JawForward) - w(d, UnifiedExpressions::JawBackward)
         })));
 
-        // ===== Cheeks Combined =====
+        // Cheeks Combined
         parameters.push(Box::new(EParam::simple("v2/CheekSquint", |d| {
             (w(d, UnifiedExpressions::CheekSquintLeft) + w(d, UnifiedExpressions::CheekSquintRight))
                 / 2.0
@@ -206,7 +210,7 @@ impl ParameterRegistry {
                 / 2.0
         })));
 
-        // ===== Mouth Direction =====
+        // Mouth Direction
         parameters.push(Box::new(EParam::simple("v2/MouthUpperX", |d| {
             w(d, UnifiedExpressions::MouthUpperRight) - w(d, UnifiedExpressions::MouthUpperLeft)
         })));
@@ -221,7 +225,7 @@ impl ParameterRegistry {
                     / 2.0
         })));
 
-        // ===== Lip Combined =====
+        // Lip Combined
         parameters.push(Box::new(EParam::simple("v2/LipSuckUpper", |d| {
             (w(d, UnifiedExpressions::LipSuckUpperRight)
                 + w(d, UnifiedExpressions::LipSuckUpperLeft))
@@ -326,7 +330,7 @@ impl ParameterRegistry {
             },
         )));
 
-        // ===== Mouth Combined =====
+        // Mouth Combined
         parameters.push(Box::new(EParam::simple("v2/MouthUpperUp", |d| {
             w(d, UnifiedExpressions::MouthUpperUpRight) * 0.5
                 + w(d, UnifiedExpressions::MouthUpperUpLeft) * 0.5
@@ -389,7 +393,7 @@ impl ParameterRegistry {
             },
         )));
 
-        // ===== Lip Corners Combined =====
+        // Lip Corners Combined
         parameters.push(Box::new(EParam::simple("v2/MouthCornerYLeft", |d| {
             w(d, UnifiedExpressions::MouthCornerSlantLeft)
                 - w(d, UnifiedExpressions::MouthFrownLeft)
@@ -406,7 +410,7 @@ impl ParameterRegistry {
                 * 0.5
         })));
 
-        // ===== SmileFrown =====
+        // SmileFrown
         fn mouth_smile_right(d: &UnifiedTrackingData) -> f32 {
             w(d, UnifiedExpressions::MouthCornerPullRight) * 0.8
                 + w(d, UnifiedExpressions::MouthCornerSlantRight) * 0.2
@@ -447,7 +451,7 @@ impl ParameterRegistry {
                 - (mouth_sad_left(d) + mouth_sad_right(d)) / 2.0
         })));
 
-        // ===== Tongue Combined =====
+        // Tongue Combined
         parameters.push(Box::new(EParam::simple("v2/TongueX", |d| {
             w(d, UnifiedExpressions::TongueRight) - w(d, UnifiedExpressions::TongueLeft)
         })));
@@ -461,7 +465,7 @@ impl ParameterRegistry {
             w(d, UnifiedExpressions::TongueFlat) - w(d, UnifiedExpressions::TongueSquish)
         })));
 
-        // ===== All Base Expressions (v2/{ExpressionName}) =====
+        // All Base Expressions (v2/{ExpressionName})
         // Generate EParam for each UnifiedExpression
         for i in 0..UnifiedExpressions::Max as usize {
             if let Ok(expr) = UnifiedExpressions::try_from(i) {
@@ -476,6 +480,102 @@ impl ParameterRegistry {
             }
         }
 
+        // v2/ Simple Expressions
+        parameters.push(Box::new(EParam::simple("v2/BrowUpRight", |d| {
+            w(d, UnifiedExpressions::BrowOuterUpRight) * 0.6
+                + w(d, UnifiedExpressions::BrowInnerUpRight) * 0.4
+        })));
+        parameters.push(Box::new(EParam::simple("v2/BrowUpLeft", |d| {
+            w(d, UnifiedExpressions::BrowOuterUpLeft) * 0.6
+                + w(d, UnifiedExpressions::BrowInnerUpLeft) * 0.4
+        })));
+        parameters.push(Box::new(EParam::simple("v2/BrowDownRight", |d| {
+            w(d, UnifiedExpressions::BrowLowererRight) * 0.75
+                + w(d, UnifiedExpressions::BrowPinchRight) * 0.25
+        })));
+        parameters.push(Box::new(EParam::simple("v2/BrowDownLeft", |d| {
+            w(d, UnifiedExpressions::BrowLowererLeft) * 0.75
+                + w(d, UnifiedExpressions::BrowPinchLeft) * 0.25
+        })));
+        parameters.push(Box::new(EParam::simple("v2/MouthSmileRight", |d| {
+            w(d, UnifiedExpressions::MouthCornerPullRight) * 0.8
+                + w(d, UnifiedExpressions::MouthCornerSlantRight) * 0.2
+        })));
+        parameters.push(Box::new(EParam::simple("v2/MouthSmileLeft", |d| {
+            w(d, UnifiedExpressions::MouthCornerPullLeft) * 0.8
+                + w(d, UnifiedExpressions::MouthCornerSlantLeft) * 0.2
+        })));
+        parameters.push(Box::new(EParam::simple("v2/MouthSadRight", |d| {
+            w(d, UnifiedExpressions::MouthFrownRight)
+                .max(w(d, UnifiedExpressions::MouthStretchRight))
+        })));
+        parameters.push(Box::new(EParam::simple("v2/MouthSadLeft", |d| {
+            w(d, UnifiedExpressions::MouthFrownLeft).max(w(d, UnifiedExpressions::MouthStretchLeft))
+        })));
+
+        // UnifiedExpressions Base Params (~70)
+        parameters.extend(create_unified_expression_params());
+
+        // Legacy Eye Parameters
+        parameters.extend(create_legacy_eye_parameters());
+
+        // Legacy SRanipal Lip Parameters
+        parameters.extend(create_legacy_lip_parameters());
+
+        // Native Tracking Paths
+        parameters.extend(create_native_parameters());
+
+        // Status Indicators
+        // These are sent on avatar load to communicate tracking state
+        use super::base_param::BoolParam;
+
+        // Eye tracking active: true if we have valid gaze data
+        // Check if gaze values are non-zero or pupil has valid diameter
+        parameters.push(Box::new(BoolParam::new_with_send_on_load(
+            "FT/EyeTrackingActive",
+            |d| {
+                // Consider eye tracking active if we have any non-default gaze or pupil data
+                d.eye.left.gaze.x != 0.0
+                    || d.eye.left.gaze.y != 0.0
+                    || d.eye.right.gaze.x != 0.0
+                    || d.eye.right.gaze.y != 0.0
+                    || d.eye.left.pupil_diameter_mm > 0.1
+                    || d.eye.right.pupil_diameter_mm > 0.1
+            },
+        )));
+
+        // Expression tracking active: true if any expression weights are active
+        parameters.push(Box::new(BoolParam::new_with_send_on_load(
+            "FT/ExpressionTrackingActive",
+            |d| {
+                // Check if any expression weight is above threshold
+                d.shapes.iter().any(|s| s.weight > 0.01)
+            },
+        )));
+
+        // Lip tracking active: based on mouth-related expression activity
+        parameters.push(Box::new(BoolParam::new_with_send_on_load(
+            "FT/LipTrackingActive",
+            |d| {
+                // Check mouth/jaw expressions specifically
+                let mouth_exprs = [
+                    UnifiedExpressions::JawOpen,
+                    UnifiedExpressions::MouthClosed,
+                    UnifiedExpressions::MouthCornerPullLeft,
+                    UnifiedExpressions::MouthCornerPullRight,
+                    UnifiedExpressions::MouthFrownLeft,
+                    UnifiedExpressions::MouthFrownRight,
+                    UnifiedExpressions::TongueOut,
+                ];
+                mouth_exprs.iter().any(|e| w(d, *e) > 0.01)
+            },
+        )));
+
+        log::info!(
+            "Parameter Registry initialized with {} parameters",
+            parameters.len()
+        );
+
         Self { parameters }
     }
 
@@ -488,19 +588,22 @@ impl ParameterRegistry {
         let mut relevant_count = 0usize;
 
         for param in self.parameters.iter_mut() {
-            if param.reset(avatar_params, param_types) {
-                relevant_count += 1;
-            }
+            relevant_count += param.reset(avatar_params, param_types);
         }
 
-        // Count actual addresses for detailed logging
-        // Note: This is approximate since we can't easily introspect Box<dyn Parameter>
         log::info!(
             "Parameter Registry: {} parameters marked relevant to avatar",
             relevant_count
         );
+
+        // Debug: Count FT-related params
+        let ft_params: Vec<_> = avatar_params
+            .iter()
+            .filter(|p| p.contains("/FT/") || p.contains("/v2/"))
+            .collect();
+
         log::debug!(
-            "Avatar has {} total params ({} bool, {} float, {} int)",
+            "Avatar has {} total params ({} bool, {} float, {} int), {} with FT/v2 prefix",
             avatar_params.len(),
             param_types
                 .values()
@@ -513,7 +616,8 @@ impl ParameterRegistry {
             param_types
                 .values()
                 .filter(|t| **t == ParamType::Int)
-                .count()
+                .count(),
+            ft_params.len()
         );
     }
 

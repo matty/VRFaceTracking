@@ -22,8 +22,9 @@ pub enum OutputMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum ModuleRuntime {
     /// Only load native (.dll/.so) modules from plugins/native
+    #[serde(alias = "native")]
     Native,
-    /// Use the .NET VRCFT runtime for .NET modules (default)
+    /// Use the .NET runtime for legacy modules (default)
     #[default]
     #[serde(alias = "VRCFT", alias = "vrcft", alias = "DotNet", alias = "dotnet")]
     Vrcft,
@@ -33,7 +34,7 @@ pub enum ModuleRuntime {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleConfig {
-    /// Which module runtime to use (Native or Vrcft)
+    /// Which module runtime to use (Native or .NET)
     pub runtime: ModuleRuntime,
     /// The active module/plugin to load
     #[serde(default = "default_active_module")]
