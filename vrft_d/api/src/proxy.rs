@@ -1,4 +1,4 @@
-//! Proxy module that communicates with a .NET VrcftRuntime process via shared memory.
+//! Proxy module that communicates with a .NET runtime process via shared memory.
 //!
 //! Uses raw Windows API for compatibility with .NET's MemoryMappedFile.
 
@@ -8,10 +8,10 @@ use std::process::{Child, Command};
 
 use crate::{ModuleLogger, TrackingModule, UnifiedTrackingData};
 
-/// The shared memory name (must match the C# side exactly).
+/// Shared memory name (must match the .NET side exactly).
 const SHMEM_NAME: &str = "Local\\VRCFT_TrackingData";
 
-/// Size of the marshaled data structure (must match C# MarshaledTrackingData).
+/// Size of the marshaled data structure (must match .NET MarshaledTrackingData).
 const SHMEM_SIZE: usize = std::mem::size_of::<MarshaledTrackingData>();
 
 pub struct ProxyModule {
@@ -31,13 +31,11 @@ unsafe impl Send for ProxyModule {}
 struct MarshaledTrackingData {
     left_eye_gaze_x: f32,
     left_eye_gaze_y: f32,
-    left_eye_gaze_z: f32,
     left_eye_pupil_diameter_mm: f32,
     left_eye_openness: f32,
 
     right_eye_gaze_x: f32,
     right_eye_gaze_y: f32,
-    right_eye_gaze_z: f32,
     right_eye_pupil_diameter_mm: f32,
     right_eye_openness: f32,
 
@@ -195,13 +193,11 @@ impl TrackingModule for ProxyModule {
 
                 data.eye.left.gaze.x = m_data.left_eye_gaze_x;
                 data.eye.left.gaze.y = m_data.left_eye_gaze_y;
-                data.eye.left.gaze.z = m_data.left_eye_gaze_z;
                 data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;
                 data.eye.left.openness = m_data.left_eye_openness;
 
                 data.eye.right.gaze.x = m_data.right_eye_gaze_x;
                 data.eye.right.gaze.y = m_data.right_eye_gaze_y;
-                data.eye.right.gaze.z = m_data.right_eye_gaze_z;
                 data.eye.right.pupil_diameter_mm = m_data.right_eye_pupil_diameter_mm;
                 data.eye.right.openness = m_data.right_eye_openness;
 

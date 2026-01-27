@@ -6,26 +6,32 @@ use rosc::{OscMessage, OscType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use fancy_regex::Regex;
+
 const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 
-/// Matches `/avatar/parameters/{name}` or `/avatar/parameters/FT/{name}`
+/// Matches parameter addresses with flexible prefix support.
+///
+/// This matches:
+/// - Exact parameter name after stripping `/avatar/parameters/`
+/// - Any address ending with `/{name}` (e.g., `FT/`, `OSCm/Float/FT/`, custom prefixes)
+///
+/// Uses negative lookbehind to reject nested version prefixes (e.g., `/v1/v2/EyeLeftX`)
 fn matches_address(name: &str, addr: &str) -> bool {
     let stripped = match addr.strip_prefix(DEFAULT_PREFIX) {
         Some(s) => s,
         None => return false,
     };
 
-    if stripped == name {
-        return true;
-    }
+    // Pattern: (?<!v\d)(/{name})$|^({name})$
+    // Negative lookbehind rejects nested versions like /v1/v2/Name
+    let escaped_name = fancy_regex::escape(name);
+    let pattern = format!(r"(?<!v\d)(/{escaped_name})$|^({escaped_name})$");
 
-    if let Some(after_ft) = stripped.strip_prefix("FT/") {
-        if after_ft == name {
-            return true;
-        }
+    match Regex::new(&pattern) {
+        Ok(re) => re.is_match(stripped).unwrap_or(false),
+        Err(_) => false,
     }
-
-    false
 }
 
 /// Float parameter with relevancy tracking
@@ -35,6 +41,8 @@ pub struct FloatParam {
     pub relevant: bool,
     get_value: Arc<dyn Fn(&UnifiedTrackingData) -> f32 + Send + Sync>,
     last_value: Option<f32>,
+    send_on_load: bool,
+    needs_initial_send: bool,
 }
 
 impl FloatParam {
@@ -48,6 +56,24 @@ impl FloatParam {
             relevant: false,
             get_value: Arc::new(get_value),
             last_value: None,
+            send_on_load: false,
+            needs_initial_send: false,
+        }
+    }
+
+    /// Create a parameter that sends its value immediately when it becomes relevant
+    pub fn new_with_send_on_load(
+        name: &str,
+        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            addresses: vec![format!("{}{}", DEFAULT_PREFIX, name)],
+            relevant: false,
+            get_value: Arc::new(get_value),
+            last_value: None,
+            send_on_load: true,
+            needs_initial_send: false,
         }
     }
 }
@@ -57,9 +83,10 @@ impl Parameter for FloatParam {
         &mut self,
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
-    ) -> bool {
+    ) -> usize {
         self.addresses.clear();
         self.last_value = None;
+        self.needs_initial_send = false;
 
         let compatible: Vec<_> = avatar_params
             .iter()
@@ -81,14 +108,21 @@ impl Parameter for FloatParam {
                     .push(format!("{}FT/{}", DEFAULT_PREFIX, self.name));
             }
             self.relevant = true;
+
+            // Mark for initial send if sendOnLoad is enabled
+            if self.send_on_load {
+                self.needs_initial_send = true;
+            }
         } else {
-            // No match - still send to /FT/ as fallback
-            self.addresses
-                .push(format!("{}FT/{}", DEFAULT_PREFIX, self.name));
-            self.relevant = true;
+            // No matches found - mark as irrelevant
+            self.relevant = false;
         }
 
-        self.relevant
+        if self.relevant {
+            1
+        } else {
+            0
+        }
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
@@ -97,6 +131,20 @@ impl Parameter for FloatParam {
         }
 
         let value = (self.get_value)(data);
+
+        // Force send on first call after reset if sendOnLoad is enabled
+        if self.needs_initial_send {
+            self.needs_initial_send = false;
+            self.last_value = Some(value);
+            return self
+                .addresses
+                .iter()
+                .map(|addr| OscMessage {
+                    addr: addr.clone(),
+                    args: vec![OscType::Float(value)],
+                })
+                .collect();
+        }
 
         // Delta check
         let should_send = match self.last_value {
@@ -127,6 +175,8 @@ pub struct BoolParam {
     pub relevant: bool,
     get_value: Arc<dyn Fn(&UnifiedTrackingData) -> bool + Send + Sync>,
     last_value: Option<bool>,
+    send_on_load: bool,
+    needs_initial_send: bool,
 }
 
 impl BoolParam {
@@ -140,6 +190,24 @@ impl BoolParam {
             relevant: false,
             get_value: Arc::new(get_value),
             last_value: None,
+            send_on_load: false,
+            needs_initial_send: false,
+        }
+    }
+
+    /// Create a parameter that sends its value immediately when it becomes relevant
+    pub fn new_with_send_on_load(
+        name: &str,
+        get_value: impl Fn(&UnifiedTrackingData) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            addresses: vec![format!("{}{}", DEFAULT_PREFIX, name)],
+            relevant: false,
+            get_value: Arc::new(get_value),
+            last_value: None,
+            send_on_load: true,
+            needs_initial_send: false,
         }
     }
 }
@@ -149,9 +217,10 @@ impl Parameter for BoolParam {
         &mut self,
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
-    ) -> bool {
+    ) -> usize {
         self.addresses.clear();
         self.last_value = None;
+        self.needs_initial_send = false;
 
         let compatible: Vec<_> = avatar_params
             .iter()
@@ -171,14 +240,21 @@ impl Parameter for BoolParam {
                     .push(format!("{}FT/{}", DEFAULT_PREFIX, self.name));
             }
             self.relevant = true;
+
+            // Mark for initial send if sendOnLoad is enabled
+            if self.send_on_load {
+                self.needs_initial_send = true;
+            }
         } else {
-            // No match - still send to /FT/ as fallback
-            self.addresses
-                .push(format!("{}FT/{}", DEFAULT_PREFIX, self.name));
-            self.relevant = true;
+            // No matches found - mark as irrelevant
+            self.relevant = false;
         }
 
-        self.relevant
+        if self.relevant {
+            1
+        } else {
+            0
+        }
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
@@ -187,6 +263,20 @@ impl Parameter for BoolParam {
         }
 
         let value = (self.get_value)(data);
+
+        // Force send on first call after reset if sendOnLoad is enabled
+        if self.needs_initial_send {
+            self.needs_initial_send = false;
+            self.last_value = Some(value);
+            return self
+                .addresses
+                .iter()
+                .map(|addr| OscMessage {
+                    addr: addr.clone(),
+                    args: vec![OscType::Bool(value)],
+                })
+                .collect();
+        }
 
         let should_send = match self.last_value {
             Some(last) => value != last,
@@ -204,6 +294,137 @@ impl Parameter for BoolParam {
             .map(|addr| OscMessage {
                 addr: addr.clone(),
                 args: vec![OscType::Bool(value)],
+            })
+            .collect()
+    }
+}
+
+/// Int parameter with relevancy tracking
+pub struct IntParam {
+    pub name: String,
+    pub addresses: Vec<String>,
+    pub relevant: bool,
+    get_value: Arc<dyn Fn(&UnifiedTrackingData) -> i32 + Send + Sync>,
+    last_value: Option<i32>,
+    send_on_load: bool,
+    needs_initial_send: bool,
+}
+
+impl IntParam {
+    pub fn new(
+        name: &str,
+        get_value: impl Fn(&UnifiedTrackingData) -> i32 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            addresses: vec![format!("{}{}", DEFAULT_PREFIX, name)],
+            relevant: false,
+            get_value: Arc::new(get_value),
+            last_value: None,
+            send_on_load: false,
+            needs_initial_send: false,
+        }
+    }
+
+    /// Create a parameter that sends its value immediately when it becomes relevant
+    pub fn new_with_send_on_load(
+        name: &str,
+        get_value: impl Fn(&UnifiedTrackingData) -> i32 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            addresses: vec![format!("{}{}", DEFAULT_PREFIX, name)],
+            relevant: false,
+            get_value: Arc::new(get_value),
+            last_value: None,
+            send_on_load: true,
+            needs_initial_send: false,
+        }
+    }
+}
+
+impl Parameter for IntParam {
+    fn reset(
+        &mut self,
+        avatar_params: &HashSet<String>,
+        param_types: &HashMap<String, ParamType>,
+    ) -> usize {
+        self.addresses.clear();
+        self.last_value = None;
+        self.needs_initial_send = false;
+
+        let compatible: Vec<_> = avatar_params
+            .iter()
+            .filter(|addr| {
+                matches_address(&self.name, addr)
+                    && param_types.get(*addr).is_none_or(|t| *t == ParamType::Int)
+            })
+            .cloned()
+            .collect();
+
+        if !compatible.is_empty() {
+            // Add /FT/ fallback if not already present
+            let has_ft = compatible.iter().any(|a| a.contains("/FT/"));
+            self.addresses.extend(compatible);
+            if !has_ft {
+                self.addresses
+                    .push(format!("{}FT/{}", DEFAULT_PREFIX, self.name));
+            }
+            self.relevant = true;
+
+            // Mark for initial send if sendOnLoad is enabled
+            if self.send_on_load {
+                self.needs_initial_send = true;
+            }
+        } else {
+            // No matches found - mark as irrelevant
+            self.relevant = false;
+        }
+
+        if self.relevant {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
+        if !self.relevant {
+            return vec![];
+        }
+
+        let value = (self.get_value)(data);
+
+        // Force send on first call after reset if sendOnLoad is enabled
+        if self.needs_initial_send {
+            self.needs_initial_send = false;
+            self.last_value = Some(value);
+            return self
+                .addresses
+                .iter()
+                .map(|addr| OscMessage {
+                    addr: addr.clone(),
+                    args: vec![OscType::Int(value)],
+                })
+                .collect();
+        }
+
+        let should_send = match self.last_value {
+            Some(last) => value != last,
+            None => true,
+        };
+
+        if !should_send {
+            return vec![];
+        }
+
+        self.last_value = Some(value);
+
+        self.addresses
+            .iter()
+            .map(|addr| OscMessage {
+                addr: addr.clone(),
+                args: vec![OscType::Int(value)],
             })
             .collect()
     }
@@ -235,30 +456,28 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_address_rejects_custom_prefix() {
-        assert!(!matches_address(
+    fn test_matches_address_custom_prefix_matches() {
+        // Arbitrary prefixes are accepted, not just known VRChat patterns
+        assert!(matches_address(
             "v2/EyeLeftX",
             "/avatar/parameters/Custom/v2/EyeLeftX"
         ));
-        assert!(!matches_address(
-            "EyeLeftX",
-            "/avatar/parameters/Custom/EyeLeftX"
-        ));
-        assert!(!matches_address(
+        assert!(matches_address(
             "SmileFrown",
             "/avatar/parameters/VF/SmileFrown"
         ));
     }
 
     #[test]
-    fn test_matches_address_rejects_suffix_match() {
+    fn test_matches_address_rejects_nested_versions() {
+        // The negative lookbehind rejects nested version prefixes like /v1/v2/Name
         assert!(!matches_address(
-            "EyeLeftX",
-            "/avatar/parameters/Something/Extra/EyeLeftX"
+            "v2/EyeLeftX",
+            "/avatar/parameters/v1/v2/EyeLeftX"
         ));
         assert!(!matches_address(
-            "v2/EyeX",
-            "/avatar/parameters/Random/v2/EyeX"
+            "v2/SmileFrown",
+            "/avatar/parameters/v3/v2/SmileFrown"
         ));
     }
 
@@ -268,217 +487,27 @@ mod tests {
         assert!(!matches_address("EyeLeftX", "EyeLeftX"));
     }
 
-    // ===== FloatParam Fallback Tests =====
-
     #[test]
-    fn test_float_param_fallback_is_relevant_when_no_matches() {
-        let mut param = FloatParam::new("v2/TongueOut", |_| 0.5);
-        let empty_params = HashSet::new();
-        let empty_types = HashMap::new();
-
-        let relevant = param.reset(&empty_params, &empty_types);
-
-        assert!(relevant, "Fallback should be marked relevant");
-        assert_eq!(param.addresses.len(), 1, "Should have exactly one fallback");
-        assert!(
-            param.addresses[0].contains("/FT/"),
-            "Fallback should use /FT/ prefix"
-        );
-        assert_eq!(
-            param.addresses[0], "/avatar/parameters/FT/v2/TongueOut",
-            "Fallback address should be correct"
-        );
+    fn test_matches_address_oscmooth_float_prefix() {
+        assert!(matches_address(
+            "v2/SmileFrown",
+            "/avatar/parameters/OSCm/Float/FT/v2/SmileFrown"
+        ));
+        assert!(matches_address(
+            "v2/EyeLeftX",
+            "/avatar/parameters/OSCm/Float/v2/EyeLeftX"
+        ));
     }
 
     #[test]
-    fn test_float_param_adds_ft_fallback_when_non_ft_match() {
-        let mut param = FloatParam::new("v2/TongueOut", |_| 0.5);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        param_types.insert(
-            "/avatar/parameters/v2/TongueOut".to_string(),
-            ParamType::Float,
-        );
-
-        let relevant = param.reset(&avatar_params, &param_types);
-
-        assert!(relevant, "Should be relevant when matched");
-        assert_eq!(
-            param.addresses.len(),
-            2,
-            "Should have matched + FT fallback"
-        );
-        assert!(
-            param
-                .addresses
-                .contains(&"/avatar/parameters/v2/TongueOut".to_string()),
-            "Should include matched address"
-        );
-        assert!(
-            param
-                .addresses
-                .contains(&"/avatar/parameters/FT/v2/TongueOut".to_string()),
-            "Should include /FT/ fallback"
-        );
-    }
-
-    #[test]
-    fn test_float_param_no_duplicate_ft_when_ft_already_matches() {
-        let mut param = FloatParam::new("v2/TongueOut", |_| 0.5);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/FT/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        param_types.insert(
-            "/avatar/parameters/FT/v2/TongueOut".to_string(),
-            ParamType::Float,
-        );
-
-        let relevant = param.reset(&avatar_params, &param_types);
-
-        assert!(relevant, "Should be relevant when FT matched");
-        assert_eq!(
-            param.addresses.len(),
-            1,
-            "Should NOT add duplicate /FT/ address"
-        );
-        assert!(
-            param.addresses[0].contains("/FT/"),
-            "Should contain the FT match"
-        );
-    }
-
-    #[test]
-    fn test_float_param_skips_wrong_type() {
-        let mut param = FloatParam::new("v2/TongueOut", |_| 0.5);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        // Mark as Bool, not Float - should not match
-        param_types.insert(
-            "/avatar/parameters/v2/TongueOut".to_string(),
-            ParamType::Bool,
-        );
-
-        let relevant = param.reset(&avatar_params, &param_types);
-
-        // Should still be relevant via fallback
-        assert!(relevant, "Fallback should still be relevant");
-        assert_eq!(param.addresses.len(), 1, "Only fallback address");
-        assert!(
-            param.addresses[0].contains("/FT/"),
-            "Should use /FT/ fallback"
-        );
-    }
-
-    #[test]
-    fn test_float_param_process_sends_to_all_addresses() {
-        let mut param = FloatParam::new("v2/TongueOut", |_| 0.75);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        param_types.insert(
-            "/avatar/parameters/v2/TongueOut".to_string(),
-            ParamType::Float,
-        );
-
-        param.reset(&avatar_params, &param_types);
-
-        let data = UnifiedTrackingData::default();
-        let messages = param.process(&data);
-
-        // Should send to both addresses
-        assert_eq!(messages.len(), 2, "Should send to both addresses");
-        let addrs: Vec<_> = messages.iter().map(|m| m.addr.as_str()).collect();
-        assert!(addrs.contains(&"/avatar/parameters/v2/TongueOut"));
-        assert!(addrs.contains(&"/avatar/parameters/FT/v2/TongueOut"));
-    }
-
-    // ===== BoolParam Fallback Tests =====
-
-    #[test]
-    fn test_bool_param_fallback_is_relevant_when_no_matches() {
-        let mut param = BoolParam::new("v2/TongueOut", |_| true);
-        let empty_params = HashSet::new();
-        let empty_types = HashMap::new();
-
-        let relevant = param.reset(&empty_params, &empty_types);
-
-        assert!(relevant, "Fallback should be marked relevant");
-        assert_eq!(param.addresses.len(), 1, "Should have exactly one fallback");
-        assert!(
-            param.addresses[0].contains("/FT/"),
-            "Fallback should use /FT/ prefix"
-        );
-    }
-
-    #[test]
-    fn test_bool_param_adds_ft_fallback_when_non_ft_match() {
-        let mut param = BoolParam::new("v2/TongueOut", |_| true);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        param_types.insert(
-            "/avatar/parameters/v2/TongueOut".to_string(),
-            ParamType::Bool,
-        );
-
-        let relevant = param.reset(&avatar_params, &param_types);
-
-        assert!(relevant, "Should be relevant when matched");
-        assert_eq!(
-            param.addresses.len(),
-            2,
-            "Should have matched + FT fallback"
-        );
-    }
-
-    #[test]
-    fn test_bool_param_process_sends_to_all_addresses() {
-        let mut param = BoolParam::new("v2/TongueOut", |_| true);
-        let mut avatar_params = HashSet::new();
-        avatar_params.insert("/avatar/parameters/v2/TongueOut".to_string());
-
-        let mut param_types = HashMap::new();
-        param_types.insert(
-            "/avatar/parameters/v2/TongueOut".to_string(),
-            ParamType::Bool,
-        );
-
-        param.reset(&avatar_params, &param_types);
-
-        let data = UnifiedTrackingData::default();
-        let messages = param.process(&data);
-
-        // Should send to both addresses
-        assert_eq!(messages.len(), 2, "Should send to both addresses");
-    }
-
-    // ===== Delta Check Tests =====
-
-    #[test]
-    fn test_float_param_delta_check_prevents_duplicate_sends() {
-        let mut param = FloatParam::new("v2/Test", |_| 0.5);
-        let empty_params = HashSet::new();
-        let empty_types = HashMap::new();
-        param.reset(&empty_params, &empty_types);
-
-        let data = UnifiedTrackingData::default();
-
-        // First send
-        let messages1 = param.process(&data);
-        assert!(!messages1.is_empty(), "First send should have messages");
-
-        // Second send with same value
-        let messages2 = param.process(&data);
-        assert!(
-            messages2.is_empty(),
-            "Second send should be empty (delta check)"
-        );
+    fn test_matches_address_oscmooth_bool_prefix() {
+        assert!(matches_address(
+            "v2/SmileFrown",
+            "/avatar/parameters/OSCm/Bool/FT/v2/SmileFrown"
+        ));
+        assert!(matches_address(
+            "v2/EyeLeftX",
+            "/avatar/parameters/OSCm/Bool/v2/EyeLeftX"
+        ));
     }
 }

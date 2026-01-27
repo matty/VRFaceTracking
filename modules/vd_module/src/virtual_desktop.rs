@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use api::{ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2};
 use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -11,8 +11,31 @@ use windows::Win32::System::Threading::{OpenEventW, WaitForSingleObject, EVENT_A
 
 const BODY_STATE_MAP_NAME: &str = "VirtualDesktop.BodyState";
 const BODY_STATE_EVENT_NAME: &str = "VirtualDesktop.BodyStateEvent";
-const ENABLED_EYE_SMOOTHING: bool = true;
+const ENABLED_EYE_SMOOTHING: bool = false;
+const ENABLED_CHEEK_CROSSTALK_REDUCTION: bool = false;
 const SMOOTHING_FACTOR: f32 = 0.5;
+
+/// Extracts pitch/yaw Euler angles from a quaternion orientation.
+/// Returns (pitch, yaw) in radians.
+fn quaternion_to_pitch_yaw(q: Quat) -> (f32, f32) {
+    let (x, y, z, w) = (q.x, q.y, q.z, q.w);
+    let magnitude = (x * x + y * y + z * z + w * w).sqrt();
+
+    // Guard against zero/near-zero magnitude (malformed quaternion)
+    if magnitude < 0.0001 {
+        return (0.0, 0.0);
+    }
+
+    let xm = x / magnitude;
+    let ym = y / magnitude;
+    let zm = z / magnitude;
+    let wm = w / magnitude;
+
+    let pitch = (2.0 * (xm * zm - wm * ym)).asin();
+    let yaw = (2.0 * (ym * zm + wm * xm)).atan2(wm * wm - xm * xm - ym * ym + zm * zm);
+
+    (pitch, yaw)
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +96,7 @@ impl EyeSmoothingState {
 }
 
 pub struct VirtualDesktopModule {
+    mapping_handle: HANDLE,
     event_handle: HANDLE,
     face_state_ptr: *const FaceState,
     logger: Option<ModuleLogger>,
@@ -83,7 +107,8 @@ pub struct VirtualDesktopModule {
 impl VirtualDesktopModule {
     pub fn new() -> Self {
         Self {
-            event_handle: HANDLE(0),
+            mapping_handle: HANDLE(std::ptr::null_mut()),
+            event_handle: HANDLE(std::ptr::null_mut()),
             face_state_ptr: std::ptr::null(),
             logger: None,
             eye_smoothing: EyeSmoothingState::new(),
@@ -92,7 +117,9 @@ impl VirtualDesktopModule {
     }
 
     fn is_connected(&self) -> bool {
-        !self.event_handle.is_invalid() && !self.face_state_ptr.is_null()
+        !self.mapping_handle.is_invalid()
+            && !self.event_handle.is_invalid()
+            && !self.face_state_ptr.is_null()
     }
 
     fn disconnect(&mut self) {
@@ -100,7 +127,7 @@ impl VirtualDesktopModule {
         unsafe {
             if !self.event_handle.is_invalid() {
                 let _ = CloseHandle(self.event_handle);
-                self.event_handle = HANDLE(0);
+                self.event_handle = HANDLE(std::ptr::null_mut());
             }
             if !self.face_state_ptr.is_null() {
                 let _ =
@@ -108,6 +135,10 @@ impl VirtualDesktopModule {
                         Value: self.face_state_ptr as *mut std::ffi::c_void,
                     });
                 self.face_state_ptr = std::ptr::null();
+            }
+            if !self.mapping_handle.is_invalid() {
+                let _ = CloseHandle(self.mapping_handle);
+                self.mapping_handle = HANDLE(std::ptr::null_mut());
             }
         }
         if let Some(logger) = &self.logger {
@@ -118,7 +149,8 @@ impl VirtualDesktopModule {
     fn connect(&mut self) -> Result<()> {
         use windows::core::PCWSTR;
         use windows::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE,
+            MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ, FILE_MAP_WRITE,
+            MEMORY_MAPPED_VIEW_ADDRESS,
         };
 
         let map_name_wide: Vec<u16> = BODY_STATE_MAP_NAME
@@ -131,55 +163,53 @@ impl VirtualDesktopModule {
             .collect();
 
         unsafe {
-            let handle_result = OpenFileMappingW(
+            // Open file mapping
+            let mapping_handle = match OpenFileMappingW(
                 (FILE_MAP_READ | FILE_MAP_WRITE).0,
                 false,
                 PCWSTR(map_name_wide.as_ptr()),
+            ) {
+                Ok(handle) if !handle.is_invalid() => handle,
+                _ => return Err(anyhow::anyhow!("Failed to open file mapping")),
+            };
+
+            // Map view of file
+            let ptr = MapViewOfFile(
+                mapping_handle,
+                FILE_MAP_READ | FILE_MAP_WRITE,
+                0,
+                0,
+                std::mem::size_of::<FaceState>(),
             );
 
-            match handle_result {
-                Ok(handle) if !handle.is_invalid() => {
-                    let ptr = MapViewOfFile(
-                        handle,
-                        FILE_MAP_READ | FILE_MAP_WRITE,
-                        0,
-                        0,
-                        std::mem::size_of::<FaceState>(),
-                    );
-
-                    if ptr.Value.is_null() {
-                        let _ = CloseHandle(handle);
-                        return Err(anyhow::anyhow!("Failed to map view of file"));
-                    }
-
-                    self.face_state_ptr = ptr.Value as *const FaceState;
-                }
-                _ => {
-                    return Err(anyhow::anyhow!("Failed to open file mapping"));
-                }
+            if ptr.Value.is_null() {
+                let _ = CloseHandle(mapping_handle);
+                return Err(anyhow::anyhow!("Failed to map view of file"));
             }
 
-            let event_result =
-                OpenEventW(EVENT_ALL_ACCESS, false, PCWSTR(event_name_wide.as_ptr()));
-
-            match event_result {
-                Ok(event) if !event.is_invalid() => {
-                    self.event_handle = event;
-                    if let Some(logger) = &self.logger {
-                        logger.info("Virtual Desktop Connected!");
+            // Open event
+            let event_handle =
+                match OpenEventW(EVENT_ALL_ACCESS, false, PCWSTR(event_name_wide.as_ptr())) {
+                    Ok(event) if !event.is_invalid() => event,
+                    _ => {
+                        // Clean up on failure
+                        let _ = UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr.Value });
+                        let _ = CloseHandle(mapping_handle);
+                        return Err(anyhow::anyhow!("Failed to open event"));
                     }
-                    self.last_valid_frame_time = std::time::Instant::now();
-                    Ok(())
-                }
-                _ => {
-                    // Cleanup mapping if event fails?
-                    // For now, we just return error and retry everything next time.
-                    // Ideally we should unmap, but we don't store the handle.
-                    // This is a minor leak if it happens repeatedly, but OS cleans up on process exit.
-                    // To fix properly requires storing mapping handle.
-                    Err(anyhow::anyhow!("Failed to open event"))
-                }
+                };
+
+            // Success - store all handles
+            self.mapping_handle = mapping_handle;
+            self.face_state_ptr = ptr.Value as *const FaceState;
+            self.event_handle = event_handle;
+            self.last_valid_frame_time = std::time::Instant::now();
+
+            if let Some(logger) = &self.logger {
+                logger.info("Virtual Desktop Connected!");
             }
+
+            Ok(())
         }
     }
 
@@ -195,8 +225,7 @@ impl VirtualDesktopModule {
                 * eye_openness_scale;
             data.eye.left.openness = left_openness;
 
-            // Gaze
-            // Gaze
+            // Gaze: extract pitch/yaw from quaternion orientation
             let mut left_quat = Quat::from_xyzw(
                 face_state.left_eye_pose.orientation.x,
                 face_state.left_eye_pose.orientation.y,
@@ -216,15 +245,14 @@ impl VirtualDesktopModule {
                 }
             }
 
-            let forward = Vec3::new(0.0, 0.0, 1.0);
-            let left_gaze = left_quat * forward;
-            data.eye.left.gaze = left_gaze;
+            let (pitch, yaw) = quaternion_to_pitch_yaw(left_quat);
+            data.eye.left.gaze = Vec2::new(pitch, yaw);
 
             data.eye.left.pupil_diameter_mm = 5.0;
         } else {
             data.eye.left.openness = 0.5;
             data.eye.left.pupil_diameter_mm = 2.0;
-            data.eye.left.gaze = glam::Vec3::ZERO;
+            data.eye.left.gaze = glam::Vec2::ZERO;
         }
 
         if face_state.right_eye_is_valid != 0 {
@@ -234,8 +262,7 @@ impl VirtualDesktopModule {
                 * eye_openness_scale;
             data.eye.right.openness = right_openness;
 
-            // Gaze
-            // Gaze
+            // Gaze: extract pitch/yaw Euler angles from quaternion orientation
             let mut right_quat = Quat::from_xyzw(
                 face_state.right_eye_pose.orientation.x,
                 face_state.right_eye_pose.orientation.y,
@@ -256,16 +283,19 @@ impl VirtualDesktopModule {
                 }
             }
 
-            let forward = Vec3::new(0.0, 0.0, 1.0);
-            let right_gaze = right_quat * forward;
-            data.eye.right.gaze = right_gaze;
+            let (pitch, yaw) = quaternion_to_pitch_yaw(right_quat);
+            data.eye.right.gaze = Vec2::new(pitch, yaw);
 
             data.eye.right.pupil_diameter_mm = 5.0;
         } else {
             data.eye.right.openness = 0.5;
             data.eye.right.pupil_diameter_mm = 2.0;
-            data.eye.right.gaze = glam::Vec3::ZERO;
+            data.eye.right.gaze = glam::Vec2::ZERO;
         }
+
+        // Pupil dilation normalization bounds for downstream consumers
+        data.eye.min_dilation = 0.0;
+        data.eye.max_dilation = 10.0;
     }
 
     fn update_eye_expressions(&self, data: &mut UnifiedTrackingData, face_state: &FaceState) {
@@ -376,14 +406,13 @@ impl VirtualDesktopModule {
         let mut puff_l = w[2];
         let mut puff_r = w[3];
 
-        // TESTING!
-
-        // Crosstalk reduction: only suppress the weaker side if it's small (< 0.4)
-        // This allows puffing both cheeks simultaneously even if they are slightly uneven
-        if puff_l > puff_r + 0.1 && puff_r < 0.4 {
-            puff_r = 0.0;
-        } else if puff_r > puff_l + 0.1 && puff_l < 0.4 {
-            puff_l = 0.0;
+        // Optional crosstalk reduction: suppress weaker side when asymmetric
+        if ENABLED_CHEEK_CROSSTALK_REDUCTION {
+            if puff_l > puff_r + 0.1 && puff_r < 0.4 {
+                puff_r = 0.0;
+            } else if puff_r > puff_l + 0.1 && puff_l < 0.4 {
+                puff_l = 0.0;
+            }
         }
 
         s[UnifiedExpressions::CheekPuffLeft as usize].weight = puff_l;

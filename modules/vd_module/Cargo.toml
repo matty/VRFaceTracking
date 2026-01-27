@@ -7,14 +7,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "../vrft_d/api" }
+api = { path = "../../vrft_d/api" }
 memmap2 = "0.9"
-glam = "0.24"
+glam = "0.31"
 anyhow = "1.0"
 log = "0.4"
 
 [dependencies.windows]
-version = "0.52"
+version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_System_Threading",

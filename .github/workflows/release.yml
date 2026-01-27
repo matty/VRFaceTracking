@@ -75,11 +75,6 @@ jobs:
           # Copy executable
           Copy-Item "$release_dir/vrft_d.exe" "$package_dir/"
           
-          # Copy manifest if it exists
-          if (Test-Path "vrft_d/vrft_d.vrmanifest") {
-            Copy-Item "vrft_d/vrft_d.vrmanifest" "$package_dir/"
-          }
-          
           # Generate default config with nested structure
           $config = @{
             module = @{

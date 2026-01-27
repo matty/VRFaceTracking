@@ -2,13 +2,13 @@ mod proxy;
 pub use proxy::ProxyModule;
 
 use anyhow::Result;
-use glam::Vec3;
+use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedSingleEyeData {
-    pub gaze: Vec3,
+    pub gaze: Vec2,
     pub pupil_diameter_mm: f32,
     pub openness: f32,
 }

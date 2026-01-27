@@ -64,15 +64,15 @@ impl Parameter for EParam {
         &mut self,
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
-    ) -> bool {
-        let bool_relevant = self.bool_param.reset(avatar_params, param_types);
-        let float_relevant = self.float_param.reset(avatar_params, param_types);
-        let binary_relevant = self
+    ) -> usize {
+        let bool_count = self.bool_param.reset(avatar_params, param_types);
+        let float_count = self.float_param.reset(avatar_params, param_types);
+        let binary_count = self
             .binary_param
             .as_mut()
-            .is_some_and(|b| b.reset(avatar_params, param_types));
+            .map_or(0, |b| b.reset(avatar_params, param_types));
 
-        bool_relevant || float_relevant || binary_relevant
+        bool_count + float_count + binary_count
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {

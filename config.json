@@ -1,6 +1,6 @@
 {
   "module": {
-    "runtime": "Vrcft",
+    "runtime": "Native",
     "active": "vd_module.dll"
   },
   "mutator": {
