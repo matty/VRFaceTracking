@@ -34,7 +34,11 @@ impl CalibrationMutation {
     }
 
     pub fn has_calibration_data(&self) -> bool {
-        self.manager.data.shapes.iter().any(|p| p.max > 0.0)
+        self.manager
+            .data
+            .shapes
+            .iter()
+            .any(|p| p.max > 0.0 || p.confidence > 0.0)
     }
 
     pub fn calibration_status(&self) -> (bool, f32, f32, f32) {
@@ -59,22 +63,14 @@ impl CalibrationMutation {
         if !self.config.enabled {
             return Ok(());
         }
-        self.manager.save_current_profile()
+        self.manager.save()
     }
 
     pub fn load_calibration(&mut self, _path: &Path) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
         }
-        self.manager.load_profile("default")
-    }
-
-    pub fn switch_profile(&mut self, new_profile_id: &str) -> Result<()> {
-        if !self.config.enabled {
-            return Ok(());
-        }
-        let should_save = self.has_calibration_data();
-        self.manager.switch_profile(new_profile_id, should_save)
+        self.manager.load()
     }
 }
 

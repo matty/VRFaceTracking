@@ -585,15 +585,50 @@ impl ParameterRegistry {
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
     ) {
-        let mut relevant_count = 0usize;
+        log::debug!(
+            "registry.reset() starting: {} avatar params, {} param types",
+            avatar_params.len(),
+            param_types.len()
+        );
 
-        for param in self.parameters.iter_mut() {
+        // Log sample of avatar params for debugging
+        let sample: Vec<_> = avatar_params.iter().take(10).collect();
+        log::debug!("Sample avatar params: {:?}", sample);
+
+        let start_time = std::time::Instant::now();
+        let mut relevant_count = 0usize;
+        let total_params = self.parameters.len();
+
+        for (idx, param) in self.parameters.iter_mut().enumerate() {
+            let param_start = std::time::Instant::now();
             relevant_count += param.reset(avatar_params, param_types);
+
+            // Log every 100th parameter for progress tracking
+            if idx % 100 == 0 {
+                log::debug!(
+                    "Processing param {}/{} ({}ms elapsed)",
+                    idx,
+                    total_params,
+                    start_time.elapsed().as_millis()
+                );
+            }
+
+            // Warn if any individual param takes too long
+            let param_elapsed = param_start.elapsed();
+            if param_elapsed.as_millis() > 50 {
+                log::warn!(
+                    "Slow param reset at index {}: {}ms",
+                    idx,
+                    param_elapsed.as_millis()
+                );
+            }
         }
 
+        let total_elapsed = start_time.elapsed();
         log::info!(
-            "Parameter Registry: {} parameters marked relevant to avatar",
-            relevant_count
+            "Parameter Registry: {} parameters marked relevant to avatar (took {}ms)",
+            relevant_count,
+            total_elapsed.as_millis()
         );
 
         // Debug: Count FT-related params

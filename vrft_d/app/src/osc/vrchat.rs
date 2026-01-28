@@ -137,9 +137,24 @@ impl VRChatOsc {
                         bool_count, float_count, int_count
                     );
 
+                    // Debug: Log sample of avatar params to verify format
+                    let sample_params: Vec<_> = avatar_params.iter().take(10).collect();
+                    log::debug!("Sample avatar params: {:?}", sample_params);
+
+                    let ft_sample: Vec<_> = avatar_params
+                        .iter()
+                        .filter(|p| p.contains("FT") || p.contains("v2"))
+                        .take(10)
+                        .collect();
+                    log::info!("FT/v2 sample params: {:?}", ft_sample);
+
                     // Reset parameter registry with real types from OSC Query
                     if let Ok(mut registry) = self.param_registry.lock() {
+                        log::info!("Calling registry.reset()...");
                         registry.reset(&avatar_params, &param_types);
+                        log::info!("registry.reset() completed");
+                    } else {
+                        log::error!("Failed to acquire param_registry lock!");
                     }
                 }
             }

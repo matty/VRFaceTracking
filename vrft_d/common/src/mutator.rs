@@ -292,14 +292,6 @@ impl UnifiedTrackingMutator {
         }
     }
 
-    pub fn switch_profile(&mut self, new_profile_id: &str) -> Result<()> {
-        if let Some(c) = self.get_calibration_mutation_mut() {
-            c.switch_profile(new_profile_id)
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
         if !self.config.mutator.enabled {
             return;
