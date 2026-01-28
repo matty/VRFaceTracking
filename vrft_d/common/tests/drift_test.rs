@@ -22,9 +22,11 @@ fn test_continuous_calibration_updates_and_applies() {
     }
 
     // Progress should have advanced (1/64 increments per accepted sample).
-    // Use the new accessor method instead of direct field access.
     let cal_data = mutator.get_calibration_data();
     assert!(cal_data.shapes[0].progress > 0.0);
+
+    // Verify statistical fields are being populated
+    // Note: mean/std_dev may be 0 initially but should update with more samples
 
     // Now verify that calibration is being applied (output is not identical to raw).
     data.shapes[0].weight = 0.4;

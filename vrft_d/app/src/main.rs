@@ -233,12 +233,15 @@ fn main() -> Result<()> {
     let calibration_request_for_host = calibration_request.clone();
     let calibration_request_for_consumer = calibration_request.clone();
 
+    let calibration_needs_save = Arc::new(AtomicBool::new(false));
+    let calibration_needs_save_for_consumer = calibration_needs_save.clone();
+
     let mut data = UnifiedTrackingData::default();
 
     let osc_context = strategies::OscContext {
         tracking_data: shared_data_for_host.clone(),
     };
-    let (strategy, strategy_router, avatar_change_rx) =
+    let (strategy, strategy_router, _avatar_change_rx) =
         strategies::create_strategy(&config, osc_context);
     let mut transport_manager = Dispatcher::new(strategy);
 
@@ -275,7 +278,7 @@ fn main() -> Result<()> {
 
     let mut mutator = UnifiedTrackingMutator::new(config.clone());
 
-    let calibration_path = Path::new("calibration_default.json");
+    let calibration_path = Path::new("calibration.json");
     if calibration_path.exists() {
         info!("Loading calibration from {:?}", calibration_path);
         if let Err(e) = mutator.load_calibration(calibration_path) {
@@ -309,8 +312,6 @@ fn main() -> Result<()> {
 
     thread::spawn(move || {
         info!("Consumer Thread Started");
-
-        let avatar_change_rx = avatar_change_rx;
 
         let transport_manager = transport_manager;
         let mut last_frame_time = std::time::Instant::now();
@@ -441,9 +442,11 @@ fn main() -> Result<()> {
                 CalibrationState::Collecting { .. }
             );
             if was_calibrating && !is_calibrating_now {
-                info!("Calibration finished! Saving to calibration_default.json");
-                if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
+                info!("Calibration finished! Saving to calibration.json");
+                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
                     error!("Failed to save calibration: {}", e);
+                } else {
+                    calibration_needs_save_for_consumer.store(false, Ordering::SeqCst);
                 }
             }
             was_calibrating = is_calibrating_now;
@@ -462,25 +465,13 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Update shared data for OSC Query host (non-blocking)
-            // Skip update if lock is held - host doesn't need every frame
+            // Update shared data for OSC Query (non-blocking; host doesn't need every frame)
             if let Ok(mut write_guard) = shared_data_for_consumer.try_write() {
                 *write_guard = received_data.clone();
             }
 
             if let Err(e) = transport_manager.send(&received_data) {
                 error!("Failed to send OSC data: {}", e);
-            }
-
-            if let Some(rx) = &avatar_change_rx {
-                while let Ok(avatar_id) = rx.try_recv() {
-                    if config.calibration.enabled {
-                        info!("Switching calibration profile to avatar: {}", avatar_id);
-                        if let Err(e) = mutator.switch_profile(&avatar_id) {
-                            error!("Failed to switch calibration profile: {}", e);
-                        }
-                    }
-                }
             }
 
             use std::cell::Cell;
@@ -497,12 +488,15 @@ fn main() -> Result<()> {
             });
 
             if should_save && mutator.config.calibration.enabled && mutator.has_calibration_data() {
-                if let Err(e) = mutator.save_calibration(Path::new("calibration_default.json")) {
+                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
                     error!("Failed to auto-save calibration: {}", e);
                 } else {
+                    calibration_needs_save_for_consumer.store(false, Ordering::SeqCst);
                     #[cfg(feature = "xtralog")]
                     info!("Auto-saved calibration.");
                 }
+            } else if mutator.config.calibration.enabled && mutator.has_calibration_data() {
+                calibration_needs_save_for_consumer.store(true, Ordering::SeqCst);
             }
         }
     });
@@ -586,6 +580,28 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down...");
+
+    // Save calibration on quit if needed
+    if config.calibration.enabled && calibration_needs_save.load(Ordering::SeqCst) {
+        info!("Saving calibration before shutdown...");
+        if let Ok(calibration_data) = calibration_data_shared.read() {
+            if !calibration_data.shapes.is_empty() {
+                let path = Path::new("calibration.json");
+                match fs::File::create(path) {
+                    Ok(file) => {
+                        let writer = std::io::BufWriter::new(file);
+                        if let Err(e) = serde_json::to_writer_pretty(writer, &*calibration_data) {
+                            error!("Failed to save calibration on shutdown: {}", e);
+                        } else {
+                            info!("Calibration saved successfully.");
+                        }
+                    }
+                    Err(e) => error!("Failed to create calibration file on shutdown: {}", e),
+                }
+            }
+        }
+    }
+
     for module_wrapper in &mut modules {
         module_wrapper.module.unload();
     }

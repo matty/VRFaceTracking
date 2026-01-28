@@ -16,21 +16,12 @@ fn test_calibration_disabled_behavior() {
         "Calibration should not start when disabled"
     );
 
-    // Use accessor method instead of direct field access
     match mutator.get_calibration_state() {
         CalibrationState::Uncalibrated => {}
         _ => panic!("State should be Uncalibrated"),
     }
 
-    // Test 2: Switch Profile should be ignored
-    // Profile switching returns Ok but does nothing when disabled
-    let result = mutator.switch_profile("new_profile");
-    assert!(
-        result.is_ok(),
-        "Profile switching should return Ok when disabled"
-    );
-
-    // Test 3: Load Calibration should be ignored
+    // Test 2: Load Calibration should be ignored when disabled
     let result = mutator.load_calibration(&PathBuf::from("non_existent_path"));
     assert!(
         result.is_ok(),

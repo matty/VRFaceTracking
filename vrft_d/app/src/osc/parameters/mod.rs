@@ -21,7 +21,7 @@ pub enum ParamType {
 
 /// Trait for all parameter types
 pub trait Parameter: Send + Sync {
-    /// Reset parameter state based on new avatar's parameters.
+    /// Reset parameter state based on avatar's available parameters.
     /// Returns the count of individual addresses/sub-parameters that are now relevant.
     fn reset(
         &mut self,

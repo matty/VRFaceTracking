@@ -6,8 +6,6 @@ use rosc::{OscMessage, OscType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use fancy_regex::Regex;
-
 const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 
 /// Matches parameter addresses with flexible prefix support.
@@ -16,22 +14,39 @@ const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 /// - Exact parameter name after stripping `/avatar/parameters/`
 /// - Any address ending with `/{name}` (e.g., `FT/`, `OSCm/Float/FT/`, custom prefixes)
 ///
-/// Uses negative lookbehind to reject nested version prefixes (e.g., `/v1/v2/EyeLeftX`)
+/// Rejects nested version prefixes (e.g., `/v1/v2/EyeLeftX`)
 fn matches_address(name: &str, addr: &str) -> bool {
     let stripped = match addr.strip_prefix(DEFAULT_PREFIX) {
         Some(s) => s,
         None => return false,
     };
 
-    // Pattern: (?<!v\d)(/{name})$|^({name})$
-    // Negative lookbehind rejects nested versions like /v1/v2/Name
-    let escaped_name = fancy_regex::escape(name);
-    let pattern = format!(r"(?<!v\d)(/{escaped_name})$|^({escaped_name})$");
-
-    match Regex::new(&pattern) {
-        Ok(re) => re.is_match(stripped).unwrap_or(false),
-        Err(_) => false,
+    // Check for exact match
+    if stripped == name {
+        return true;
     }
+
+    // Check for suffix match: ends with /{name}
+    let suffix = format!("/{}", name);
+    if stripped.ends_with(&suffix) {
+        // Reject nested version prefixes like /v1/v2/Name
+        // Get the character before the suffix
+        let prefix_len = stripped.len() - suffix.len();
+        if prefix_len >= 2 {
+            let before_suffix = &stripped[..prefix_len];
+            // Check if it ends with /v{digit}
+            if before_suffix.len() >= 2 {
+                let bytes = before_suffix.as_bytes();
+                let last = bytes[bytes.len() - 1];
+                if last.is_ascii_digit() && bytes.len() >= 2 && bytes[bytes.len() - 2] == b'v' {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    false
 }
 
 /// Float parameter with relevancy tracking
