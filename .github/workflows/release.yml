@@ -46,7 +46,6 @@ jobs:
       - name: Build Plugins
         run: |
           cargo build --release --target ${{ matrix.platform.target }} -p vd_module
-          cargo build --release --target ${{ matrix.platform.target }} -p livelink_module
           cargo build --release --target ${{ matrix.platform.target }} -p test_logger
 
       - name: Build .NET Host
@@ -106,7 +105,6 @@ jobs:
           
           # Copy native plugin DLLs
           Copy-Item "$release_dir/vd_module.dll" "$native_dir/"
-          Copy-Item "$release_dir/livelink_module.dll" "$native_dir/"
           Copy-Item "$release_dir/test_logger.dll" "$native_dir/"
           
           # Copy .NET Runtime if bundled
