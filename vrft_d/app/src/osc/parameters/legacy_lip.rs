@@ -63,8 +63,7 @@ fn get_sranipal_shape(shape: SRanipalLipShape, data: &UnifiedTrackingData) -> f3
         SRanipalLipShape::JawForward => w(data, UnifiedExpressions::JawForward),
         SRanipalLipShape::JawOpen => {
             (w(data, UnifiedExpressions::JawOpen) - w(data, UnifiedExpressions::MouthClosed))
-                .max(0.0)
-                .min(1.0)
+                .clamp(0.0, 1.0)
         }
         SRanipalLipShape::MouthApeShape => w(data, UnifiedExpressions::MouthClosed),
         SRanipalLipShape::MouthUpperRight => w(data, UnifiedExpressions::MouthUpperRight),
@@ -153,8 +152,7 @@ fn get_sranipal_shape(shape: SRanipalLipShape, data: &UnifiedTrackingData) -> f3
         }
         SRanipalLipShape::TongueLongStep2 => {
             (w(data, UnifiedExpressions::TongueOut) * 2.0 - 1.0)
-                .max(0.0)
-                .min(1.0)
+                .clamp(0.0, 1.0)
         }
         SRanipalLipShape::TongueDown => w(data, UnifiedExpressions::TongueDown),
         SRanipalLipShape::TongueUp => w(data, UnifiedExpressions::TongueUp),
