@@ -5,6 +5,7 @@ members = [
     "vrft_d/app",
     "modules/vd_module",
     "modules/test_logger",
+    "modules/vrft_udp_rcv",
 ]
 resolver = "2"
 

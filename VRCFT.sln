@@ -1,0 +1,42 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "vrft_d", "vrft_d", "{48645052-9604-07A7-6EAA-ED75CBFDE071}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "dotnet", "dotnet", "{D6253995-75DA-56BE-FF25-D74568098DE2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VRCFaceTracking.Core", "vrft_d\dotnet\VRCFaceTracking.Core\VRCFaceTracking.Core.csproj", "{579A48E6-1A50-F09A-3013-50C4C122F3AA}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "VrcftRuntime", "VrcftRuntime", "{26929491-8006-E906-B2D3-E976DF6A433F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VrcftRuntime", "vrft_d\dotnet\VrcftRuntime\VrcftRuntime\VrcftRuntime.csproj", "{1BAC1065-2481-52DE-11F4-36F243106DD4}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{579A48E6-1A50-F09A-3013-50C4C122F3AA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{579A48E6-1A50-F09A-3013-50C4C122F3AA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{579A48E6-1A50-F09A-3013-50C4C122F3AA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{579A48E6-1A50-F09A-3013-50C4C122F3AA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1BAC1065-2481-52DE-11F4-36F243106DD4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1BAC1065-2481-52DE-11F4-36F243106DD4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1BAC1065-2481-52DE-11F4-36F243106DD4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1BAC1065-2481-52DE-11F4-36F243106DD4}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{D6253995-75DA-56BE-FF25-D74568098DE2} = {48645052-9604-07A7-6EAA-ED75CBFDE071}
+		{579A48E6-1A50-F09A-3013-50C4C122F3AA} = {D6253995-75DA-56BE-FF25-D74568098DE2}
+		{26929491-8006-E906-B2D3-E976DF6A433F} = {D6253995-75DA-56BE-FF25-D74568098DE2}
+		{1BAC1065-2481-52DE-11F4-36F243106DD4} = {26929491-8006-E906-B2D3-E976DF6A433F}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C8557A23-E9C1-4D31-A274-B5B4C793334A}
+	EndGlobalSection
+EndGlobal
