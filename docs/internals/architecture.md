@@ -4,15 +4,25 @@ The VRFT Daemon (`vrft_d`) is a modular Rust-based system designed to bridge var
 
 ## Project Structure
 
-The project is organized into several crates within the `vrft_d` directory:
+The project is organized into a workspace with two top-level directories:
+
+### `vrft_d/` — Core Daemon
 
 - **`api/`**: Core data structures and traits including the unified tracking data format.
 - **`common/`**: Shared logic including:
   - **Mutation Pipeline**: Trait-based, pluggable processing steps.
-  - **Calibration**: Per-expression min/max calibration with profile support.
+  - **Calibration**: Per-expression normalization using mean + std_dev with confidence-based blend.
   - **Filters**: Euro Filter for data smoothing.
 - **`app/`**: The main executable handling plugin loading, OSC communication, and dispatch.
-- **`dotnet/`**: .NET runtime host for loading VRCFT modules.
+  - **`strategies/`**: Output strategies for VRChat, Resonite, and Generic UDP.
+  - **`osc/`**: OSC protocol implementation, parameter definitions, and OSC Query support.
+- **`dotnet/`**: .NET runtime host for loading VRCFT modules via shared memory proxy.
+
+### `modules/` — Tracking Module Plugins
+
+- **`vd_module/`**: Virtual Desktop face tracking module (native, shared memory).
+- **`test_logger/`**: Example module demonstrating the plugin API and logging.
+- **`vrft_udp_rcv/`**: UDP receiver test utility for the generic_udp strategy.
 
 ## Data Flow
 
@@ -30,10 +40,13 @@ pub trait Mutation: Send + Sync {
     fn initialize(&mut self, config: &MutationConfig) -> Result<()>;
     fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32);
     fn name(&self) -> &str;
+    fn priority(&self) -> i32 { 0 }
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 ```
 
 Default pipeline order:
 1. **SmoothingMutation**: Applies Euro Filter to reduce jitter.
-2. **CalibrationMutation**: Scales values based on learned min/max per expression.
+2. **CalibrationMutation**: Normalizes values using mean + std_dev per expression with confidence-based blend.
 3. **NormalizationMutation**: Normalizes pupil diameter to 0-1 range.

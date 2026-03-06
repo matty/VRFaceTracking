@@ -1,37 +1,56 @@
 # VRFT (VR Face Tracking)
 
-A modular Rust-based system for bridging face tracking hardware with social VR platforms.
+vrft_d is a modular Rust daemon that reads face tracking data from hardware and sends it to social VR platforms via OSC. It supports Virtual Desktop (native) and any VRCFaceTracking-compatible module via a .NET runtime host.
+
+**Platform: Windows only.**
+
+---
+
+## For End Users
+
+Download from [GitHub Releases](https://github.com/dfgHiatus/VRCFT-VRFT/releases), place your tracking module in `plugins/`, configure `config.json`, and run `vrft_d.exe`.
+
+**[Getting Started →](docs/guide/getting-started.md)**
+**[Configuration Reference →](docs/guide/configuration.md)**
+
+---
+
+## For Avatar Creators
+
+vrft_d sends unified expression parameters with the `v2/` prefix. Each expression emits a float, bool, and optional binary sub-params. Legacy SRanipal parameter names are also sent for backwards compatibility.
+
+**[V2 Parameter Reference →](docs/avatars/v2-parameters.md)**
+
+---
+
+## For Developers
+
+vrft_d is a Cargo workspace. The core executable is `vrft_d/app/`. Tracking modules are `cdylib` crates in `modules/` implementing the `TrackingModule` trait.
+
+**[Architecture Overview →](docs/internals/architecture.md)**
+**[Creating a Module →](docs/internals/creating-a-module.md)**
+**[Mutation Pipeline →](docs/internals/mutation-pipeline.md)**
+**[VRChat Parameter Pipeline →](docs/internals/vrc-parameter-pipeline.md)**
+
+---
+
+## Hardware Support
+
+| Hardware | Module | Runtime |
+|----------|--------|---------|
+| Virtual Desktop (face tracking) | `vd_module.dll` | Native |
+| VRCFaceTracking modules | any VRCFT `.dll` | .NET |
+
+---
 
 ## Quick Start
 
-1. Place tracking modules in `plugins/native/` (native) or `plugins/dotnet/modules/` (.NET).
-2. Configure `config.json` with your preferred module and settings.
-3. Run `vrft_d.exe`.
+```powershell
+# Build and stage to run/
+./run_debug.ps1
 
-## Documentation
-
-Detailed documentation in the [`docs/`](docs/) directory:
-
-- **[Architecture Overview](docs/architecture.md)**: System design, crates, and data flow.
-- **[Mutation Pipeline](docs/mutation_pipeline.md)**: How tracking data is post-processed.
-- **[Glossary](docs/glossary.md)**: Key terms and concepts.
-- **[Creating a Module](docs/creating_a_module.md)**: Guide for developing hardware plugins.
-- **[VRChat Parameter Pipeline](docs/vrc_parameter_pipeline.md)**: Tracking data translation for VRChat.
-- **[Configuration and Debugging](docs/debug_and_config.md)**: Guide to `config.json` and the debug API.
-- **[Eye Tracking Analysis](docs/eye_tracking_analysis.md)**: Technical deep-dive into eye data formats.
-
-## Project Structure
-
+# Or just build
+cargo build
 ```
-vrft_d/
-├── api/        # Core data structures and traits
-├── common/     # Shared logic: mutations, calibration, filters
-│   └── src/
-│       ├── mutations/       # Pluggable mutation implementations
-│       │   ├── smoothing.rs
-│       │   ├── calibration.rs
-│       │   └── normalization.rs
-│       └── mutation_trait.rs # The Mutation trait interface
-├── app/        # Main executable
-└── dotnet/     # .NET runtime host
-```
+
+**[Glossary →](docs/glossary.md)**

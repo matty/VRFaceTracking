@@ -24,7 +24,7 @@ pub trait Mutation: Send + Sync {
 | Mutation | File | Purpose |
 |----------|------|---------|
 | **SmoothingMutation** | `mutations/smoothing.rs` | Applies Euro Filter to reduce jitter in gaze, shapes, and openness |
-| **CalibrationMutation** | `mutations/calibration.rs` | Scales values using learned min/max per expression |
+| **CalibrationMutation** | `mutations/calibration.rs` | Normalizes values using mean + std_dev per expression with confidence-based blend |
 | **NormalizationMutation** | `mutations/normalization.rs` | Normalizes pupil diameter to 0-1 range |
 
 ## Pipeline Execution
@@ -50,11 +50,10 @@ for mutation in &mut self.pipeline {
 
 1. Create a struct implementing `Mutation`.
 2. Add it to the pipeline in `UnifiedTrackingMutator::new()`.
-3. (Future) Configure via `config.json` for dynamic loading.
 
 ## Configuration
 
-Currently, the pipeline is hardcoded. Future enhancements will allow JSON configuration:
+The pipeline can be configured via `config.json`. If the `pipeline` array is omitted, the default pipeline (Smoothing → Calibration → Normalization) is used:
 
 ```json
 {

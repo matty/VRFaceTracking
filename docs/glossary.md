@@ -12,9 +12,13 @@ The standardized internal data format used by the daemon to represent facial exp
 
 A dynamically loaded library (`.dll`) that interfaces with specific tracking hardware (e.g., Vive Pro Eye, Virtual Desktop) and converts its raw data into the Unified Tracking Data format.
 
-### Parameter Solver
+### Parameter Registry
 
-The component responsible for translating raw unified tracking weights into specific avatar parameters (e.g., VRChat OSC addresses).
+The component (`ParameterRegistry`) that holds all supported output parameters and their compute functions. It generates OSC messages from `UnifiedTrackingData`, filtering to only parameters relevant to the current avatar.
+
+### EParam
+
+A container parameter that emits three sub-parameters for a single expression: a float (0–1 or -1–1), a bool (threshold-based), and optionally binary integer encoding (split across `Name1`, `Name2`, `Name4`... bool parameters). Most v2 parameters are EParms.
 
 ### OSC (Open Sound Control)
 
@@ -32,11 +36,19 @@ A single facial movement or expression (e.g., `JawOpen`, `MouthSmileLeft`) repre
 
 ### V1 / Legacy Parameters
 
-The original set of facial parameters used by early versions.
+SRanipal-era parameter names (e.g., `EyeLeftX`, `JawOpen`, `MouthSmile_L`) supported for backwards compatibility with existing avatars. Not recommended for new avatars.
 
 ### V2 Parameters
 
-The modern, expanded set of facial parameters providing higher fidelity and more granular control over facial expressions.
+The unified expression parameter set using the `v2/` OSC prefix (e.g., `v2/JawOpen`, `v2/EyeLeftX`). Recommended for all new avatars. See [docs/avatars/v2-parameters.md](avatars/v2-parameters.md) for the full list.
+
+### SRanipal
+
+HTC's legacy lip and eye tracking SDK. vrft_d translates unified expressions into SRanipal-compatible shapes (legacy parameters) for backwards compatibility with avatars built against that format.
+
+### OSCmooth
+
+A VRChat community tool for smoothing OSC parameters client-side. vrft_d's binary parameter discovery supports OSCmooth's address naming convention — parameters like `v2/JawOpen1`, `v2/JawOpen2`, `v2/JawOpen4` are automatically matched to the `v2/JawOpen` EParam.
 
 ### Euro Filter
 
@@ -48,4 +60,4 @@ A logic component that modifies tracking data in real-time (e.g., mirroring expr
 
 ### Calibration
 
-The process of mapping a user's specific facial range to the normalized 0.0 - 1.0 scale used by the tracking system.
+The process of normalizing a user's facial tracking data to the 0.0–1.0 scale. vrft_d uses a statistical model (mean + std_dev) rather than simple min/max scaling, with a confidence-based blend to handle low-quality tracking frames.

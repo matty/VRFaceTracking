@@ -28,10 +28,10 @@ The API provides several key types defined in [`vrft_d/api/src/lib.rs`](../vrft_
 
 ### 1. Create a New Cargo Project
 
-Create a new library crate in the root directory:
+Create a new library crate in the `modules/` directory:
 
 ```bash
-cargo new --lib my_module
+cargo new --lib modules/my_module
 ```
 
 ### 2. Configure Cargo.toml
@@ -48,9 +48,9 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "vrft_d/api" }
+api = { path = "../../vrft_d/api" }
 anyhow = "1.0"
-glam = "0.24"
+glam = "0.31"
 ```
 
 ### 3. Implement the TrackingModule Trait
@@ -103,9 +103,19 @@ pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
 
 ### Deployment
 
-Build in release mode and copy the DLL to the `vrft_d/plugins` directory:
+Add your module to the workspace `Cargo.toml`:
+
+```toml
+[workspace]
+members = [
+    # ...existing members...
+    "modules/my_module",
+]
+```
+
+Build in release mode and copy the DLL to the `plugins/native/` directory:
 
 ```bash
-cargo build --release
-copy target\release\my_module.dll vrft_d\plugins\
+cargo build --release -p my_module
+copy target\release\my_module.dll plugins\native\
 ```
