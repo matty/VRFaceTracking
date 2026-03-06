@@ -1,9 +1,8 @@
-name: Release
+name: Dev Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ "main" ]
 
 permissions:
   contents: write
@@ -13,15 +12,8 @@ env:
 
 jobs:
   release:
-    name: Release - ${{ matrix.platform.os-name }}
-    strategy:
-      matrix:
-        platform:
-          - target: x86_64-pc-windows-msvc
-            runs-on: windows-latest
-        bundle_dotnet: [true, false]
-
-    runs-on: ${{ matrix.platform.runs-on }}
+    name: Build & Publish Dev Release
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -30,7 +22,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -41,97 +33,60 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Build Release
-        run: cargo build --release --target ${{ matrix.platform.target }} -p vrft_d
+        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft_d
 
       - name: Build Plugins
-        run: cargo build --release --target ${{ matrix.platform.target }} -p vd_module
+        run: cargo build --release --target x86_64-pc-windows-msvc -p vd_module
 
       - name: Build .NET Host
-        if: matrix.bundle_dotnet == true
         run: |
           dotnet publish vrft_d/dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o vrft_d/dotnet/publish
 
-      - name: Prepare Package
+      - name: Prepare Packages
         shell: pwsh
         run: |
-          $target = "${{ matrix.platform.target }}"
-          # Aligning with requested names:
-          # Bundled: vrft_d-x86_64-windows-vrcft-runtime
-          # Std: vrft_d-x86_64-pc-windows-std
-          if ("${{ matrix.bundle_dotnet }}" -eq "true") {
-            $artifact_name = "vrft_d-x86_64-windows-vrcft-runtime"
-          } else {
-            $artifact_name = "vrft_d-x86_64-pc-windows-std"
-          }
-          
-          $package_dir = $artifact_name
-          $release_dir = "target/$target/release"
-          
-          New-Item -ItemType Directory -Force -Path $package_dir
-          
-          # Copy executable
-          Copy-Item "$release_dir/vrft_d.exe" "$package_dir/"
-          
-          # Generate default config with nested structure
-          # Use different defaults based on bundle_dotnet flag
-          if ("${{ matrix.bundle_dotnet }}" -eq "true") {
-            $module_runtime = "Vrcft"
-            $module_active = "VirtualDesktop.FaceTracking.dll"
-          } else {
-            $module_runtime = "Native"
-            $module_active = "vd_module.dll"
-          }
-          
-          $config = @{
-            module = @{
-              runtime = $module_runtime
-              active = $module_active
-            }
-            mutator = @{
-              enabled = $true
-              smoothness = 0.0
-            }
-            calibration = @{
-              enabled = $false
-              continuous = $false
-              blend = 1.0
-            }
-            osc = @{
-              output_mode = "VRChat"
-              send_address = "127.0.0.1"
-              send_port = 9000
-            }
-            max_fps = 60.0
-          } | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText("$package_dir/config.json", $config)
-          
-          # Create plugins structure
-          $native_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/native"
-          
-          # Copy native plugin DLLs
-          Copy-Item "$release_dir/vd_module.dll" "$native_dir/"
-          
-          # Copy .NET Runtime if bundled
-          if ("${{ matrix.bundle_dotnet }}" -eq "true") {
-            $dotnet_host_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/dotnet/host"
-            $dotnet_modules_dir = New-Item -ItemType Directory -Force -Path "$package_dir/plugins/dotnet/modules"
-            Copy-Item "vrft_d/dotnet/publish/VrcftRuntime.exe" "$dotnet_host_dir/"
-          }
-          
-          # Create zip
-          Compress-Archive -Path "$package_dir/*" -DestinationPath "$artifact_name.zip"
-          echo "ARTIFACT_NAME=$artifact_name" >> $env:GITHUB_ENV
+          $release_dir = "target/x86_64-pc-windows-msvc/release"
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.ARTIFACT_NAME }}.zip
+          function Make-Package($name, $runtime, $active, $bundle_dotnet) {
+            New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
+            Copy-Item "$release_dir/vrft_d.exe" "$name/"
+
+            $config = @{
+              module = @{ runtime = $runtime; active = $active }
+              mutator = @{ enabled = $true; smoothness = 0.0 }
+              calibration = @{ enabled = $false; continuous = $false; blend = 1.0 }
+              osc = @{ output_mode = "VRChat"; send_address = "127.0.0.1"; send_port = 9000 }
+              max_fps = 60.0
+            } | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText("$name/config.json", $config)
+
+            New-Item -ItemType Directory -Force -Path "$name/plugins/native" | Out-Null
+            Copy-Item "$release_dir/vd_module.dll" "$name/plugins/native/"
+
+            if ($bundle_dotnet) {
+              New-Item -ItemType Directory -Force -Path "$name/plugins/dotnet/host" | Out-Null
+              New-Item -ItemType Directory -Force -Path "$name/plugins/dotnet/modules" | Out-Null
+              Copy-Item "vrft_d/dotnet/publish/VrcftRuntime.exe" "$name/plugins/dotnet/host/"
+            }
+
+            Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
+          }
+
+          Make-Package "vrft_d-x86_64-windows-std"          "Native" "vd_module.dll"                      $false
+          Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "Vrcft"  "VirtualDesktop.FaceTracking.dll"   $true
+
+      - name: Publish Dev Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ARTIFACT_NAME }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: dev
+          name: "Dev Build"
+          prerelease: true
+          make_latest: false
+          body: |
+            Latest build from `main`. Not versioned — for testing only.
+
+            Commit: ${{ github.sha }}
+          files: |
+            vrft_d-x86_64-windows-std.zip
+            vrft_d-x86_64-windows-vrcft-runtime.zip
