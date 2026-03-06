@@ -1,9 +1,7 @@
-use super::base_param::FloatParam;
 use super::eparam::EParam;
 use super::legacy_eye::create_legacy_eye_parameters;
 use super::legacy_lip::create_legacy_lip_parameters;
 use super::native_param::create_native_parameters;
-use super::unified_expressions::create_unified_expression_params;
 use super::{ParamType, Parameter};
 use common::{UnifiedExpressions, UnifiedTrackingData};
 use rosc::OscMessage;
@@ -23,22 +21,22 @@ impl ParameterRegistry {
         }
 
         // Head Tracking
-        parameters.push(Box::new(FloatParam::new("v2/Head/Yaw", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/Yaw", |d| {
             d.head.head_yaw
         })));
-        parameters.push(Box::new(FloatParam::new("v2/Head/Pitch", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/Pitch", |d| {
             d.head.head_pitch
         })));
-        parameters.push(Box::new(FloatParam::new("v2/Head/Roll", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/Roll", |d| {
             d.head.head_roll
         })));
-        parameters.push(Box::new(FloatParam::new("v2/Head/PosX", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/PosX", |d| {
             d.head.head_pos_x
         })));
-        parameters.push(Box::new(FloatParam::new("v2/Head/PosY", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/PosY", |d| {
             d.head.head_pos_y
         })));
-        parameters.push(Box::new(FloatParam::new("v2/Head/PosZ", |d| {
+        parameters.push(Box::new(EParam::simple("v2/Head/PosZ", |d| {
             d.head.head_pos_z
         })));
 
@@ -480,41 +478,38 @@ impl ParameterRegistry {
             }
         }
 
-        // v2/ Simple Expressions
-        parameters.push(Box::new(EParam::simple("v2/BrowUpRight", |d| {
+        // v2/ Simple Expressions (threshold 0.0 per reference — bool always false)
+        parameters.push(Box::new(EParam::expression("v2/BrowUpRight", |d| {
             w(d, UnifiedExpressions::BrowOuterUpRight) * 0.6
                 + w(d, UnifiedExpressions::BrowInnerUpRight) * 0.4
         })));
-        parameters.push(Box::new(EParam::simple("v2/BrowUpLeft", |d| {
+        parameters.push(Box::new(EParam::expression("v2/BrowUpLeft", |d| {
             w(d, UnifiedExpressions::BrowOuterUpLeft) * 0.6
                 + w(d, UnifiedExpressions::BrowInnerUpLeft) * 0.4
         })));
-        parameters.push(Box::new(EParam::simple("v2/BrowDownRight", |d| {
+        parameters.push(Box::new(EParam::expression("v2/BrowDownRight", |d| {
             w(d, UnifiedExpressions::BrowLowererRight) * 0.75
                 + w(d, UnifiedExpressions::BrowPinchRight) * 0.25
         })));
-        parameters.push(Box::new(EParam::simple("v2/BrowDownLeft", |d| {
+        parameters.push(Box::new(EParam::expression("v2/BrowDownLeft", |d| {
             w(d, UnifiedExpressions::BrowLowererLeft) * 0.75
                 + w(d, UnifiedExpressions::BrowPinchLeft) * 0.25
         })));
-        parameters.push(Box::new(EParam::simple("v2/MouthSmileRight", |d| {
+        parameters.push(Box::new(EParam::expression("v2/MouthSmileRight", |d| {
             w(d, UnifiedExpressions::MouthCornerPullRight) * 0.8
                 + w(d, UnifiedExpressions::MouthCornerSlantRight) * 0.2
         })));
-        parameters.push(Box::new(EParam::simple("v2/MouthSmileLeft", |d| {
+        parameters.push(Box::new(EParam::expression("v2/MouthSmileLeft", |d| {
             w(d, UnifiedExpressions::MouthCornerPullLeft) * 0.8
                 + w(d, UnifiedExpressions::MouthCornerSlantLeft) * 0.2
         })));
-        parameters.push(Box::new(EParam::simple("v2/MouthSadRight", |d| {
+        parameters.push(Box::new(EParam::expression("v2/MouthSadRight", |d| {
             w(d, UnifiedExpressions::MouthFrownRight)
                 .max(w(d, UnifiedExpressions::MouthStretchRight))
         })));
-        parameters.push(Box::new(EParam::simple("v2/MouthSadLeft", |d| {
+        parameters.push(Box::new(EParam::expression("v2/MouthSadLeft", |d| {
             w(d, UnifiedExpressions::MouthFrownLeft).max(w(d, UnifiedExpressions::MouthStretchLeft))
         })));
-
-        // UnifiedExpressions Base Params (~70)
-        parameters.extend(create_unified_expression_params());
 
         // Legacy Eye Parameters
         parameters.extend(create_legacy_eye_parameters());
@@ -532,7 +527,7 @@ impl ParameterRegistry {
         // Eye tracking active: true if we have valid gaze data
         // Check if gaze values are non-zero or pupil has valid diameter
         parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "FT/EyeTrackingActive",
+            "EyeTrackingActive",
             |d| {
                 // Consider eye tracking active if we have any non-default gaze or pupil data
                 d.eye.left.gaze.x != 0.0
@@ -546,7 +541,7 @@ impl ParameterRegistry {
 
         // Expression tracking active: true if any expression weights are active
         parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "FT/ExpressionTrackingActive",
+            "ExpressionTrackingActive",
             |d| {
                 // Check if any expression weight is above threshold
                 d.shapes.iter().any(|s| s.weight > 0.01)
@@ -555,7 +550,7 @@ impl ParameterRegistry {
 
         // Lip tracking active: based on mouth-related expression activity
         parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "FT/LipTrackingActive",
+            "LipTrackingActive",
             |d| {
                 // Check mouth/jaw expressions specifically
                 let mouth_exprs = [

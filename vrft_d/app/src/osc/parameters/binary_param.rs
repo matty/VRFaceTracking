@@ -73,25 +73,42 @@ impl BinaryBaseParameter {
     }
 
     /// Matches binary parameter patterns:
-    /// - `/avatar/parameters/{name}N`
-    /// - `/avatar/parameters/FT/{name}N`
-    /// - `/avatar/parameters/OSCm/Binary/FT/{name}N` (VRChat OSCmooth format)
+    /// - `/avatar/parameters/{name}N` (exact)
+    /// - `/avatar/parameters/{prefix}/{name}N` (any prefix)
+    ///
+    /// Uses the same flexible suffix logic as `matches_address` in base_param.rs.
     fn matches_binary_pattern(&self, addr: &str) -> Option<u32> {
         let stripped = addr.strip_prefix(DEFAULT_PREFIX)?;
 
-        // Try various prefix combinations
-        let after_prefix = stripped
-            .strip_prefix("OSCm/Binary/FT/") // VRChat OSCmooth binary format
-            .or_else(|| stripped.strip_prefix("OSCm/Binary/"))
-            .or_else(|| stripped.strip_prefix("FT/"))
-            .unwrap_or(stripped);
-
-        if !after_prefix.starts_with(&self.name) {
-            return None;
+        // Exact match: "{name}{N}"
+        if stripped.len() > self.name.len() && stripped.starts_with(self.name.as_str()) {
+            let after = &stripped[self.name.len()..];
+            if let Ok(n) = after.parse::<u32>() {
+                return Some(n);
+            }
         }
 
-        let suffix = &after_prefix[self.name.len()..];
-        suffix.parse::<u32>().ok()
+        // Suffix match: ".../{name}{N}" with any prefix
+        let sep = format!("/{}", self.name);
+        if let Some(idx) = stripped.find(sep.as_str()) {
+            // Reject nested version prefixes (e.g., /v1/v2/Name)
+            if idx >= 2 {
+                let before = &stripped[..idx];
+                let bytes = before.as_bytes();
+                if bytes[bytes.len() - 1].is_ascii_digit()
+                    && bytes.len() >= 2
+                    && bytes[bytes.len() - 2] == b'v'
+                {
+                    return None;
+                }
+            }
+            let after_base = &stripped[idx + sep.len()..];
+            if let Ok(n) = after_base.parse::<u32>() {
+                return Some(n);
+            }
+        }
+
+        None
     }
 
     fn process_binary(&self, value: f32, binary_index: usize) -> bool {
@@ -155,6 +172,11 @@ impl Parameter for BinaryBaseParameter {
         }
 
         if params_to_create.is_empty() {
+            if self.negative_relevant {
+                // No binary bits but negative param exists — still relevant for the negative bool
+                self.relevant = true;
+                return 1;
+            }
             self.relevant = false;
             return 0;
         }
@@ -272,12 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_binary_pattern_rejects_custom_prefix() {
+    fn test_matches_binary_pattern_accepts_custom_prefix() {
         let param = BinaryBaseParameter::new("v2/SmileFrown", |_| 0.0);
+        // Custom prefixes are now accepted (same as float/bool params)
         assert_eq!(
             param.matches_binary_pattern("/avatar/parameters/Custom/v2/SmileFrown1"),
-            None
+            Some(1)
         );
+        // Wrong base name still rejected
         assert_eq!(
             param.matches_binary_pattern("/avatar/parameters/VF/SmileFrown1"),
             None
