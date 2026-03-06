@@ -25,3 +25,5 @@ obj/
 bin/
 
 .local/
+
+run/
