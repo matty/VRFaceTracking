@@ -5,7 +5,6 @@ pub mod legacy_eye;
 pub mod legacy_lip;
 pub mod native_param;
 pub mod registry;
-pub mod unified_expressions;
 
 use common::UnifiedTrackingData;
 use rosc::OscMessage;
