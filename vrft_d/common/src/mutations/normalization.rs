@@ -4,6 +4,9 @@ use crate::UnifiedTrackingData;
 use anyhow::Result;
 use std::any::Any;
 
+const DEFAULT_MIN_PUPIL_MM: f32 = 2.0;
+const DEFAULT_MAX_PUPIL_MM: f32 = 8.0;
+
 pub struct NormalizationMutation {
     min_pupil_l: f32,
     max_pupil_l: f32,
@@ -14,10 +17,10 @@ pub struct NormalizationMutation {
 impl NormalizationMutation {
     pub fn new(_config: &MutationConfig) -> Self {
         Self {
-            min_pupil_l: 999.0,
-            max_pupil_l: 0.0,
-            min_pupil_r: 999.0,
-            max_pupil_r: 0.0,
+            min_pupil_l: DEFAULT_MIN_PUPIL_MM,
+            max_pupil_l: DEFAULT_MAX_PUPIL_MM,
+            min_pupil_r: DEFAULT_MIN_PUPIL_MM,
+            max_pupil_r: DEFAULT_MAX_PUPIL_MM,
         }
     }
 }
@@ -31,6 +34,7 @@ impl Mutation for NormalizationMutation {
         let curr_l = data.eye.left.pupil_diameter_mm;
         let curr_r = data.eye.right.pupil_diameter_mm;
 
+        // Expand bounds if hardware reports outside
         if curr_l > 0.0 {
             if curr_l < self.min_pupil_l {
                 self.min_pupil_l = curr_l;
@@ -48,19 +52,19 @@ impl Mutation for NormalizationMutation {
             }
         }
 
-        if (self.max_pupil_l - self.min_pupil_l) > 0.001 {
-            data.eye.left.pupil_diameter_mm =
-                (curr_l - self.min_pupil_l) / (self.max_pupil_l - self.min_pupil_l);
+        let range_l = self.max_pupil_l - self.min_pupil_l;
+        data.eye.left.pupil_diameter_mm = if range_l > 0.001 {
+            ((curr_l - self.min_pupil_l) / range_l).clamp(0.0, 1.0)
         } else {
-            data.eye.left.pupil_diameter_mm = 0.5;
-        }
+            0.5
+        };
 
-        if (self.max_pupil_r - self.min_pupil_r) > 0.001 {
-            data.eye.right.pupil_diameter_mm =
-                (curr_r - self.min_pupil_r) / (self.max_pupil_r - self.min_pupil_r);
+        let range_r = self.max_pupil_r - self.min_pupil_r;
+        data.eye.right.pupil_diameter_mm = if range_r > 0.001 {
+            ((curr_r - self.min_pupil_r) / range_r).clamp(0.0, 1.0)
         } else {
-            data.eye.right.pupil_diameter_mm = 0.5;
-        }
+            0.5
+        };
     }
 
     fn name(&self) -> &str {
