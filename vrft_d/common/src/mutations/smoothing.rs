@@ -59,22 +59,22 @@ impl Mutation for SmoothingMutation {
         Ok(())
     }
 
-    fn mutate(&mut self, data: &mut UnifiedTrackingData, _dt: f32) {
-        data.eye.left.openness = self.openness_left.filter(data.eye.left.openness);
-        data.eye.right.openness = self.openness_right.filter(data.eye.right.openness);
+    fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
+        data.eye.left.openness = self.openness_left.filter(data.eye.left.openness, dt);
+        data.eye.right.openness = self.openness_right.filter(data.eye.right.openness, dt);
 
-        data.eye.left.gaze.x = self.gaze_left_x.filter(data.eye.left.gaze.x);
-        data.eye.left.gaze.y = self.gaze_left_y.filter(data.eye.left.gaze.y);
-        data.eye.right.gaze.x = self.gaze_right_x.filter(data.eye.right.gaze.x);
-        data.eye.right.gaze.y = self.gaze_right_y.filter(data.eye.right.gaze.y);
+        data.eye.left.gaze.x = self.gaze_left_x.filter(data.eye.left.gaze.x, dt);
+        data.eye.left.gaze.y = self.gaze_left_y.filter(data.eye.left.gaze.y, dt);
+        data.eye.right.gaze.x = self.gaze_right_x.filter(data.eye.right.gaze.x, dt);
+        data.eye.right.gaze.y = self.gaze_right_y.filter(data.eye.right.gaze.y, dt);
 
-        data.eye.left.pupil_diameter_mm = self.pupil_left.filter(data.eye.left.pupil_diameter_mm);
+        data.eye.left.pupil_diameter_mm = self.pupil_left.filter(data.eye.left.pupil_diameter_mm, dt);
         data.eye.right.pupil_diameter_mm =
-            self.pupil_right.filter(data.eye.right.pupil_diameter_mm);
+            self.pupil_right.filter(data.eye.right.pupil_diameter_mm, dt);
 
         for i in 0..data.shapes.len() {
             if i < self.shapes.len() {
-                data.shapes[i].weight = self.shapes[i].filter(data.shapes[i].weight);
+                data.shapes[i].weight = self.shapes[i].filter(data.shapes[i].weight, dt);
             }
         }
     }
