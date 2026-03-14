@@ -27,3 +27,4 @@ bin/
 .local/
 
 run/
+.worktrees/
