@@ -54,10 +54,14 @@ impl EuroFilter {
         hat_x
     }
 
-    pub fn filter(&mut self, x: f32) -> f32 {
+    pub fn filter(&mut self, x: f32, dt: f32) -> f32 {
         if x.is_nan() {
             return 0.0;
         }
+
+        // Derive sample rate from frame delta time
+        let hz = if dt > 0.0 { 1.0 / dt } else { self.hz };
+        self.hz = hz;
 
         if !self.initialized {
             self.initialized = true;
@@ -67,12 +71,12 @@ impl EuroFilter {
             return x;
         }
 
-        let dx = (x - self.raw_x_prev) * self.hz;
+        let dx = (x - self.raw_x_prev) * hz;
         self.raw_x_prev = x;
 
-        let edx = Self::low_pass(&mut self.dx_prev, dx, Self::alpha(self.hz, self.d_cutoff));
+        let edx = Self::low_pass(&mut self.dx_prev, dx, Self::alpha(hz, self.d_cutoff));
         let cutoff = self.min_cutoff + self.beta * edx.abs();
 
-        Self::low_pass(&mut self.x_prev, x, Self::alpha(self.hz, cutoff))
+        Self::low_pass(&mut self.x_prev, x, Self::alpha(hz, cutoff))
     }
 }
