@@ -21,9 +21,7 @@ impl ParameterRegistry {
         }
 
         // Head Tracking
-        parameters.push(Box::new(EParam::simple("v2/Head/Yaw", |d| {
-            d.head.head_yaw
-        })));
+        parameters.push(Box::new(EParam::simple("v2/Head/Yaw", |d| d.head.head_yaw)));
         parameters.push(Box::new(EParam::simple("v2/Head/Pitch", |d| {
             d.head.head_pitch
         })));

@@ -19,7 +19,7 @@ fn main() -> Result<()> {
             Ok((amt, src)) => {
                 // println!("Received {} bytes from {}", amt, src);
                 let slice = &buf[..amt];
-                
+
                 // Try to deserialize as JSON
                 match serde_json::from_slice::<UnifiedTrackingData>(slice) {
                     Ok(data) => {
