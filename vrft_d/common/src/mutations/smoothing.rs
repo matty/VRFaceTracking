@@ -68,9 +68,11 @@ impl Mutation for SmoothingMutation {
         data.eye.right.gaze.x = self.gaze_right_x.filter(data.eye.right.gaze.x, dt);
         data.eye.right.gaze.y = self.gaze_right_y.filter(data.eye.right.gaze.y, dt);
 
-        data.eye.left.pupil_diameter_mm = self.pupil_left.filter(data.eye.left.pupil_diameter_mm, dt);
-        data.eye.right.pupil_diameter_mm =
-            self.pupil_right.filter(data.eye.right.pupil_diameter_mm, dt);
+        data.eye.left.pupil_diameter_mm =
+            self.pupil_left.filter(data.eye.left.pupil_diameter_mm, dt);
+        data.eye.right.pupil_diameter_mm = self
+            .pupil_right
+            .filter(data.eye.right.pupil_diameter_mm, dt);
 
         for i in 0..data.shapes.len() {
             if i < self.shapes.len() {

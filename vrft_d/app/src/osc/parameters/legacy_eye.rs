@@ -1,8 +1,8 @@
 //! Legacy eye tracking parameters for backwards compatibility with older avatars.
 
 use super::base_param::BoolParam;
-use super::eparam::EParam;
 use super::binary_param::BinaryBaseParameter;
+use super::eparam::EParam;
 use super::Parameter;
 use common::{UnifiedExpressions, UnifiedTrackingData};
 
@@ -84,22 +84,34 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
     })));
 
     // Eye Lid Expanded (Float + Bool, binary handled separately below)
-    params.push(Box::new(EParam::new("LeftEyeLidExpanded", |d| {
-        w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8
-    }, 0.5, true)));
-    params.push(Box::new(EParam::new("RightEyeLidExpanded", |d| {
-        w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8
-    }, 0.5, true)));
-    params.push(Box::new(EParam::new("EyeLidExpanded", |d| {
-        (w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.1
-            + (d.eye.left.openness + d.eye.right.openness) * 0.4
-    }, 0.5, true)));
+    params.push(Box::new(EParam::new(
+        "LeftEyeLidExpanded",
+        |d| w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8,
+        0.5,
+        true,
+    )));
+    params.push(Box::new(EParam::new(
+        "RightEyeLidExpanded",
+        |d| w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8,
+        0.5,
+        true,
+    )));
+    params.push(Box::new(EParam::new(
+        "EyeLidExpanded",
+        |d| {
+            (w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.1
+                + (d.eye.left.openness + d.eye.right.openness) * 0.4
+        },
+        0.5,
+        true,
+    )));
 
     // Eye Lid Expanded Squeeze (Float + Bool, binary handled separately below)
     params.push(Box::new(EParam::new(
         "LeftEyeLidExpandedSqueeze",
         |d| w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8 - squeeze(d, 0),
-        0.5, true,
+        0.5,
+        true,
     )));
     params.push(Box::new(EParam::new(
         "RightEyeLidExpandedSqueeze",
@@ -107,15 +119,21 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
             w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8
                 - squeeze(d, 1)
         },
-        0.5, true,
+        0.5,
+        true,
     )));
-    params.push(Box::new(EParam::new("EyeLidExpandedSqueeze", |d| {
-        ((w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.2
-            + (d.eye.left.openness + d.eye.right.openness) * 0.8
-            - squeeze(d, 0)
-            - squeeze(d, 1))
-            * 0.5
-    }, 0.5, true)));
+    params.push(Box::new(EParam::new(
+        "EyeLidExpandedSqueeze",
+        |d| {
+            ((w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.2
+                + (d.eye.left.openness + d.eye.right.openness) * 0.8
+                - squeeze(d, 0)
+                - squeeze(d, 1))
+                * 0.5
+        },
+        0.5,
+        true,
+    )));
 
     // Eye Lid Expanded Binary
     // Uses conditional selection based on combined eyelid value:
