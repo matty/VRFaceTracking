@@ -243,8 +243,12 @@ impl ModuleLogger {
     }
 
     fn log(&self, level: LogLevel, message: &str) {
-        let target = std::ffi::CString::new(self.module_name.as_str()).unwrap();
-        let msg = std::ffi::CString::new(message).unwrap();
+        let Ok(target) = std::ffi::CString::new(self.module_name.as_str()) else {
+            return;
+        };
+        let Ok(msg) = std::ffi::CString::new(message) else {
+            return;
+        };
         (self.callback)(level, target.as_ptr(), msg.as_ptr());
     }
 }
