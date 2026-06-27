@@ -34,8 +34,10 @@ pub enum ModuleRuntime {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleConfig {
-    /// Which module runtime to use (Native or .NET)
-    pub runtime: ModuleRuntime,
+    /// Deprecated: runtime is now auto-detected from the plugin's PE header.
+    /// Retained only so older configs that still specify it continue to parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<ModuleRuntime>,
     /// The active module/plugin to load
     #[serde(default = "default_active_module")]
     pub active: String,
@@ -44,7 +46,7 @@ pub struct ModuleConfig {
 impl Default for ModuleConfig {
     fn default() -> Self {
         Self {
-            runtime: ModuleRuntime::default(),
+            runtime: None,
             active: default_active_module(),
         }
     }
@@ -306,4 +308,31 @@ impl UnifiedTrackingMutator {
 pub trait IntegrationAdapter: Send + Sync {
     fn initialize(&mut self) -> anyhow::Result<()>;
     fn send(&self, data: &UnifiedTrackingData) -> anyhow::Result<()>;
+}
+
+#[cfg(test)]
+mod module_config_tests {
+    use super::*;
+
+    #[test]
+    fn old_config_with_runtime_field_still_parses() {
+        let json = r#"{ "runtime": "Native", "active": "vd_module.dll" }"#;
+        let cfg: ModuleConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.active, "vd_module.dll");
+        assert_eq!(cfg.runtime, Some(ModuleRuntime::Native));
+    }
+
+    #[test]
+    fn config_without_runtime_field_parses() {
+        let json = r#"{ "active": "vd_module.dll" }"#;
+        let cfg: ModuleConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.runtime, None);
+    }
+
+    #[test]
+    fn default_config_omits_runtime_when_serialized() {
+        let cfg = ModuleConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("runtime"), "serialized default was: {json}");
+    }
 }
