@@ -1,0 +1,32 @@
+[package]
+name = "vrft-daemon"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vrft_d"
+path = "src/main.rs"
+
+[lib]
+name = "vrft_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+vrft-common = { workspace = true }
+vrft-api = { workspace = true }
+libloading = "0.9"
+rosc = "0.11"
+tokio = { version = "1.49", features = ["full"] }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+ureq = { version = "3.1", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+mdns-sd = "0.17"
+axum = "0.8"
+ctrlc = "3.5"
+fancy-regex = "0.17"
+
+[features]
+xtralog = []

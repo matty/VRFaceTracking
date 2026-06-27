@@ -1,12 +1,13 @@
 [package]
-name = "test_logger"
-version = "0.1.0"
-edition = "2021"
+name = "vrft-test-logger"
+version.workspace = true
+edition.workspace = true
 
 [lib]
+name = "test_logger"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "../../vrft_d/api" }
-log = "0.4"
-anyhow = "1.0"
+vrft-api = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }

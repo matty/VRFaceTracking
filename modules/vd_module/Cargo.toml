@@ -1,20 +1,21 @@
 [package]
-name = "vd_module"
-version = "0.1.0"
-edition = "2021"
+name = "vrft-vd-module"
+version.workspace = true
+edition.workspace = true
 
 [lib]
+name = "vd_module"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "../../vrft_d/api" }
+vrft-api = { workspace = true }
 memmap2 = "0.9"
-glam = "0.31"
-anyhow = "1.0"
-log = "0.4"
+glam = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
 
 [dependencies.windows]
-version = "0.62"
+workspace = true
 features = [
     "Win32_Foundation",
     "Win32_System_Threading",

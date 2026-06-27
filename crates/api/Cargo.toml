@@ -1,0 +1,22 @@
+[package]
+name = "vrft-api"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "vrft_api"
+
+[dependencies]
+glam = { workspace = true, features = ["bytemuck", "serde"] }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }
+
+[features]
+xtralog = []

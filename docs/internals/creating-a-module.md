@@ -10,13 +10,13 @@ The `vrft_d` system uses a plugin architecture where tracking modules are dynami
 
 ### Key Components
 
-1.  **API Crate** (`vrft_d/api`): Defines the shared interface and data types.
+1.  **API Crate** (`crates/api`, package `vrft-api`): Defines the shared interface and data types.
 2.  **Module Implementation**: Your plugin code that implements `TrackingModule`.
 3.  **Dynamic Loading**: The host application loads your module as a C-compatible dynamic library.
 
 ### Core Data Types
 
-The API provides several key types defined in [`vrft_d/api/src/lib.rs`](../vrft_d/api/src/lib.rs):
+The API provides several key types defined in [`crates/api/src/lib.rs`](../../crates/api/src/lib.rs):
 
 - `UnifiedTrackingData`: Contains eye, expression shapes, and head pose data.
 - `UnifiedEyeData`: Eye gaze, openness, and pupil diameter.
@@ -48,7 +48,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-api = { path = "../../vrft_d/api" }
+vrft-api = { path = "../../crates/api" }
 anyhow = "1.0"
 glam = "0.31"
 ```
@@ -113,9 +113,9 @@ members = [
 ]
 ```
 
-Build in release mode and copy the DLL to the `plugins/native/` directory:
+Build in release mode and copy the DLL into the `plugins/` directory (scanned recursively; the daemon auto-detects it as a native module from its PE header):
 
 ```bash
 cargo build --release -p my_module
-copy target\release\my_module.dll plugins\native\
+copy target\release\my_module.dll plugins\
 ```
