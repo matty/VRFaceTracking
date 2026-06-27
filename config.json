@@ -1,6 +1,5 @@
 {
   "module": {
-    "runtime": "Native",
     "active": "vd_module.dll"
   },
   "mutator": {

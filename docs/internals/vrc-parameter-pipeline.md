@@ -13,7 +13,7 @@ The system follows a **"Calculate All, Filter Later"** approach. This ensures ro
 
 ## 1. Parameter Registry
 
-**Location**: `vrft_d/app/src/osc/parameters/registry.rs`
+**Location**: `crates/daemon/src/osc/parameters/registry.rs`
 
 `ParameterRegistry::new()` builds the full set of parameters the system can produce. Each parameter is a boxed `Parameter` trait object with a compute closure.
 
@@ -25,7 +25,7 @@ The system follows a **"Calculate All, Filter Later"** approach. This ensures ro
 
 ## 2. Filtering and Dispatch (`VRChatOsc`)
 
-**Location**: `vrft_d/app/src/osc/vrchat.rs`
+**Location**: `crates/daemon/src/osc/vrchat.rs`
 
 Optimization occurs at the dispatch stage:
 

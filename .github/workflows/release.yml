@@ -33,27 +33,29 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Build Release
-        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft_d
+        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-daemon
 
       - name: Build Plugins
-        run: cargo build --release --target x86_64-pc-windows-msvc -p vd_module
+        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-vd-module
 
       - name: Build .NET Host
         run: |
-          dotnet publish vrft_d/dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o vrft_d/dotnet/publish
+          dotnet publish dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o dotnet/publish
 
       - name: Prepare Packages
         shell: pwsh
         run: |
           $release_dir = "target/x86_64-pc-windows-msvc/release"
 
-          function Make-Package($name, $runtime, $active, $bundle_dotnet) {
+          function Make-Package($name, $active, $bundle_dotnet) {
             New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
             Copy-Item "$release_dir/vrft_d.exe" "$name/"
 
+            # Runtime (native vs .NET) is auto-detected from each plugin's PE header,
+            # so no `runtime` field is needed.
             $config = @{
-              module = @{ runtime = $runtime; active = $active }
+              module = @{ active = $active }
               mutator = @{ enabled = $true; smoothness = 0.0 }
               calibration = @{ enabled = $false; continuous = $false; blend = 1.0 }
               osc = @{ output_mode = "VRChat"; send_address = "127.0.0.1"; send_port = 9000 }
@@ -61,20 +63,21 @@ jobs:
             } | ConvertTo-Json -Depth 10
             [System.IO.File]::WriteAllText("$name/config.json", $config)
 
-            New-Item -ItemType Directory -Force -Path "$name/plugins/native" | Out-Null
-            Copy-Item "$release_dir/vd_module.dll" "$name/plugins/native/"
+            # All plugins live in a single recursively-scanned plugins/ folder.
+            New-Item -ItemType Directory -Force -Path "$name/plugins" | Out-Null
+            Copy-Item "$release_dir/vd_module.dll" "$name/plugins/"
 
             if ($bundle_dotnet) {
-              New-Item -ItemType Directory -Force -Path "$name/plugins/dotnet/host" | Out-Null
-              New-Item -ItemType Directory -Force -Path "$name/plugins/dotnet/modules" | Out-Null
-              Copy-Item "vrft_d/dotnet/publish/VrcftRuntime.exe" "$name/plugins/dotnet/host/"
+              # The .NET host lives in a dedicated runtime/ dir outside plugins/.
+              New-Item -ItemType Directory -Force -Path "$name/runtime" | Out-Null
+              Copy-Item "dotnet/publish/VrcftRuntime.exe" "$name/runtime/"
             }
 
             Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
           }
 
-          Make-Package "vrft_d-x86_64-windows-std"          "Native" "vd_module.dll"                      $false
-          Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "Vrcft"  "VirtualDesktop.FaceTracking.dll"   $true
+          Make-Package "vrft_d-x86_64-windows-std"           "vd_module.dll"                   $false
+          Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "VirtualDesktop.FaceTracking.dll" $true
 
       - name: Publish Dev Release
         uses: softprops/action-gh-release@v2

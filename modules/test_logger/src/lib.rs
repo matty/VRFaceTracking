@@ -1,7 +1,7 @@
 // This is a test plugin demonstrating module logging capabilities.
 
 use anyhow::Result;
-use api::{ModuleLogger, TrackingModule, UnifiedTrackingData};
+use vrft_api::{ModuleLogger, TrackingModule, UnifiedTrackingData};
 
 pub struct TestLogger {
     frame_count: u64,

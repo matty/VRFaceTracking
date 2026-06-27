@@ -41,7 +41,7 @@ Open `config.json` and set the `active` module filename:
 
 ```json
 {
-  "module": { "runtime": "Native", "active": "vd_module.dll" },
+  "module": { "active": "vd_module.dll" },
   "mutator": { "enabled": true, "smoothness": 0.0 },
   "calibration": { "enabled": false, "continuous": false, "blend": 1.0 },
   "osc": { "output_mode": "VRChat", "send_address": "127.0.0.1", "send_port": 9000 },
@@ -49,7 +49,7 @@ Open `config.json` and set the `active` module filename:
 }
 ```
 
-For VRCFT .NET modules, change `runtime` to `"Vrcft"` and set `active` to your module filename.
+For VRCFT .NET modules, just set `active` to your module filename — the daemon auto-detects that it's a .NET module and launches it via the runtime host.
 
 For a full reference of all config options, see [Configuration](configuration.md).
 

@@ -2,10 +2,10 @@
 // https://github.com/guygodin/VirtualDesktop.VRCFaceTracking
 
 use anyhow::Result;
-use api::{ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
 use glam::{Quat, Vec2};
 use std::thread;
 use std::time::Duration;
+use vrft_api::{ModuleLogger, TrackingModule, UnifiedExpressions, UnifiedTrackingData};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{OpenEventW, WaitForSingleObject, EVENT_ALL_ACCESS};
 

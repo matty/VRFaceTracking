@@ -30,18 +30,16 @@ jobs:
     - name: Validate Plugin Structure
       shell: pwsh
       run: |
-        # Ensure we can build modules
-        cargo build -p vd_module
-        
-        # Verify structure logic (simulation of release script logic)
+        # Ensure the cdylib plugin builds
+        cargo build -p vrft-vd-module
+
+        # Verify the unified runtime layout: plugins/ (scanned) + runtime/ (host)
         $test_dir = "test_structure"
-        New-Item -ItemType Directory -Force -Path "$test_dir/plugins/native"
-        New-Item -ItemType Directory -Force -Path "$test_dir/plugins/dotnet/host"
-        New-Item -ItemType Directory -Force -Path "$test_dir/plugins/dotnet/modules"
-        
-        if (-not (Test-Path "$test_dir/plugins/native")) { throw "Missing plugins/native" }
-        if (-not (Test-Path "$test_dir/plugins/dotnet/host")) { throw "Missing plugins/dotnet/host" }
-        if (-not (Test-Path "$test_dir/plugins/dotnet/modules")) { throw "Missing plugins/dotnet/modules" }
+        New-Item -ItemType Directory -Force -Path "$test_dir/plugins"
+        New-Item -ItemType Directory -Force -Path "$test_dir/runtime"
+
+        if (-not (Test-Path "$test_dir/plugins")) { throw "Missing plugins/" }
+        if (-not (Test-Path "$test_dir/runtime")) { throw "Missing runtime/" }
         Write-Host "✓ Plugin structure validated."
 
     - name: Run tests

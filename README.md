@@ -25,7 +25,7 @@ vrft_d sends unified expression parameters with the `v2/` prefix. Each expressio
 
 ## For Developers
 
-vrft_d is a Cargo workspace. The core executable is `vrft_d/app/`. Tracking modules are `cdylib` crates in `modules/` implementing the `TrackingModule` trait.
+vrft_d is a Cargo workspace. Library and binary crates live under `crates/` (the core executable is `crates/daemon/`, package `vrft-daemon`, binary `vrft_d`). Tracking modules are `cdylib` crates in `modules/` implementing the `TrackingModule` trait.
 
 **[Architecture Overview →](docs/internals/architecture.md)**
 **[Creating a Module →](docs/internals/creating-a-module.md)**

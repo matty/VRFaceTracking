@@ -9,7 +9,6 @@ The daemon is configured via a `config.json` file located alongside the executab
 ```json
 {
   "module": {
-    "runtime": "Native",
     "active": "vd_module.dll"
   },
   "mutator": {
@@ -34,8 +33,7 @@ The daemon is configured via a `config.json` file located alongside the executab
 
 | Section | Parameter | Type | Description |
 | :------ | :-------- | :--- | :---------- |
-| `module` | `runtime` | string | Module runtime: `Native` (Rust `.dll`) or `Vrcft` (.NET via VrcftRuntime). |
-| `module` | `active` | string | Filename of the tracking module to load. |
+| `module` | `active` | string | Filename of the tracking module to load. Its runtime (native Rust vs .NET/VRCFT) is auto-detected from the `.dll`'s PE header — no `runtime` field is needed. (A legacy `runtime` value in older configs still parses but is ignored.) |
 | `mutator` | `enabled` | bool | Whether to enable the mutation pipeline. |
 | `mutator` | `smoothness` | float | Smoothing amount (0.0 to 1.0). |
 | `calibration` | `enabled` | bool | Whether to enable runtime calibration. |
