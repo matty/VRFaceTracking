@@ -132,24 +132,24 @@ impl OscQueryService {
                                 );
                             }
                         }
-                        ServiceEvent::ServiceRemoved(_type, fullname) => {
-                            // Check if the removed service was VRChat
-                            if fullname.starts_with("VRChat-Client-") {
-                                info!(
-                                    "VRChat Service Removed: {}. Restarting mDNS discovery...",
-                                    fullname
-                                );
-                                {
-                                    let mut lock = current_url_mdns.lock().unwrap();
-                                    *lock = None;
-                                }
-                                let _ = sender_mdns.send(None);
-
-                                // Break the inner loop to restart the daemon
-                                // This is important because mDNS daemons might get stuck or need re-binding
-                                // if network interfaces changed (which often causes the service removal).
-                                break;
+                        // Check if the removed service was VRChat
+                        ServiceEvent::ServiceRemoved(_type, fullname)
+                            if fullname.starts_with("VRChat-Client-") =>
+                        {
+                            info!(
+                                "VRChat Service Removed: {}. Restarting mDNS discovery...",
+                                fullname
+                            );
+                            {
+                                let mut lock = current_url_mdns.lock().unwrap();
+                                *lock = None;
                             }
+                            let _ = sender_mdns.send(None);
+
+                            // Break the inner loop to restart the daemon
+                            // This is important because mDNS daemons might get stuck or need re-binding
+                            // if network interfaces changed (which often causes the service removal).
+                            break;
                         }
                         _ => {}
                     }
