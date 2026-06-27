@@ -7,7 +7,8 @@ $ErrorActionPreference = "Stop"
 $env:RUST_LOG = "info,vrft_d=debug,vd_module=debug"
 
 $runDir = "run"
-$pluginsDir = Join-Path $runDir "plugins/native"
+$pluginsDir = Join-Path $runDir "plugins"
+$runtimeDir = Join-Path $runDir "runtime"
 
 Write-Host "Building workspace in debug mode..." -ForegroundColor Cyan
 cargo build
@@ -21,6 +22,9 @@ if ($LASTEXITCODE -ne 0) {
 if (!(Test-Path $pluginsDir)) {
     Write-Host "Creating run directory structure..." -ForegroundColor Yellow
     New-Item -ItemType Directory -Path $pluginsDir -Force | Out-Null
+}
+if (!(Test-Path $runtimeDir)) {
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 }
 
 # Stage artifacts

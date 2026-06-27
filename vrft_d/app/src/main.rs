@@ -1,15 +1,14 @@
 use vrft_d::osc;
 
 use vrft_d::dispatcher;
+use vrft_d::plugin_loader::{self, PluginKind};
 use vrft_d::strategies;
 
 use anyhow::Result;
 use api::{
     LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
 };
-use common::{
-    CalibrationData, CalibrationState, ModuleRuntime, MutationConfig, UnifiedTrackingMutator,
-};
+use common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::{CalibrationStatus, OscQueryHost};
@@ -95,116 +94,98 @@ fn main() -> Result<()> {
 
     let mut modules: Vec<LoadedModule> = Vec::new();
 
-    let mut native_plugins_dir = Path::new("plugins/native").to_path_buf();
-    if !native_plugins_dir.exists() {
-        let parent_native = Path::new("../plugins/native");
-        if parent_native.exists() {
-            native_plugins_dir = parent_native.to_path_buf();
+    // Resolve the single plugins directory (with dev-run parent fallback).
+    let mut plugins_dir = Path::new("plugins").to_path_buf();
+    if !plugins_dir.exists() {
+        let parent = Path::new("../plugins");
+        if parent.exists() {
+            plugins_dir = parent.to_path_buf();
         }
     }
 
-    if native_plugins_dir.exists() {
-        for entry in fs::read_dir(&native_plugins_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|ext| ext == "dll" || ext == "so" || ext == "dylib")
-            {
-                let filename = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                info!("Loading module: {:?}", path);
-
-                match (|| -> Result<(Box<dyn TrackingModule>, Library)> {
-                    unsafe {
-                        let lib = Library::new(&path)?;
-                        let func: Symbol<unsafe extern "C" fn() -> Box<dyn TrackingModule>> =
-                            lib.get(b"create_module")?;
-                        let module = func();
-                        Ok((module, lib))
-                    }
-                })() {
-                    Ok((module, lib)) => {
-                        info!("✓ Successfully loaded module: {}", filename);
-                        modules.push(LoadedModule {
-                            name: filename,
-                            module,
-                            _lib: Some(lib),
-                        });
-                    }
-                    Err(e) => {
-                        error!("✗ Failed to load module {:?}: {}", path, e);
-                    }
-                }
-            }
-        }
-    } else {
-        warn!("'plugins/native' directory not found. Creating it.");
-        fs::create_dir_all(native_plugins_dir)?;
+    if !plugins_dir.exists() {
+        warn!("'plugins' directory not found. Creating it.");
+        fs::create_dir_all(&plugins_dir)?;
     }
 
-    // Check if the active plugin is already satisfied by a native module
-    let native_active_found = modules.iter().any(|m| m.name == config.module.active);
-
-    // Attempt .NET module loading if configured and native module not found
-    if config.module.runtime == ModuleRuntime::Vrcft && !native_active_found {
-        let mut vrcft_dir = Path::new("plugins/dotnet/modules").to_path_buf();
-        let mut host_exe = Path::new("plugins/dotnet/host/VrcftRuntime.exe").to_path_buf();
-
-        if !vrcft_dir.exists() {
-            let parent_vrcft = Path::new("../plugins/dotnet/modules");
-            if parent_vrcft.exists() {
-                vrcft_dir = parent_vrcft.to_path_buf();
-            }
+    // Resolve the .NET host directory (outside the scanned plugins tree).
+    let mut host_exe = Path::new("runtime/VrcftRuntime.exe").to_path_buf();
+    if !host_exe.exists() {
+        let parent_host = Path::new("../runtime/VrcftRuntime.exe");
+        if parent_host.exists() {
+            host_exe = parent_host.to_path_buf();
         }
-        if !host_exe.exists() {
-            let parent_host = Path::new("../plugins/dotnet/host/VrcftRuntime.exe");
-            if parent_host.exists() {
-                host_exe = parent_host.to_path_buf();
-            }
-        }
+    }
 
-        if vrcft_dir.exists() {
-            let target_dll = vrcft_dir.join(&config.module.active);
-            if target_dll.exists() {
-                if host_exe.exists() {
-                    let mut proxy = ProxyModule::new();
-                    info!("Starting VrcftRuntime for module: {:?}", target_dll);
-                    match proxy.start(&host_exe, &target_dll) {
-                        Ok(_) => {
-                            info!("✓ VrcftRuntime started successfully.");
+    let discovered = plugin_loader::discover_plugins(&plugins_dir);
+    info!(
+        "Discovered {} plugin(s) under {:?}",
+        discovered.len(),
+        plugins_dir
+    );
+
+    match discovered.iter().find(|p| p.name == config.module.active) {
+        Some(plugin) => {
+            info!(
+                "Loading active plugin: {:?} ({:?})",
+                plugin.path, plugin.kind
+            );
+            match plugin.kind {
+                PluginKind::Native => {
+                    match (|| -> Result<(Box<dyn TrackingModule>, Library)> {
+                        unsafe {
+                            let lib = Library::new(&plugin.path)?;
+                            let func: Symbol<unsafe extern "C" fn() -> Box<dyn TrackingModule>> =
+                                lib.get(b"create_module")?;
+                            let module = func();
+                            Ok((module, lib))
+                        }
+                    })() {
+                        Ok((module, lib)) => {
+                            info!("✓ Successfully loaded native module: {}", plugin.name);
                             modules.push(LoadedModule {
-                                name: config.module.active.clone(),
-                                module: Box::new(proxy),
-                                _lib: None,
+                                name: plugin.name.clone(),
+                                module,
+                                _lib: Some(lib),
                             });
                         }
-                        Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
+                        Err(e) => {
+                            error!("✗ Failed to load native module {:?}: {}", plugin.path, e)
+                        }
                     }
-                } else {
-                    error!("✗ VrcftRuntime.exe not found at {:?}", host_exe);
                 }
-            } else {
-                debug!(
-                    "No VRCFT module found matching '{}' in '{:?}'",
-                    config.module.active, vrcft_dir
-                );
+                PluginKind::Managed => {
+                    if host_exe.exists() {
+                        let mut proxy = ProxyModule::new();
+                        info!("Starting VrcftRuntime for module: {:?}", plugin.path);
+                        match proxy.start(&host_exe, &plugin.path) {
+                            Ok(_) => {
+                                info!("✓ VrcftRuntime started successfully.");
+                                modules.push(LoadedModule {
+                                    name: plugin.name.clone(),
+                                    module: Box::new(proxy),
+                                    _lib: None,
+                                });
+                            }
+                            Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
+                        }
+                    } else {
+                        error!(
+                            "✗ Active plugin '{}' is a managed module but VrcftRuntime.exe was not found at {:?}",
+                            plugin.name, host_exe
+                        );
+                    }
+                }
             }
         }
-    } else if config.module.runtime == ModuleRuntime::Native && !native_active_found {
-        debug!(
-            "module_runtime is Native but active plugin '{}' not found in native modules.",
-            config.module.active
-        );
-    } else if native_active_found {
-        info!(
-            "Active plugin '{}' is a native module. Skipping VRCFT search.",
-            config.module.active
-        );
+        None => {
+            error!(
+                "Active plugin '{}' not found among {} discovered plugin(s) in {:?}",
+                config.module.active,
+                discovered.len(),
+                plugins_dir
+            );
+        }
     }
 
     if modules.is_empty() {
