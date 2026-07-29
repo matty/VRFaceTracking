@@ -18,7 +18,8 @@ impl VRChatOscStrategy {
         context: OscContext,
     ) -> (Self, Router, Option<Receiver<String>>) {
         let inner = VRChatOsc::new(target_addr, receive_port);
-        let router = vrchat::get_router(context.tracking_data, 9001);
+        // Advertise the port we actually listen on, not a fixed default.
+        let router = vrchat::get_router(context.tracking_data, receive_port);
 
         let change_rx = inner.change_rx.lock().unwrap().take();
 
