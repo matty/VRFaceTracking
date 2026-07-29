@@ -488,7 +488,19 @@ fn main() -> Result<()> {
     let mut log_interval: u64 = 1000;
     let mut last_log = std::time::Instant::now();
     let mut last_frame_time = std::time::Instant::now();
-    let target_frame_duration = config.max_fps.map(|fps| Duration::from_secs_f32(1.0 / fps));
+    // A non-positive or non-finite value would make Duration::from_secs_f32
+    // panic, and max_fps comes straight from user-editable config.
+    let target_frame_duration = config
+        .max_fps
+        .filter(|fps| {
+            if fps.is_finite() && *fps > 0.0 {
+                true
+            } else {
+                warn!("Ignoring invalid max_fps value {}; running uncapped", fps);
+                false
+            }
+        })
+        .map(|fps| Duration::from_secs_f32(1.0 / fps));
 
     while running.load(Ordering::SeqCst) {
         let mut any_updated = false;
