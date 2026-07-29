@@ -54,21 +54,32 @@ impl EuroFilter {
         hat_x
     }
 
+    fn is_state_finite(&self) -> bool {
+        self.x_prev.is_finite() && self.dx_prev.is_finite() && self.raw_x_prev.is_finite()
+    }
+
+    fn seed(&mut self, x: f32) -> f32 {
+        self.initialized = true;
+        self.raw_x_prev = x;
+        self.x_prev = x;
+        self.dx_prev = 0.0;
+        x
+    }
+
     pub fn filter(&mut self, x: f32, dt: f32) -> f32 {
-        if x.is_nan() {
-            return 0.0;
+        // Reject any non-finite sample before it can reach the filter state. An
+        // infinite sample would produce Inf - Inf on the next call, and the
+        // resulting NaN would persist for the lifetime of the filter.
+        if !x.is_finite() {
+            return if self.initialized { self.x_prev } else { 0.0 };
         }
 
         // Derive sample rate from frame delta time
         let hz = if dt > 0.0 { 1.0 / dt } else { self.hz };
         self.hz = hz;
 
-        if !self.initialized {
-            self.initialized = true;
-            self.raw_x_prev = x;
-            self.x_prev = x;
-            self.dx_prev = 0.0;
-            return x;
+        if !self.initialized || !self.is_state_finite() {
+            return self.seed(x);
         }
 
         let dx = (x - self.raw_x_prev) * hz;
@@ -77,6 +88,14 @@ impl EuroFilter {
         let edx = Self::low_pass(&mut self.dx_prev, dx, Self::alpha(hz, self.d_cutoff));
         let cutoff = self.min_cutoff + self.beta * edx.abs();
 
-        Self::low_pass(&mut self.x_prev, x, Self::alpha(hz, cutoff))
+        let filtered = Self::low_pass(&mut self.x_prev, x, Self::alpha(hz, cutoff));
+
+        // A sufficiently small dt drives hz high enough to overflow the
+        // derivative term even for finite input, so re-seed rather than latch.
+        if !filtered.is_finite() {
+            return self.seed(x);
+        }
+
+        filtered
     }
 }
