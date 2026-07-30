@@ -22,11 +22,17 @@ pub struct UnifiedSingleEyeData {
     /// - yaw (degrees) = `atan(x).to_degrees()`, positive to the right
     /// - pitch (degrees) = `-atan(y).to_degrees()`, positive downward
     ///
-    /// Because of the `atan`, the components are tangent-space ratios rather
-    /// than angles. Upstream's Virtual Desktop module stores raw radians here
-    /// instead, which under-reports large deflections slightly; the native
-    /// `vd_module` reproduces that behaviour deliberately so the same headset
-    /// tracks identically through either module.
+    /// Because of the `atan`, the components are tangent-space ratios, not
+    /// angles: store `tan(angle)`, so that full deflection reaches `+/-1` at 45
+    /// degrees and lands in the usable range of an avatar float parameter,
+    /// which receives the component raw via `v2/EyeLeftX` and friends.
+    ///
+    /// Upstream's Virtual Desktop module stores raw radians here instead, and
+    /// so under-reports: about 8% of deflection lost at 30 degrees and 15% at
+    /// 45. A .NET module reaching us through [`ProxyModule`] therefore tracks
+    /// slightly short, which we cannot correct from this side because the
+    /// convention is the only thing distinguishing the two encodings. The
+    /// native `vd_module` applies the missing `tan`.
     pub gaze: Vec2,
     pub pupil_diameter_mm: f32,
     pub openness: f32,

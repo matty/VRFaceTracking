@@ -15,17 +15,32 @@ const ENABLED_EYE_SMOOTHING: bool = false;
 const ENABLED_CHEEK_CROSSTALK_REDUCTION: bool = false;
 const SMOOTHING_FACTOR: f32 = 0.5;
 
+/// Largest eye rotation converted to a gaze vector, in radians (80 degrees).
+/// `tan` diverges approaching a quarter turn, so a malformed pose could
+/// otherwise produce an enormous gaze value.
+const MAX_GAZE_ANGLE_RAD: f32 = 1.396;
+
 /// Converts an eye orientation to the gaze vector convention described on
-/// [`vrft_api::UnifiedSingleEyeData::gaze`]: x horizontal, y vertical.
+/// [`vrft_api::UnifiedSingleEyeData::gaze`]: x horizontal, y vertical, both in
+/// tangent space.
 ///
-/// This is a port of `Quaternion.Cartesian()` in upstream's .NET module, so the
-/// two produce identical values for the same headset. Note that upstream names
-/// its locals `pitch` and `yaw` the wrong way round: the `asin` term is derived
-/// from the direction's x component and is therefore the *horizontal* angle,
-/// while the `atan2` term is the *vertical* one. Substituting a pure horizontal
-/// rotation `(0, sin(t/2), 0, cos(t/2))` gives `asin(-sin t) = -t` and
-/// `atan2(0, cos t) = 0`, confirming which is which. The names are corrected
-/// here; the arithmetic is unchanged.
+/// The angle extraction is a port of `Quaternion.Cartesian()` in upstream's
+/// .NET module. Note that upstream names its locals `pitch` and `yaw` the wrong
+/// way round: the `asin` term is derived from the direction's x component and
+/// is therefore the *horizontal* angle, while the `atan2` term is the
+/// *vertical* one. Substituting a pure horizontal rotation
+/// `(0, sin(t/2), 0, cos(t/2))` gives `asin(-sin t) = -t` and
+/// `atan2(0, cos t) = 0`, confirming which is which. The extraction itself is
+/// exact: holding one axis fixed and sweeping the other leaves the first
+/// component untouched.
+///
+/// Upstream then stores those angles as-is, even though its own
+/// `Vector2::ToYaw`/`ToPitch` recover them with `atan`, which expects tangents.
+/// The mismatch costs roughly 8% of deflection at 30 degrees and 15% at 45. We
+/// apply the missing `tan` so that `atan` round-trips exactly and full
+/// deflection reaches +/-1 at 45 degrees, the usable range of an avatar float
+/// parameter. `tan` is odd and monotonic over the clamped interval, so this
+/// scales magnitude only and cannot alter an axis or a sign.
 fn quaternion_to_gaze(q: Quat) -> Vec2 {
     let (x, y, z, w) = (q.x, q.y, q.z, q.w);
     let magnitude = (x * x + y * y + z * z + w * w).sqrt();
@@ -43,7 +58,9 @@ fn quaternion_to_gaze(q: Quat) -> Vec2 {
     let horizontal = (2.0 * (xm * zm - wm * ym)).asin();
     let vertical = (2.0 * (ym * zm + wm * xm)).atan2(wm * wm - xm * xm - ym * ym + zm * zm);
 
-    Vec2::new(horizontal, vertical)
+    let tangent = |angle: f32| angle.clamp(-MAX_GAZE_ANGLE_RAD, MAX_GAZE_ANGLE_RAD).tan();
+
+    Vec2::new(tangent(horizontal), tangent(vertical))
 }
 
 #[repr(C)]
@@ -541,7 +558,7 @@ mod tests {
         let gaze = quaternion_to_gaze(Quat::from_rotation_y(0.4));
 
         assert!(
-            (gaze.x - -0.4).abs() < 1e-5,
+            (gaze.x - (-0.4_f32).tan()).abs() < 1e-5,
             "horizontal rotation must land on x, got {gaze:?}"
         );
         assert!(
@@ -559,9 +576,60 @@ mod tests {
             "vertical rotation must leave x alone, got {gaze:?}"
         );
         assert!(
-            (gaze.y - 0.3).abs() < 1e-5,
+            (gaze.y - 0.3_f32.tan()).abs() < 1e-5,
             "vertical rotation must land on y, got {gaze:?}"
         );
+    }
+
+    /// The whole point of tangent space: the consumer's `atan` has to give the
+    /// angle back exactly, not an 8%-short approximation of it.
+    #[test]
+    fn consumer_conversion_recovers_the_exact_angle() {
+        for deg in [5.0_f32, 15.0, 30.0, 45.0] {
+            let gaze = quaternion_to_gaze(Quat::from_rotation_y(deg.to_radians()));
+            let recovered = -gaze.x.atan().to_degrees();
+
+            assert!(
+                (recovered - deg).abs() < 1e-3,
+                "{deg} deg came back as {recovered} deg"
+            );
+        }
+    }
+
+    /// 45 degrees is full deflection for an avatar float parameter, which is
+    /// what makes tangent space the right encoding for the v2/legacy params
+    /// that receive the component raw.
+    #[test]
+    fn full_deflection_saturates_the_avatar_parameter_range() {
+        let gaze = quaternion_to_gaze(Quat::from_rotation_x(45.0_f32.to_radians()));
+
+        assert!((gaze.y - 1.0).abs() < 1e-4, "expected +/-1.0, got {gaze:?}");
+    }
+
+    /// Sweeping one axis must not disturb the other. This is what proved the
+    /// asin/atan2 extraction exact, and so what ruled out rewriting it.
+    #[test]
+    fn axes_stay_independent_across_a_sweep() {
+        let reference = quaternion_to_gaze(Quat::from_rotation_y(0.7)).x;
+
+        for pitch in [0.0_f32, 0.2, 0.4, 0.7] {
+            let gaze =
+                quaternion_to_gaze(Quat::from_rotation_y(0.7) * Quat::from_rotation_x(pitch));
+
+            assert!(
+                (gaze.x - reference).abs() < 1e-5,
+                "pitch {pitch} shifted the horizontal component to {}",
+                gaze.x
+            );
+        }
+    }
+
+    #[test]
+    fn extreme_orientation_stays_bounded() {
+        let gaze = quaternion_to_gaze(Quat::from_rotation_y(std::f32::consts::PI));
+
+        assert!(gaze.x.is_finite() && gaze.y.is_finite(), "{gaze:?}");
+        assert!(gaze.x.abs() <= MAX_GAZE_ANGLE_RAD.tan() + 1e-3);
     }
 
     #[test]
