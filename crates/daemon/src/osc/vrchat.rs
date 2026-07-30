@@ -72,7 +72,9 @@ impl VRChatOsc {
 
         thread::spawn(move || {
             info!("Listening for OSC messages on port {}", port);
-            let mut buf = [0u8; 2048];
+            // Max UDP payload. A datagram larger than the buffer fails with
+            // WSAEMSGSIZE on Windows and is discarded rather than truncated.
+            let mut buf = [0u8; 65535];
             while !shutdown.load(Ordering::Relaxed) {
                 match recv_socket.recv_from(&mut buf) {
                     Ok((size, _addr)) => {
