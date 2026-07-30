@@ -191,6 +191,9 @@ impl TrackingModule for ProxyModule {
                     self.last_runtime_update = std::time::Instant::now();
                 }
 
+                // Copied across unchanged: the .NET side already stores gaze in
+                // the convention documented on UnifiedSingleEyeData::gaze, so
+                // this path must not reorder or rescale the components.
                 data.eye.left.gaze.x = m_data.left_eye_gaze_x;
                 data.eye.left.gaze.y = m_data.left_eye_gaze_y;
                 data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;

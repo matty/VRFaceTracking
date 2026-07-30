@@ -8,6 +8,25 @@ use serde::{Deserialize, Serialize};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedSingleEyeData {
+    /// Eye direction, as `x = horizontal`, `y = vertical`.
+    ///
+    /// Every module must use this convention, whether it is a native Rust
+    /// module writing the field directly or a .NET module whose `Gaze` reaches
+    /// us through [`ProxyModule`], which copies `x` and `y` across verbatim.
+    /// The OSC layer cannot tell the two apart, so a module that transposes the
+    /// axes produces an avatar that looks down when the wearer looks right.
+    ///
+    /// Consumers recover angles the way upstream VRCFaceTracking's
+    /// `Vector2::ToYaw`/`ToPitch` do:
+    ///
+    /// - yaw (degrees) = `atan(x).to_degrees()`, positive to the right
+    /// - pitch (degrees) = `-atan(y).to_degrees()`, positive downward
+    ///
+    /// Because of the `atan`, the components are tangent-space ratios rather
+    /// than angles. Upstream's Virtual Desktop module stores raw radians here
+    /// instead, which under-reports large deflections slightly; the native
+    /// `vd_module` reproduces that behaviour deliberately so the same headset
+    /// tracks identically through either module.
     pub gaze: Vec2,
     pub pupil_diameter_mm: f32,
     pub openness: f32,
