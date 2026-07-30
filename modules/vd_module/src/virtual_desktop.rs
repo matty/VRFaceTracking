@@ -15,6 +15,20 @@ const ENABLED_EYE_SMOOTHING: bool = false;
 const ENABLED_CHEEK_CROSSTALK_REDUCTION: bool = false;
 const SMOOTHING_FACTOR: f32 = 0.5;
 
+/// Largest eye rotation converted to a gaze vector, in radians (80 degrees).
+/// Past this, tan() grows without bound and a malformed pose would produce an
+/// enormous gaze value.
+const MAX_GAZE_ANGLE_RAD: f32 = 1.396;
+
+/// Converts pitch/yaw angles in radians to the gaze vector convention used by
+/// the OSC layer: x is horizontal, y is vertical, and both are tangent-space
+/// values that consumers turn back into angles with atan(). The vertical
+/// component is negated to match that conversion, which applies -atan(y).
+fn pitch_yaw_to_gaze(pitch: f32, yaw: f32) -> Vec2 {
+    let bounded = |angle: f32| angle.clamp(-MAX_GAZE_ANGLE_RAD, MAX_GAZE_ANGLE_RAD);
+    Vec2::new(bounded(yaw).tan(), -bounded(pitch).tan())
+}
+
 /// Extracts pitch/yaw Euler angles from a quaternion orientation.
 /// Returns (pitch, yaw) in radians.
 fn quaternion_to_pitch_yaw(q: Quat) -> (f32, f32) {
@@ -246,7 +260,7 @@ impl VirtualDesktopModule {
             }
 
             let (pitch, yaw) = quaternion_to_pitch_yaw(left_quat);
-            data.eye.left.gaze = Vec2::new(pitch, yaw);
+            data.eye.left.gaze = pitch_yaw_to_gaze(pitch, yaw);
 
             data.eye.left.pupil_diameter_mm = 5.0;
         } else {
@@ -284,7 +298,7 @@ impl VirtualDesktopModule {
             }
 
             let (pitch, yaw) = quaternion_to_pitch_yaw(right_quat);
-            data.eye.right.gaze = Vec2::new(pitch, yaw);
+            data.eye.right.gaze = pitch_yaw_to_gaze(pitch, yaw);
 
             data.eye.right.pupil_diameter_mm = 5.0;
         } else {
@@ -517,4 +531,48 @@ impl TrackingModule for VirtualDesktopModule {
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
     Box::new(VirtualDesktopModule::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gaze_maps_yaw_to_x_and_pitch_to_y() {
+        let yaw = 0.5_f32;
+        let gaze = pitch_yaw_to_gaze(0.0, yaw);
+
+        assert!(
+            (gaze.x - yaw.tan()).abs() < 1e-6,
+            "horizontal angle must land on x, got {:?}",
+            gaze
+        );
+        assert_eq!(gaze.y, 0.0, "zero pitch must leave y at zero");
+    }
+
+    #[test]
+    fn gaze_round_trips_through_the_consumer_conversion() {
+        // The OSC layer recovers angles with atan() for yaw and -atan() for pitch.
+        let (pitch, yaw) = (0.3_f32, -0.4_f32);
+        let gaze = pitch_yaw_to_gaze(pitch, yaw);
+
+        assert!((gaze.x.atan() - yaw).abs() < 1e-6);
+        assert!((-gaze.y.atan() - pitch).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gaze_is_bounded_for_extreme_angles() {
+        // Near +/- pi/2 tan() diverges; a malformed pose must not produce a huge value.
+        let gaze = pitch_yaw_to_gaze(std::f32::consts::FRAC_PI_2, std::f32::consts::PI);
+
+        assert!(gaze.x.is_finite() && gaze.y.is_finite(), "{:?}", gaze);
+        assert!(gaze.x.abs() <= MAX_GAZE_ANGLE_RAD.tan());
+        assert!(gaze.y.abs() <= MAX_GAZE_ANGLE_RAD.tan());
+    }
+
+    #[test]
+    fn gaze_is_zero_when_looking_forward() {
+        let gaze = pitch_yaw_to_gaze(0.0, 0.0);
+        assert_eq!(gaze, Vec2::ZERO);
+    }
 }
