@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::mutation_trait::Mutation;
-use crate::mutations::{CalibrationMutation, NormalizationMutation, SmoothingMutation};
+use crate::mutations::{CalibrationMutation, SmoothingMutation};
 use crate::{CalibrationData, CalibrationState, UnifiedTrackingData};
 use anyhow::Result;
 use log::info;
@@ -72,7 +72,6 @@ pub enum PipelineStepConfig {
         #[serde(default)]
         enabled: Option<bool>,
     },
-    Normalization,
 }
 
 /// Mutator/processing configuration
@@ -194,7 +193,6 @@ fn create_mutation_from_step(
             }
             Box::new(CalibrationMutation::new(&cfg))
         }
-        PipelineStepConfig::Normalization => Box::new(NormalizationMutation::new(config)),
     }
 }
 
@@ -219,7 +217,6 @@ impl UnifiedTrackingMutator {
             vec![
                 Box::new(SmoothingMutation::new(&config)) as Box<dyn Mutation>,
                 Box::new(CalibrationMutation::new(&config)),
-                Box::new(NormalizationMutation::new(&config)),
             ]
         };
 
