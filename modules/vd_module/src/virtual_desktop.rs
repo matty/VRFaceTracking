@@ -15,29 +15,24 @@ const ENABLED_EYE_SMOOTHING: bool = false;
 const ENABLED_CHEEK_CROSSTALK_REDUCTION: bool = false;
 const SMOOTHING_FACTOR: f32 = 0.5;
 
-/// Largest eye rotation converted to a gaze vector, in radians (80 degrees).
-/// Past this, tan() grows without bound and a malformed pose would produce an
-/// enormous gaze value.
-const MAX_GAZE_ANGLE_RAD: f32 = 1.396;
-
-/// Converts pitch/yaw angles in radians to the gaze vector convention used by
-/// the OSC layer: x is horizontal, y is vertical, and both are tangent-space
-/// values that consumers turn back into angles with atan(). The vertical
-/// component is negated to match that conversion, which applies -atan(y).
-fn pitch_yaw_to_gaze(pitch: f32, yaw: f32) -> Vec2 {
-    let bounded = |angle: f32| angle.clamp(-MAX_GAZE_ANGLE_RAD, MAX_GAZE_ANGLE_RAD);
-    Vec2::new(bounded(yaw).tan(), -bounded(pitch).tan())
-}
-
-/// Extracts pitch/yaw Euler angles from a quaternion orientation.
-/// Returns (pitch, yaw) in radians.
-fn quaternion_to_pitch_yaw(q: Quat) -> (f32, f32) {
+/// Converts an eye orientation to the gaze vector convention described on
+/// [`vrft_api::UnifiedSingleEyeData::gaze`]: x horizontal, y vertical.
+///
+/// This is a port of `Quaternion.Cartesian()` in upstream's .NET module, so the
+/// two produce identical values for the same headset. Note that upstream names
+/// its locals `pitch` and `yaw` the wrong way round: the `asin` term is derived
+/// from the direction's x component and is therefore the *horizontal* angle,
+/// while the `atan2` term is the *vertical* one. Substituting a pure horizontal
+/// rotation `(0, sin(t/2), 0, cos(t/2))` gives `asin(-sin t) = -t` and
+/// `atan2(0, cos t) = 0`, confirming which is which. The names are corrected
+/// here; the arithmetic is unchanged.
+fn quaternion_to_gaze(q: Quat) -> Vec2 {
     let (x, y, z, w) = (q.x, q.y, q.z, q.w);
     let magnitude = (x * x + y * y + z * z + w * w).sqrt();
 
     // Guard against zero/near-zero magnitude (malformed quaternion)
     if magnitude < 0.0001 {
-        return (0.0, 0.0);
+        return Vec2::ZERO;
     }
 
     let xm = x / magnitude;
@@ -45,10 +40,10 @@ fn quaternion_to_pitch_yaw(q: Quat) -> (f32, f32) {
     let zm = z / magnitude;
     let wm = w / magnitude;
 
-    let pitch = (2.0 * (xm * zm - wm * ym)).asin();
-    let yaw = (2.0 * (ym * zm + wm * xm)).atan2(wm * wm - xm * xm - ym * ym + zm * zm);
+    let horizontal = (2.0 * (xm * zm - wm * ym)).asin();
+    let vertical = (2.0 * (ym * zm + wm * xm)).atan2(wm * wm - xm * xm - ym * ym + zm * zm);
 
-    (pitch, yaw)
+    Vec2::new(horizontal, vertical)
 }
 
 #[repr(C)]
@@ -259,8 +254,7 @@ impl VirtualDesktopModule {
                 }
             }
 
-            let (pitch, yaw) = quaternion_to_pitch_yaw(left_quat);
-            data.eye.left.gaze = pitch_yaw_to_gaze(pitch, yaw);
+            data.eye.left.gaze = quaternion_to_gaze(left_quat);
 
             data.eye.left.pupil_diameter_mm = 5.0;
         } else {
@@ -297,8 +291,7 @@ impl VirtualDesktopModule {
                 }
             }
 
-            let (pitch, yaw) = quaternion_to_pitch_yaw(right_quat);
-            data.eye.right.gaze = pitch_yaw_to_gaze(pitch, yaw);
+            data.eye.right.gaze = quaternion_to_gaze(right_quat);
 
             data.eye.right.pupil_diameter_mm = 5.0;
         } else {
@@ -537,42 +530,61 @@ pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
 mod tests {
     use super::*;
 
+    /// These assert against real rotations rather than against the names of the
+    /// intermediate terms, which is what makes them able to catch a transposed
+    /// axis. The tests these replace asked "does the value called yaw land in
+    /// x", which passes either way when the variable called `yaw` is the one
+    /// holding the vertical angle -- so they certified the transposition that
+    /// shipped in #6 as correct.
     #[test]
-    fn gaze_maps_yaw_to_x_and_pitch_to_y() {
-        let yaw = 0.5_f32;
-        let gaze = pitch_yaw_to_gaze(0.0, yaw);
+    fn horizontal_rotation_moves_only_the_x_component() {
+        let gaze = quaternion_to_gaze(Quat::from_rotation_y(0.4));
 
         assert!(
-            (gaze.x - yaw.tan()).abs() < 1e-6,
-            "horizontal angle must land on x, got {:?}",
-            gaze
+            (gaze.x - -0.4).abs() < 1e-5,
+            "horizontal rotation must land on x, got {gaze:?}"
         );
-        assert_eq!(gaze.y, 0.0, "zero pitch must leave y at zero");
+        assert!(
+            gaze.y.abs() < 1e-5,
+            "horizontal rotation must leave y alone, got {gaze:?}"
+        );
     }
 
     #[test]
-    fn gaze_round_trips_through_the_consumer_conversion() {
-        // The OSC layer recovers angles with atan() for yaw and -atan() for pitch.
-        let (pitch, yaw) = (0.3_f32, -0.4_f32);
-        let gaze = pitch_yaw_to_gaze(pitch, yaw);
+    fn vertical_rotation_moves_only_the_y_component() {
+        let gaze = quaternion_to_gaze(Quat::from_rotation_x(0.3));
 
-        assert!((gaze.x.atan() - yaw).abs() < 1e-6);
-        assert!((-gaze.y.atan() - pitch).abs() < 1e-6);
+        assert!(
+            gaze.x.abs() < 1e-5,
+            "vertical rotation must leave x alone, got {gaze:?}"
+        );
+        assert!(
+            (gaze.y - 0.3).abs() < 1e-5,
+            "vertical rotation must land on y, got {gaze:?}"
+        );
     }
 
     #[test]
-    fn gaze_is_bounded_for_extreme_angles() {
-        // Near +/- pi/2 tan() diverges; a malformed pose must not produce a huge value.
-        let gaze = pitch_yaw_to_gaze(std::f32::consts::FRAC_PI_2, std::f32::consts::PI);
-
-        assert!(gaze.x.is_finite() && gaze.y.is_finite(), "{:?}", gaze);
-        assert!(gaze.x.abs() <= MAX_GAZE_ANGLE_RAD.tan());
-        assert!(gaze.y.abs() <= MAX_GAZE_ANGLE_RAD.tan());
+    fn looking_forward_is_zero() {
+        assert_eq!(quaternion_to_gaze(Quat::IDENTITY), Vec2::ZERO);
     }
 
     #[test]
-    fn gaze_is_zero_when_looking_forward() {
-        let gaze = pitch_yaw_to_gaze(0.0, 0.0);
+    fn malformed_orientation_is_zero_rather_than_nan() {
+        let gaze = quaternion_to_gaze(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0));
+
         assert_eq!(gaze, Vec2::ZERO);
+        assert!(gaze.x.is_finite() && gaze.y.is_finite());
+    }
+
+    /// The .NET module reaches the same fields through the shared-memory proxy
+    /// without any axis handling of its own, so a combined rotation has to keep
+    /// the two components independent for both paths to agree.
+    #[test]
+    fn combined_rotation_keeps_the_axes_separable() {
+        let gaze = quaternion_to_gaze(Quat::from_rotation_y(0.4) * Quat::from_rotation_x(0.3));
+
+        assert!(gaze.x < 0.0, "horizontal component lost its sign: {gaze:?}");
+        assert!(gaze.y > 0.0, "vertical component lost its sign: {gaze:?}");
     }
 }
