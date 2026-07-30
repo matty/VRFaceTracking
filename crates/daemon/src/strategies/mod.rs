@@ -40,6 +40,23 @@ impl IntegrationAdapter for PlatformBackend {
 
 use std::sync::mpsc::Receiver;
 
+/// Port used to listen for OSC messages when one cannot be derived from the
+/// send port.
+const FALLBACK_RECEIVE_PORT: u16 = 9001;
+
+/// The receive port is conventionally one above the send port. Guard the
+/// addition so a send port of 65535 cannot overflow.
+fn receive_port_for(send_port: u16) -> u16 {
+    send_port.checked_add(1).unwrap_or_else(|| {
+        log::warn!(
+            "osc.send_port is {}, cannot use send_port + 1 for the OSC listener; falling back to {}",
+            send_port,
+            FALLBACK_RECEIVE_PORT
+        );
+        FALLBACK_RECEIVE_PORT
+    })
+}
+
 pub fn create_strategy(
     config: &MutationConfig,
     context: OscContext,
@@ -56,7 +73,7 @@ pub fn create_strategy(
         OutputMode::VRChat => {
             let (strategy, router, change_rx) = VRChatOscStrategy::new(
                 &format!("{}:{}", config.osc.send_address, config.osc.send_port),
-                config.osc.send_port + 1,
+                receive_port_for(config.osc.send_port),
                 context,
             );
             (
@@ -72,5 +89,21 @@ pub fn create_strategy(
             ));
             (PlatformBackend::Resonite(strategy), None, None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_port_is_one_above_send_port() {
+        assert_eq!(receive_port_for(9000), 9001);
+        assert_eq!(receive_port_for(9100), 9101);
+    }
+
+    #[test]
+    fn receive_port_does_not_overflow_at_the_maximum_send_port() {
+        assert_eq!(receive_port_for(u16::MAX), FALLBACK_RECEIVE_PORT);
     }
 }
