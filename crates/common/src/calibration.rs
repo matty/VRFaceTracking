@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Rolling data window size for calibration samples.
 pub const POINTS: usize = 64;
 
-/// Step delta: minimum change required to accept a new sample (noise filter).
+/// Step delta: minimum change in expression weight required to accept a new
+/// sample (noise filter). Compared against the sample value directly, not
+/// against a rate, so it is independent of frame timing.
 pub const S_DELTA: f32 = 0.15;
 
 /// Confidence delta: minimum confidence improvement to update statistics.
@@ -101,11 +103,11 @@ impl Default for CalibrationParameter {
 
 impl CalibrationParameter {
     /// Update calibration with a new sample value.
-    pub fn update_calibration(&mut self, current_value: f32, continuous: bool, d_t: f32) {
+    pub fn update_calibration(&mut self, current_value: f32, continuous: bool) {
         let difference = (current_value - self.current_step).abs();
 
         // Accept sample only if it differs significantly (noise filter)
-        if self.current_step.is_nan() || difference >= S_DELTA * d_t {
+        if self.current_step.is_nan() || difference >= S_DELTA {
             if self.fixed_index < self.data_points.len() {
                 self.fixed_index += 1;
                 self.progress = self.fixed_index as f32 / self.data_points.len() as f32;
@@ -121,7 +123,7 @@ impl CalibrationParameter {
             }
         }
 
-        self.current_step = self.clamp_step(current_value, S_DELTA * d_t);
+        self.current_step = self.clamp_step(current_value, S_DELTA);
     }
 
     fn clamp_step(&self, value: f32, factor: f32) -> f32 {
