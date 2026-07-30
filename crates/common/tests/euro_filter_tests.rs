@@ -37,6 +37,48 @@ fn test_euro_filter_nan_handling() {
 }
 
 #[test]
+fn test_euro_filter_recovers_after_infinite_sample() {
+    let mut filter = EuroFilter::new();
+    filter.filter(0.5, DT_60FPS);
+    filter.filter(f32::INFINITY, DT_60FPS);
+
+    // Every subsequent output must stay finite; an accepted Inf would make the
+    // next sample compute Inf - Inf and latch NaN permanently.
+    for _ in 0..10 {
+        let out = filter.filter(0.5, DT_60FPS);
+        assert!(out.is_finite(), "filter output went non-finite: {}", out);
+    }
+}
+
+#[test]
+fn test_euro_filter_holds_last_value_on_non_finite_input() {
+    let mut filter = EuroFilter::new();
+    filter.filter(0.25, DT_60FPS);
+    let good = filter.filter(0.25, DT_60FPS);
+
+    assert_eq!(filter.filter(f32::NAN, DT_60FPS), good);
+    assert_eq!(filter.filter(f32::INFINITY, DT_60FPS), good);
+    assert_eq!(filter.filter(f32::NEG_INFINITY, DT_60FPS), good);
+}
+
+#[test]
+fn test_euro_filter_survives_extreme_dt() {
+    let mut filter = EuroFilter::new();
+    filter.filter(0.0, DT_60FPS);
+
+    // A near-zero dt drives hz high enough to overflow the derivative term.
+    let out = filter.filter(1.0, f32::MIN_POSITIVE);
+    assert!(out.is_finite(), "extreme dt produced {}", out);
+
+    let recovered = filter.filter(0.5, DT_60FPS);
+    assert!(
+        recovered.is_finite(),
+        "filter did not recover: {}",
+        recovered
+    );
+}
+
+#[test]
 fn test_euro_filter_hz_derived_from_dt() {
     let mut filter = EuroFilter::new();
     filter.filter(0.5, DT_60FPS);
