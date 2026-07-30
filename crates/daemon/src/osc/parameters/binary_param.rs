@@ -77,18 +77,22 @@ impl BinaryBaseParameter {
     /// - `/avatar/parameters/{prefix}/{name}N` (any prefix)
     ///
     /// Uses the same flexible suffix logic as `matches_address` in base_param.rs.
-    fn matches_binary_pattern(&self, addr: &str) -> Option<u32> {
-        let stripped = addr.strip_prefix(DEFAULT_PREFIX)?;
+    /// Text following `{name}` for every way `addr` could refer to this
+    /// parameter, applying the prefix and nested-version rules once so that
+    /// bit discovery and negative-parameter discovery agree.
+    fn name_suffixes<'a>(&self, addr: &'a str) -> Vec<&'a str> {
+        let mut suffixes = Vec::new();
 
-        // Exact match: "{name}{N}"
+        let Some(stripped) = addr.strip_prefix(DEFAULT_PREFIX) else {
+            return suffixes;
+        };
+
+        // Exact match: "{name}{suffix}"
         if stripped.len() > self.name.len() && stripped.starts_with(self.name.as_str()) {
-            let after = &stripped[self.name.len()..];
-            if let Ok(n) = after.parse::<u32>() {
-                return Some(n);
-            }
+            suffixes.push(&stripped[self.name.len()..]);
         }
 
-        // Suffix match: ".../{name}{N}" with any prefix
+        // Suffix match: ".../{name}{suffix}" with any prefix
         let sep = format!("/{}", self.name);
         if let Some(idx) = stripped.find(sep.as_str()) {
             // Reject nested version prefixes (e.g., /v1/v2/Name)
@@ -99,16 +103,24 @@ impl BinaryBaseParameter {
                     && bytes.len() >= 2
                     && bytes[bytes.len() - 2] == b'v'
                 {
-                    return None;
+                    return suffixes;
                 }
             }
-            let after_base = &stripped[idx + sep.len()..];
-            if let Ok(n) = after_base.parse::<u32>() {
-                return Some(n);
-            }
+            suffixes.push(&stripped[idx + sep.len()..]);
         }
 
-        None
+        suffixes
+    }
+
+    fn matches_binary_pattern(&self, addr: &str) -> Option<u32> {
+        self.name_suffixes(addr)
+            .into_iter()
+            .find_map(|suffix| suffix.parse::<u32>().ok())
+    }
+
+    /// Whether `addr` is this parameter's `{name}Negative` companion.
+    fn matches_negative_pattern(&self, addr: &str) -> bool {
+        self.name_suffixes(addr).contains(&"Negative")
     }
 
     fn process_binary(&self, value: f32, binary_index: usize) -> bool {
@@ -138,13 +150,15 @@ impl Parameter for BinaryBaseParameter {
         self.last_bits.clear();
         self.negative_relevant = false;
 
-        // Check for negative param in various prefix formats
-        let neg_suffix = format!("{}Negative", self.name);
-
-        // Find the negative param address - try different prefix patterns
+        // Find the negative param address, applying the same matching rules as
+        // bit discovery so a parameter whose name merely ends with this one
+        // cannot claim it.
         let neg_addr = avatar_params
             .iter()
-            .find(|a| a.ends_with(&neg_suffix))
+            .find(|a| {
+                self.matches_negative_pattern(a)
+                    && param_types.get(*a).is_some_and(|t| *t == ParamType::Bool)
+            })
             .cloned();
 
         if let Some(addr) = neg_addr {
@@ -175,6 +189,9 @@ impl Parameter for BinaryBaseParameter {
             if self.negative_relevant {
                 // No binary bits but negative param exists — still relevant for the negative bool
                 self.relevant = true;
+                if self.send_on_load {
+                    self.needs_initial_send = true;
+                }
                 return 1;
             }
             self.relevant = false;
@@ -250,6 +267,48 @@ impl Parameter for BinaryBaseParameter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_param_requires_the_same_boundary_rules_as_bits() {
+        let param = BinaryBaseParameter::new("SmileSadRight", |_| 0.0);
+
+        assert!(param.matches_negative_pattern("/avatar/parameters/SmileSadRightNegative"));
+        assert!(param.matches_negative_pattern("/avatar/parameters/FT/SmileSadRightNegative"));
+
+        // A v2 parameter that merely ends with this parameter's name must not
+        // be claimed by it.
+        assert!(!param.matches_negative_pattern("/avatar/parameters/v2/SmileSadRightNegative"));
+
+        // Neither may an unrelated parameter that happens to share the suffix.
+        assert!(!param.matches_negative_pattern("/avatar/parameters/MySmileSadRightNegative"));
+    }
+
+    #[test]
+    fn negative_param_does_not_match_bare_name_or_bits() {
+        let param = BinaryBaseParameter::new("JawOpen", |_| 0.0);
+
+        assert!(!param.matches_negative_pattern("/avatar/parameters/JawOpen"));
+        assert!(!param.matches_negative_pattern("/avatar/parameters/JawOpen1"));
+        assert!(!param.matches_negative_pattern("/avatar/parameters/JawOpenNegativeExtra"));
+    }
+
+    #[test]
+    fn negative_param_must_be_declared_bool() {
+        let mut param = BinaryBaseParameter::new("JawOpen", |_| 0.0);
+
+        let addr = "/avatar/parameters/JawOpenNegative".to_string();
+        let avatar_params: HashSet<String> = [addr.clone()].into_iter().collect();
+
+        let mut float_types = HashMap::new();
+        float_types.insert(addr.clone(), ParamType::Float);
+        assert_eq!(param.reset(&avatar_params, &float_types), 0);
+        assert_eq!(param.negative_param, None);
+
+        let mut bool_types = HashMap::new();
+        bool_types.insert(addr.clone(), ParamType::Bool);
+        assert_eq!(param.reset(&avatar_params, &bool_types), 1);
+        assert_eq!(param.negative_param, Some(addr));
+    }
 
     #[test]
     fn test_get_binary_steps() {
