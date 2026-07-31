@@ -15,7 +15,7 @@ const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 /// - Any address ending with `/{name}` (e.g., `FT/`, `OSCm/Float/FT/`, custom prefixes)
 ///
 /// Rejects nested version prefixes (e.g., `/v1/v2/EyeLeftX`)
-fn matches_address(name: &str, addr: &str) -> bool {
+pub(crate) fn matches_address(name: &str, addr: &str) -> bool {
     let stripped = match addr.strip_prefix(DEFAULT_PREFIX) {
         Some(s) => s,
         None => return false,
