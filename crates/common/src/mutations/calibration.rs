@@ -109,11 +109,8 @@ impl Mutation for CalibrationMutation {
                 let raw_weight = data.shapes[i].weight;
 
                 if should_collect {
-                    self.manager.data.shapes[i].update_calibration(
-                        raw_weight,
-                        self.config.continuous,
-                        dt,
-                    );
+                    self.manager.data.shapes[i]
+                        .update_calibration(raw_weight, self.config.continuous);
                 }
 
                 data.shapes[i].weight =

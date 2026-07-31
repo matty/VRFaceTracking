@@ -14,6 +14,18 @@ type ValueGetterFn = Arc<dyn Fn(&UnifiedTrackingData) -> Vec<f32> + Send + Sync>
 /// Type alias for condition function to reduce type complexity
 type ConditionFn = Arc<dyn Fn(&HashSet<String>) -> bool + Send + Sync>;
 
+/// Converts the horizontal gaze component to a yaw angle in degrees, which is
+/// what VRChat's /tracking/eye endpoints expect.
+fn gaze_to_yaw_degrees(x: f32) -> f32 {
+    x.atan().to_degrees()
+}
+
+/// Converts the vertical gaze component to a pitch angle in degrees. The sign
+/// is inverted because VRChat's pitch axis runs opposite to the gaze vector.
+fn gaze_to_pitch_degrees(y: f32) -> f32 {
+    -y.atan().to_degrees()
+}
+
 /// Native parameter with conditional relevancy.
 /// Only activates when the condition function returns true (e.g., when avatar lacks eye params).
 pub struct NativeParameter {
@@ -134,13 +146,13 @@ pub fn create_native_parameters() -> Vec<Box<dyn Parameter>> {
         Box::new(NativeParameter::new_vector4(
             "/tracking/eye/LeftRightPitchYaw",
             |d| {
-                // Convert gaze X/Y to pitch/yaw
-                // Gaze convention: X = yaw (left-right), Y = pitch (up-down)
+                // Gaze convention: X = yaw (left-right), Y = pitch (up-down).
+                // The endpoint takes angles in degrees, not the raw gaze vector.
                 [
-                    d.eye.left.gaze.y,  // left pitch (up/down)
-                    d.eye.left.gaze.x,  // left yaw (left/right)
-                    d.eye.right.gaze.y, // right pitch
-                    d.eye.right.gaze.x, // right yaw
+                    gaze_to_pitch_degrees(d.eye.left.gaze.y),
+                    gaze_to_yaw_degrees(d.eye.left.gaze.x),
+                    gaze_to_pitch_degrees(d.eye.right.gaze.y),
+                    gaze_to_yaw_degrees(d.eye.right.gaze.x),
                 ]
             },
             |params| !has_eye_xy_params(params),
@@ -153,4 +165,37 @@ pub fn create_native_parameters() -> Vec<Box<dyn Parameter>> {
             |params| !has_eye_lid_params(params),
         )),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_gaze_is_zero_degrees() {
+        assert_eq!(gaze_to_yaw_degrees(0.0), 0.0);
+        assert_eq!(gaze_to_pitch_degrees(0.0), 0.0);
+    }
+
+    #[test]
+    fn gaze_converts_to_degrees_not_raw_units() {
+        // tan(30 deg) as the horizontal component must come back as 30 degrees.
+        let x = 30.0_f32.to_radians().tan();
+        assert!((gaze_to_yaw_degrees(x) - 30.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pitch_is_inverted_relative_to_the_gaze_component() {
+        let y = 20.0_f32.to_radians().tan();
+        assert!((gaze_to_pitch_degrees(y) + 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn extreme_gaze_stays_within_a_quarter_turn() {
+        // atan is bounded, so no input can produce an out-of-range angle.
+        for v in [f32::MAX, -f32::MAX, 1e12, -1e12] {
+            assert!(gaze_to_yaw_degrees(v).abs() <= 90.0);
+            assert!(gaze_to_pitch_degrees(v).abs() <= 90.0);
+        }
+    }
 }

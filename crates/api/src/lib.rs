@@ -8,6 +8,39 @@ use serde::{Deserialize, Serialize};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedSingleEyeData {
+    /// Eye direction, as `x = horizontal`, `y = vertical`.
+    ///
+    /// Every module must use this convention, whether it is a native Rust
+    /// module writing the field directly or a .NET module whose `Gaze` reaches
+    /// us through [`ProxyModule`], which copies `x` and `y` across verbatim.
+    /// The OSC layer cannot tell the two apart, so a module that transposes the
+    /// axes produces an avatar that looks down when the wearer looks right.
+    ///
+    /// Consumers recover angles the way upstream VRCFaceTracking's
+    /// `Vector2::ToYaw`/`ToPitch` do:
+    ///
+    /// - yaw (degrees) = `atan(x).to_degrees()`, positive to the right
+    /// - pitch (degrees) = `-atan(y).to_degrees()`, positive downward
+    ///
+    /// The *magnitude* encoding, unlike the axis order above, is not agreed on
+    /// across the ecosystem, and `atan` exactly inverts none of what modules
+    /// actually send:
+    ///
+    /// - upstream's Virtual Desktop module stores raw radians
+    /// - PSVR2 sends a normalized direction vector, as does Tobii ("r = 1")
+    /// - Baballonia forwards tracker-native -1..1 values that were never angles
+    ///
+    /// At 30 degrees those come to 0.500, 0.524 and 0.577 respectively for
+    /// normalized, radians and tangent space. They agree to roughly 2% at 10
+    /// degrees and 6% at 20, diverging only towards the extremes. Note also
+    /// that the dominant consumer path, `v2/EyeLeftX` and the legacy `EyesX`
+    /// family, applies no `atan` at all and sends the component raw.
+    ///
+    /// So treat magnitude as approximate by nature rather than as something to
+    /// correct. `vd_module` keeps upstream's radians, which sits mid-spread;
+    /// converting it to tangent space was tried and reverted, because it would
+    /// over-drive gaze on avatars authored against a normalized-direction
+    /// module.
     pub gaze: Vec2,
     pub pupil_diameter_mm: f32,
     pub openness: f32,

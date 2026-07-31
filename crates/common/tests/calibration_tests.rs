@@ -3,14 +3,59 @@ use vrft_common::{CalibrationParameter, MAX_REASONABLE_STDDEV, POINTS};
 #[test]
 fn test_progress_saturates_at_1() {
     let mut p = CalibrationParameter::default();
-    let dt = 0.1;
 
+    // Step by more than S_DELTA so every sample clears the noise filter.
     for i in 0..70 {
-        p.update_calibration(i as f32 * 0.1, false, dt);
+        p.update_calibration(i as f32 * 0.2, false);
     }
 
     assert_eq!(p.fixed_index, POINTS);
     assert!((p.progress - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_samples_below_the_noise_threshold_are_rejected() {
+    let mut p = CalibrationParameter::default();
+
+    p.update_calibration(0.5, false);
+    let after_first = p.fixed_index;
+
+    // Jitter well under S_DELTA must not be recorded, however many frames pass.
+    for _ in 0..50 {
+        p.update_calibration(0.51, false);
+        p.update_calibration(0.49, false);
+    }
+
+    assert_eq!(
+        p.fixed_index, after_first,
+        "noise below S_DELTA was accepted as calibration data"
+    );
+}
+
+#[test]
+fn test_acceptance_is_independent_of_frame_rate() {
+    // The same sequence of values must produce the same number of accepted
+    // samples regardless of how fast frames arrive.
+    let values = [0.0, 0.05, 0.4, 0.45, 0.9, 0.95];
+
+    let mut p = CalibrationParameter::default();
+    for v in values {
+        p.update_calibration(v, false);
+    }
+
+    let mut q = CalibrationParameter::default();
+    for v in values {
+        // Same values, notionally delivered at a very different frame rate.
+        q.update_calibration(v, false);
+    }
+
+    assert_eq!(p.fixed_index, q.fixed_index);
+    assert!(
+        p.fixed_index < values.len(),
+        "expected the sub-threshold values to be rejected, accepted {} of {}",
+        p.fixed_index,
+        values.len()
+    );
 }
 
 #[test]
@@ -27,7 +72,7 @@ fn test_mean_calculation_accuracy() {
 
     // Feed known values repeatedly
     for i in 0..21 {
-        p.update_calibration(values[i % 3], true, 0.1);
+        p.update_calibration(values[i % 3], true);
     }
 
     // Mean should be approximately 0.4
@@ -45,7 +90,7 @@ fn test_stddev_with_varied_data() {
     // Feed varied values to build up statistics
     for i in 0..POINTS {
         let value = (i as f32 / (POINTS - 1) as f32).clamp(0.0, 1.0);
-        p.update_calibration(value, true, 0.1);
+        p.update_calibration(value, true);
     }
 
     // StdDev should be reasonable (below uniform distribution threshold)
@@ -70,7 +115,7 @@ fn test_confidence_increases_with_data() {
     for i in 0..POINTS {
         // Alternate values to pass step delta filter
         let value = if i % 2 == 0 { 0.4 } else { 0.6 };
-        p.update_calibration(value, true, 0.1);
+        p.update_calibration(value, true);
     }
 
     assert!(
@@ -88,7 +133,7 @@ fn test_max_confidence_prevents_regression() {
     // Build up confidence with good data
     for i in 0..POINTS {
         let value = if i % 2 == 0 { 0.4 } else { 0.6 };
-        p.update_calibration(value, true, 0.1);
+        p.update_calibration(value, true);
     }
 
     let peak_confidence = p.max_confidence;
@@ -170,7 +215,7 @@ fn test_max_value_tracking() {
             _ if i % 2 == 0 => 0.1,
             _ => 0.5,
         };
-        p.update_calibration(value, true, 0.1);
+        p.update_calibration(value, true);
     }
 
     assert!(
