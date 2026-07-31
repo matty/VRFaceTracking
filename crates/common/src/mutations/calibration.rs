@@ -98,11 +98,20 @@ impl Mutation for CalibrationMutation {
             }
         }
 
+        // Samples are collected only while a calibration is running, or on
+        // every frame in continuous mode. Applying the learned curve is
+        // independent of collection and always happens.
+        let collecting = matches!(self.state, CalibrationState::Collecting { .. });
+        let should_collect = collecting || self.config.continuous;
+
         for i in 0..data.shapes.len() {
             if i < self.manager.data.shapes.len() {
                 let raw_weight = data.shapes[i].weight;
 
-                self.manager.data.shapes[i].update_calibration(raw_weight, self.config.continuous);
+                if should_collect {
+                    self.manager.data.shapes[i]
+                        .update_calibration(raw_weight, self.config.continuous);
+                }
 
                 data.shapes[i].weight =
                     self.manager.data.shapes[i].calculate_parameter(raw_weight, self.config.blend);
