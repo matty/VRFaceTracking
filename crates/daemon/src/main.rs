@@ -7,7 +7,7 @@ use vrft_daemon::strategies;
 use anyhow::Result;
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
-use osc::query::host::{CalibrationStatus, OscQueryHost};
+use osc::query::host::OscQueryHost;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -19,7 +19,7 @@ use std::time::Duration;
 use vrft_api::{
     LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
 };
-use vrft_common::{CalibrationData, CalibrationState, MutationConfig, UnifiedTrackingMutator};
+use vrft_common::{MutationConfig, UnifiedTrackingMutator};
 
 use dispatcher::Dispatcher;
 
@@ -202,21 +202,6 @@ fn main() -> Result<()> {
     let debug_state_for_host = debug_state.clone();
     let debug_state_for_consumer = debug_state.clone();
 
-    let calibration_status = Arc::new(RwLock::new(CalibrationStatus::default()));
-    let calibration_status_for_host = calibration_status.clone();
-    let calibration_status_for_consumer = calibration_status.clone();
-
-    let calibration_data_shared = Arc::new(RwLock::new(CalibrationData::default()));
-    let calibration_data_for_host = calibration_data_shared.clone();
-    let calibration_data_for_consumer = calibration_data_shared.clone();
-
-    let calibration_request = Arc::new(RwLock::new(None::<f32>));
-    let calibration_request_for_host = calibration_request.clone();
-    let calibration_request_for_consumer = calibration_request.clone();
-
-    let calibration_needs_save = Arc::new(AtomicBool::new(false));
-    let calibration_needs_save_for_consumer = calibration_needs_save.clone();
-
     let mut data = UnifiedTrackingData::default();
 
     let osc_context = strategies::OscContext {
@@ -238,12 +223,7 @@ fn main() -> Result<()> {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
-            let extensions_router = osc::query::extensions::get_router(
-                debug_state_for_host,
-                calibration_status_for_host,
-                calibration_data_for_host,
-                calibration_request_for_host,
-            );
+            let extensions_router = osc::query::extensions::get_router(debug_state_for_host);
 
             let app_router = if let Some(strategy_router) = strategy_router {
                 extensions_router.merge(strategy_router)
@@ -258,16 +238,6 @@ fn main() -> Result<()> {
     });
 
     let mut mutator = UnifiedTrackingMutator::new(config.clone());
-
-    let calibration_path = Path::new("calibration.json");
-    if calibration_path.exists() {
-        info!("Loading calibration from {:?}", calibration_path);
-        if let Err(e) = mutator.load_calibration(calibration_path) {
-            error!("Failed to load calibration: {}", e);
-        }
-    } else {
-        info!("No calibration found; using defaults.");
-    }
 
     info!("Initializing Modules...");
     for module_wrapper in &mut modules {
@@ -296,7 +266,6 @@ fn main() -> Result<()> {
 
         let transport_manager = transport_manager;
         let mut last_frame_time = std::time::Instant::now();
-        let mut was_calibrating = false;
 
         // Hold last received data to prevent glitches on tracking loss
         let mut last_received_data: Option<UnifiedTrackingData> = None;
@@ -403,48 +372,7 @@ fn main() -> Result<()> {
             let dt = now.duration_since(last_frame_time).as_secs_f32();
             last_frame_time = now;
 
-            if let Ok(mut req) = calibration_request_for_consumer.write() {
-                if let Some(duration) = *req {
-                    if matches!(
-                        mutator.get_calibration_state(),
-                        CalibrationState::Uncalibrated | CalibrationState::Calibrated
-                    ) {
-                        info!("Starting calibration from HTTP request: {}s", duration);
-                        mutator.start_calibration(duration);
-                    }
-                    *req = None;
-                }
-            }
-
             mutator.mutate(&mut received_data, dt);
-
-            let is_calibrating_now = matches!(
-                mutator.get_calibration_state(),
-                CalibrationState::Collecting { .. }
-            );
-            if was_calibrating && !is_calibrating_now {
-                info!("Calibration finished! Saving to calibration.json");
-                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
-                    error!("Failed to save calibration: {}", e);
-                } else {
-                    calibration_needs_save_for_consumer.store(false, Ordering::SeqCst);
-                }
-            }
-            was_calibrating = is_calibrating_now;
-
-            if let Ok(mut st) = calibration_status_for_consumer.write() {
-                let (is_cal, elapsed, duration, progress) = mutator.calibration_status();
-                st.is_calibrating = is_cal;
-                st.elapsed = elapsed;
-                st.duration = duration;
-                st.progress = progress;
-            }
-
-            if is_calibrating_now {
-                if let Ok(mut cd) = calibration_data_for_consumer.write() {
-                    *cd = mutator.get_calibration_data();
-                }
-            }
 
             // Update shared data for OSC Query (non-blocking; host doesn't need every frame)
             if let Ok(mut write_guard) = shared_data_for_consumer.try_write() {
@@ -453,31 +381,6 @@ fn main() -> Result<()> {
 
             if let Err(e) = transport_manager.send(&received_data) {
                 error!("Failed to send OSC data: {}", e);
-            }
-
-            use std::cell::Cell;
-            thread_local! {
-                static LAST_SAVE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
-            }
-            let now = std::time::Instant::now();
-            let should_save = LAST_SAVE.with(|cell| match cell.get() {
-                Some(last) if now.duration_since(last).as_secs() < 30 => false,
-                _ => {
-                    cell.set(Some(now));
-                    true
-                }
-            });
-
-            if should_save && mutator.config.calibration.enabled && mutator.has_calibration_data() {
-                if let Err(e) = mutator.save_calibration(Path::new("calibration.json")) {
-                    error!("Failed to auto-save calibration: {}", e);
-                } else {
-                    calibration_needs_save_for_consumer.store(false, Ordering::SeqCst);
-                    #[cfg(feature = "xtralog")]
-                    info!("Auto-saved calibration.");
-                }
-            } else if mutator.config.calibration.enabled && mutator.has_calibration_data() {
-                calibration_needs_save_for_consumer.store(true, Ordering::SeqCst);
             }
         }
     });
@@ -573,27 +476,6 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down...");
-
-    // Save calibration on quit if needed
-    if config.calibration.enabled && calibration_needs_save.load(Ordering::SeqCst) {
-        info!("Saving calibration before shutdown...");
-        if let Ok(calibration_data) = calibration_data_shared.read() {
-            if !calibration_data.shapes.is_empty() {
-                let path = Path::new("calibration.json");
-                match fs::File::create(path) {
-                    Ok(file) => {
-                        let writer = std::io::BufWriter::new(file);
-                        if let Err(e) = serde_json::to_writer_pretty(writer, &*calibration_data) {
-                            error!("Failed to save calibration on shutdown: {}", e);
-                        } else {
-                            info!("Calibration saved successfully.");
-                        }
-                    }
-                    Err(e) => error!("Failed to create calibration file on shutdown: {}", e),
-                }
-            }
-        }
-    }
 
     for module_wrapper in &mut modules {
         module_wrapper.module.unload();

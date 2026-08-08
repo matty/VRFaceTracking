@@ -24,7 +24,6 @@ pub trait Mutation: Send + Sync {
 | Mutation | File | Purpose |
 |----------|------|---------|
 | **SmoothingMutation** | `mutations/smoothing.rs` | Applies Euro Filter to reduce jitter in gaze, shapes, and openness |
-| **CalibrationMutation** | `mutations/calibration.rs` | Normalizes values using mean + std_dev per expression with confidence-based blend |
 | **NormalizationMutation** | `mutations/normalization.rs` | Normalizes pupil diameter to 0-1 range |
 
 ## Pipeline Execution
@@ -53,7 +52,7 @@ for mutation in &mut self.pipeline {
 
 ## Configuration
 
-The pipeline can be configured via `config.json`. If the `pipeline` array is omitted, the default pipeline (Smoothing → Calibration → Normalization) is used:
+The pipeline can be configured via `config.json`. If the `pipeline` array is omitted, the default pipeline (Smoothing → Normalization) is used:
 
 ```json
 {
@@ -61,9 +60,10 @@ The pipeline can be configured via `config.json`. If the `pipeline` array is omi
     "enabled": true,
     "pipeline": [
       { "type": "smoothing", "smoothness": 0.5 },
-      { "type": "calibration", "enabled": true },
       { "type": "normalization" }
     ]
   }
 }
 ```
+
+A `{ "type": "calibration" }` entry left over from an older config still parses, but the step was removed and is skipped.

@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 use crate::mutation_trait::Mutation;
-use crate::mutations::{CalibrationMutation, SmoothingMutation};
-use crate::{CalibrationData, CalibrationState, UnifiedTrackingData};
-use anyhow::Result;
+use crate::mutations::SmoothingMutation;
+use crate::UnifiedTrackingData;
 use log::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -68,10 +66,10 @@ pub enum PipelineStepConfig {
         #[serde(default)]
         smoothness: Option<f32>,
     },
-    Calibration {
-        #[serde(default)]
-        enabled: Option<bool>,
-    },
+    /// Removed calibration step, retained only so older `config.json` files
+    /// that still list it keep parsing. It produces no pipeline stage, and any
+    /// options it used to carry are ignored.
+    Calibration {},
 }
 
 /// Mutator/processing configuration
@@ -92,28 +90,6 @@ impl Default for MutatorConfig {
             enabled: true,
             smoothness: 0.0,
             pipeline: None,
-        }
-    }
-}
-
-/// Calibration configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CalibrationConfig {
-    /// Whether calibration is enabled
-    pub enabled: bool,
-    /// Whether to continuously update calibration
-    pub continuous: bool,
-    /// Blend factor for calibration (0.0-1.0)
-    pub blend: f32,
-}
-
-impl Default for CalibrationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            continuous: false,
-            blend: 1.0,
         }
     }
 }
@@ -148,8 +124,6 @@ pub struct MutationConfig {
     pub module: ModuleConfig,
     /// Mutator/processing settings
     pub mutator: MutatorConfig,
-    /// Calibration settings
-    pub calibration: CalibrationConfig,
     /// OSC output settings
     pub osc: OscConfig,
     /// Maximum FPS limit
@@ -166,32 +140,30 @@ impl Default for MutationConfig {
         Self {
             module: ModuleConfig::default(),
             mutator: MutatorConfig::default(),
-            calibration: CalibrationConfig::default(),
             osc: OscConfig::default(),
             max_fps: default_max_fps(),
         }
     }
 }
 
-/// Factory function to create a mutation from pipeline step config
+/// Factory function to create a mutation from pipeline step config.
+///
+/// Returns `None` for steps that no longer map to a mutation.
 fn create_mutation_from_step(
     step: &PipelineStepConfig,
     config: &MutationConfig,
-) -> Box<dyn Mutation> {
+) -> Option<Box<dyn Mutation>> {
     match step {
         PipelineStepConfig::Smoothing { smoothness } => {
             let mut cfg = config.clone();
             if let Some(s) = smoothness {
                 cfg.mutator.smoothness = *s;
             }
-            Box::new(SmoothingMutation::new(&cfg))
+            Some(Box::new(SmoothingMutation::new(&cfg)))
         }
-        PipelineStepConfig::Calibration { enabled } => {
-            let mut cfg = config.clone();
-            if let Some(e) = enabled {
-                cfg.calibration.enabled = *e;
-            }
-            Box::new(CalibrationMutation::new(&cfg))
+        PipelineStepConfig::Calibration {} => {
+            info!("Ignoring removed 'calibration' pipeline step");
+            None
         }
     }
 }
@@ -210,89 +182,14 @@ impl UnifiedTrackingMutator {
             );
             steps
                 .iter()
-                .map(|step| create_mutation_from_step(step, &config))
+                .filter_map(|step| create_mutation_from_step(step, &config))
                 .collect()
         } else {
             info!("Using default mutation pipeline");
-            vec![
-                Box::new(SmoothingMutation::new(&config)) as Box<dyn Mutation>,
-                Box::new(CalibrationMutation::new(&config)),
-            ]
+            vec![Box::new(SmoothingMutation::new(&config)) as Box<dyn Mutation>]
         };
 
         Self { config, pipeline }
-    }
-
-    fn get_calibration_mutation(&self) -> Option<&CalibrationMutation> {
-        for m in &self.pipeline {
-            if let Some(c) = m.as_any().downcast_ref::<CalibrationMutation>() {
-                return Some(c);
-            }
-        }
-        None
-    }
-
-    fn get_calibration_mutation_mut(&mut self) -> Option<&mut CalibrationMutation> {
-        for m in &mut self.pipeline {
-            if let Some(c) = m.as_any_mut().downcast_mut::<CalibrationMutation>() {
-                return Some(c);
-            }
-        }
-        None
-    }
-
-    pub fn start_calibration(&mut self, duration_seconds: f32) {
-        if let Some(c) = self.get_calibration_mutation_mut() {
-            c.start_calibration(duration_seconds);
-        }
-    }
-
-    pub fn has_calibration_data(&self) -> bool {
-        if let Some(c) = self.get_calibration_mutation() {
-            c.has_calibration_data()
-        } else {
-            false
-        }
-    }
-
-    pub fn calibration_status(&self) -> (bool, f32, f32, f32) {
-        if let Some(c) = self.get_calibration_mutation() {
-            c.calibration_status()
-        } else {
-            (false, 0.0, 0.0, 0.0)
-        }
-    }
-
-    pub fn get_calibration_state(&self) -> CalibrationState {
-        if let Some(c) = self.get_calibration_mutation() {
-            c.state.clone()
-        } else {
-            CalibrationState::Uncalibrated
-        }
-    }
-
-    pub fn get_calibration_data(&self) -> CalibrationData {
-        if let Some(c) = self.get_calibration_mutation() {
-            c.get_calibration_data()
-        } else {
-            CalibrationData::default()
-        }
-    }
-
-    pub fn save_calibration(&self, path: &Path) -> Result<()> {
-        if let Some(c) = self.get_calibration_mutation() {
-            c.save_calibration(path)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn load_calibration(&mut self, path: &Path) -> Result<()> {
-        if let Some(c) = self.get_calibration_mutation_mut() {
-            c.load_calibration(path)
-        } else {
-            Ok(())
-        }
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
@@ -328,6 +225,29 @@ mod module_config_tests {
         let json = r#"{ "active": "vd_module.dll" }"#;
         let cfg: ModuleConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.runtime, None);
+    }
+
+    #[test]
+    fn old_config_with_calibration_still_parses_and_is_ignored() {
+        let json = r#"{
+            "mutator": {
+                "enabled": true,
+                "pipeline": [
+                    { "type": "smoothing", "smoothness": 0.5 },
+                    { "type": "calibration", "enabled": true }
+                ]
+            },
+            "calibration": { "enabled": true, "continuous": true, "blend": 1.0 }
+        }"#;
+        let cfg: MutationConfig = serde_json::from_str(json).unwrap();
+
+        let mutator = UnifiedTrackingMutator::new(cfg);
+        assert_eq!(
+            mutator.pipeline.len(),
+            1,
+            "the removed calibration step must not add a pipeline stage"
+        );
+        assert_eq!(mutator.pipeline[0].name(), "Smoothing");
     }
 
     #[test]
