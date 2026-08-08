@@ -27,3 +27,5 @@ bin/
 
 run/
 .worktrees/
+
+run_local.ps1
