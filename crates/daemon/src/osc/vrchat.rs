@@ -19,7 +19,7 @@ pub struct VRChatOsc {
     receive_port: u16,
     osc_query_service: Mutex<Option<OscQueryService>>,
     query_rx: Mutex<Receiver<Option<Vec<OscParameterInfo>>>>,
-    change_tx_calibration: Sender<String>,
+    change_tx_avatar: Sender<String>,
     change_tx_query: Sender<String>,
     pub change_rx: Mutex<Option<Receiver<String>>>,
     pub param_registry: Mutex<ParameterRegistry>,
@@ -29,7 +29,7 @@ pub struct VRChatOsc {
 impl VRChatOsc {
     pub fn new(target_addr: &str, receive_port: u16) -> Self {
         let (query_tx, query_rx) = channel();
-        let (change_tx_calibration, change_rx_calibration) = channel();
+        let (change_tx_avatar, change_rx_avatar) = channel();
         let (change_tx_query, change_rx_query) = channel();
 
         let osc_query_service = OscQueryService::new(query_tx, change_rx_query);
@@ -40,9 +40,9 @@ impl VRChatOsc {
             receive_port,
             osc_query_service: Mutex::new(Some(osc_query_service)),
             query_rx: Mutex::new(query_rx),
-            change_tx_calibration,
+            change_tx_avatar,
             change_tx_query,
-            change_rx: Mutex::new(Some(change_rx_calibration)),
+            change_rx: Mutex::new(Some(change_rx_avatar)),
             param_registry: Mutex::new(ParameterRegistry::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -65,7 +65,7 @@ impl VRChatOsc {
         // Set socket timeout for graceful shutdown (500ms)
         recv_socket.set_read_timeout(Some(Duration::from_millis(500)))?;
 
-        let tx_calib = self.change_tx_calibration.clone();
+        let tx_avatar = self.change_tx_avatar.clone();
         let tx_query = self.change_tx_query.clone();
         let port = self.receive_port;
         let shutdown = self.shutdown_flag.clone();
@@ -79,7 +79,7 @@ impl VRChatOsc {
                 match recv_socket.recv_from(&mut buf) {
                     Ok((size, _addr)) => {
                         if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
-                            handle_packet(packet, &tx_calib, &tx_query);
+                            handle_packet(packet, &tx_avatar, &tx_query);
                         }
                     }
                     Err(ref e)
@@ -218,7 +218,7 @@ impl VRChatOsc {
     }
 }
 
-fn handle_packet(packet: OscPacket, tx_calib: &Sender<String>, tx_query: &Sender<String>) {
+fn handle_packet(packet: OscPacket, tx_avatar: &Sender<String>, tx_query: &Sender<String>) {
     match packet {
         OscPacket::Message(msg) => {
             if msg.addr == "/avatar/change" {
@@ -231,13 +231,13 @@ fn handle_packet(packet: OscPacket, tx_calib: &Sender<String>, tx_query: &Sender
                     "Unknown".to_string()
                 };
                 info!("Avatar change detected! New Avatar ID: {}", avatar_id);
-                let _ = tx_calib.send(avatar_id.clone());
+                let _ = tx_avatar.send(avatar_id.clone());
                 let _ = tx_query.send(avatar_id);
             }
         }
         OscPacket::Bundle(bundle) => {
             for packet in bundle.content {
-                handle_packet(packet, tx_calib, tx_query);
+                handle_packet(packet, tx_avatar, tx_query);
             }
         }
     }

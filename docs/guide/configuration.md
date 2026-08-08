@@ -15,11 +15,6 @@ The daemon is configured via a `config.json` file located alongside the executab
     "enabled": true,
     "smoothness": 0.0
   },
-  "calibration": {
-    "enabled": false,
-    "continuous": false,
-    "blend": 1.0
-  },
   "osc": {
     "output_mode": "VRChat",
     "send_address": "127.0.0.1",
@@ -36,9 +31,6 @@ The daemon is configured via a `config.json` file located alongside the executab
 | `module` | `active` | string | Filename of the tracking module to load. Its runtime (native Rust vs .NET/VRCFT) is auto-detected from the `.dll`'s PE header — no `runtime` field is needed. (A legacy `runtime` value in older configs still parses but is ignored.) |
 | `mutator` | `enabled` | bool | Whether to enable the mutation pipeline. |
 | `mutator` | `smoothness` | float | Smoothing amount (0.0 to 1.0). |
-| `calibration` | `enabled` | bool | Whether to enable runtime calibration. |
-| `calibration` | `continuous` | bool | Whether calibration continuously updates min/max ranges. |
-| `calibration` | `blend` | float | Blend factor between raw and calibrated data (0.0 to 1.0). |
 | `osc` | `output_mode` | string | Target platform: `VRChat`, `Resonite`, or `Generic`. |
 | `osc` | `send_address` | string | IP address to send OSC data to. |
 | `osc` | `send_port` | int | Port to send OSC data to. |

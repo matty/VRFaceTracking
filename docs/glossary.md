@@ -58,6 +58,3 @@ A specific signal filtering algorithm used to reduce jitter in tracking data whi
 
 A logic component that modifies tracking data in real-time (e.g., mirroring expressions, applying offsets, or procedural animations).
 
-### Calibration
-
-The process of normalizing a user's facial tracking data to the 0.0–1.0 scale. vrft_d uses a statistical model (mean + std_dev) rather than simple min/max scaling, with a confidence-based blend to handle low-quality tracking frames.
