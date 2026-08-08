@@ -8,6 +8,46 @@ use vrft_common::UnifiedTrackingData;
 
 const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 
+/// Text following `{name}` for every way `addr` could refer to a parameter of
+/// that name, applying the prefix and nested-version rules once so that bit
+/// discovery, negative-parameter discovery and relevancy checks all agree.
+///
+/// An empty result means `addr` does not refer to `name` at all. A `"1"`,
+/// `"2"`, `"4"`... suffix is a binary bit, `"Negative"` is the sign companion,
+/// and anything else belongs to a different parameter that merely shares this
+/// one's opening text.
+pub(crate) fn name_suffixes<'a>(name: &str, addr: &'a str) -> Vec<&'a str> {
+    let mut suffixes = Vec::new();
+
+    let Some(stripped) = addr.strip_prefix(DEFAULT_PREFIX) else {
+        return suffixes;
+    };
+
+    // Exact match: "{name}{suffix}"
+    if stripped.len() > name.len() && stripped.starts_with(name) {
+        suffixes.push(&stripped[name.len()..]);
+    }
+
+    // Suffix match: ".../{name}{suffix}" with any prefix
+    let sep = format!("/{name}");
+    if let Some(idx) = stripped.find(sep.as_str()) {
+        // Reject nested version prefixes (e.g., /v1/v2/Name)
+        if idx >= 2 {
+            let before = &stripped[..idx];
+            let bytes = before.as_bytes();
+            if bytes[bytes.len() - 1].is_ascii_digit()
+                && bytes.len() >= 2
+                && bytes[bytes.len() - 2] == b'v'
+            {
+                return suffixes;
+            }
+        }
+        suffixes.push(&stripped[idx + sep.len()..]);
+    }
+
+    suffixes
+}
+
 /// Returns shift count if index is power of 2 (1, 2, 4, 8...), None otherwise.
 pub fn get_binary_steps(index: u32) -> Option<usize> {
     let mut curr_seq_item = 1u32;
@@ -75,52 +115,15 @@ impl BinaryBaseParameter {
     /// Matches binary parameter patterns:
     /// - `/avatar/parameters/{name}N` (exact)
     /// - `/avatar/parameters/{prefix}/{name}N` (any prefix)
-    ///
-    /// Uses the same flexible suffix logic as `matches_address` in base_param.rs.
-    /// Text following `{name}` for every way `addr` could refer to this
-    /// parameter, applying the prefix and nested-version rules once so that
-    /// bit discovery and negative-parameter discovery agree.
-    fn name_suffixes<'a>(&self, addr: &'a str) -> Vec<&'a str> {
-        let mut suffixes = Vec::new();
-
-        let Some(stripped) = addr.strip_prefix(DEFAULT_PREFIX) else {
-            return suffixes;
-        };
-
-        // Exact match: "{name}{suffix}"
-        if stripped.len() > self.name.len() && stripped.starts_with(self.name.as_str()) {
-            suffixes.push(&stripped[self.name.len()..]);
-        }
-
-        // Suffix match: ".../{name}{suffix}" with any prefix
-        let sep = format!("/{}", self.name);
-        if let Some(idx) = stripped.find(sep.as_str()) {
-            // Reject nested version prefixes (e.g., /v1/v2/Name)
-            if idx >= 2 {
-                let before = &stripped[..idx];
-                let bytes = before.as_bytes();
-                if bytes[bytes.len() - 1].is_ascii_digit()
-                    && bytes.len() >= 2
-                    && bytes[bytes.len() - 2] == b'v'
-                {
-                    return suffixes;
-                }
-            }
-            suffixes.push(&stripped[idx + sep.len()..]);
-        }
-
-        suffixes
-    }
-
     fn matches_binary_pattern(&self, addr: &str) -> Option<u32> {
-        self.name_suffixes(addr)
+        name_suffixes(&self.name, addr)
             .into_iter()
             .find_map(|suffix| suffix.parse::<u32>().ok())
     }
 
     /// Whether `addr` is this parameter's `{name}Negative` companion.
     fn matches_negative_pattern(&self, addr: &str) -> bool {
-        self.name_suffixes(addr).contains(&"Negative")
+        name_suffixes(&self.name, addr).contains(&"Negative")
     }
 
     fn process_binary(&self, value: f32, binary_index: usize) -> bool {
