@@ -2,7 +2,6 @@ use crate::mutation_trait::Mutation;
 use crate::mutator::MutationConfig;
 use crate::{EuroFilter, UnifiedExpressions, UnifiedTrackingData};
 use anyhow::Result;
-use std::any::Any;
 
 pub struct SmoothingMutation {
     shapes: Vec<EuroFilter>,
@@ -83,13 +82,5 @@ impl Mutation for SmoothingMutation {
 
     fn name(&self) -> &str {
         "Smoothing"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }

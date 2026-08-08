@@ -43,7 +43,6 @@ Open `config.json` and set the `active` module filename:
 {
   "module": { "active": "vd_module.dll" },
   "mutator": { "enabled": true, "smoothness": 0.0 },
-  "calibration": { "enabled": false, "continuous": false, "blend": 1.0 },
   "osc": { "output_mode": "VRChat", "send_address": "127.0.0.1", "send_port": 9000 },
   "max_fps": 60.0
 }

@@ -16,7 +16,6 @@ Cargo.lock
 node_modules/
 
 # VRFT Specific
-vrft_d/calibration_*.json
 vrft_d/config.json
 vrft_d/plugins/*.dll
 

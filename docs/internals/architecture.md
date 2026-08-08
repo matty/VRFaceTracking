@@ -11,7 +11,6 @@ The project is organized into a workspace with two top-level directories:
 - **`api/`**: Core data structures and traits including the unified tracking data format.
 - **`common/`**: Shared logic including:
   - **Mutation Pipeline**: Trait-based, pluggable processing steps.
-  - **Calibration**: Per-expression normalization using mean + std_dev with confidence-based blend.
   - **Filters**: Euro Filter for data smoothing.
 - **`app/`**: The main executable handling plugin loading, OSC communication, and dispatch.
   - **`strategies/`**: Output strategies for VRChat, Resonite, and Generic UDP.
@@ -41,12 +40,9 @@ pub trait Mutation: Send + Sync {
     fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32);
     fn name(&self) -> &str;
     fn priority(&self) -> i32 { 0 }
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 ```
 
 Default pipeline order:
 1. **SmoothingMutation**: Applies Euro Filter to reduce jitter.
-2. **CalibrationMutation**: Normalizes values using mean + std_dev per expression with confidence-based blend.
-3. **NormalizationMutation**: Normalizes pupil diameter to 0-1 range.
+2. **NormalizationMutation**: Normalizes pupil diameter to 0-1 range.

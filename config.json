@@ -6,11 +6,6 @@
     "enabled": true,
     "smoothness": 0.0
   },
-  "calibration": {
-    "enabled": false,
-    "continuous": false,
-    "blend": 1.0
-  },
   "osc": {
     "output_mode": "VRChat",
     "send_address": "127.0.0.1",

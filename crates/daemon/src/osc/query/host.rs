@@ -4,8 +4,6 @@ use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
-pub use crate::osc::query::extensions::CalibrationStatus;
-
 pub struct OscQueryHost;
 
 impl OscQueryHost {
