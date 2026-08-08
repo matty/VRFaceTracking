@@ -3,6 +3,7 @@
 //! the avatar doesn't already have equivalent parameters.
 
 use super::base_param::matches_address;
+use super::binary_param::{get_binary_steps, name_suffixes};
 use super::{ParamType, Parameter};
 use rosc::{OscMessage, OscType};
 use std::collections::{HashMap, HashSet};
@@ -172,27 +173,93 @@ const GAZE_PARAM_NAMES: &[&str] = &[
     "v2/EyeRightY",
 ];
 
-/// Checks whether the avatar carries any of the gaze parameters we drive.
+/// The eyelid parameters this application drives, from `legacy_eye.rs` and the
+/// v2 block of `registry.rs`. Same rule as [`GAZE_PARAM_NAMES`]: if we already
+/// drive one of these, the avatar's lids are covered and the native endpoint
+/// would only fight the animator for control of them.
 ///
-/// Matched by name through [`matches_address`], the same way every other
-/// parameter resolves an avatar address, so custom prefixes work here too.
+/// The closed-amount names belong here even though they read as the inverse of
+/// openness. `/tracking/eye/EyesClosedAmount` is precisely what an avatar with
+/// `v2/EyeClosed` is already receiving, so sending both double-drives the lids.
+const EYELID_PARAM_NAMES: &[&str] = &[
+    "LeftEyeLid",
+    "RightEyeLid",
+    "CombinedEyeLid",
+    "LeftEyeLidExpanded",
+    "RightEyeLidExpanded",
+    "EyeLidExpanded",
+    "CombinedEyeLidExpanded",
+    "LeftEyeLidExpandedSqueeze",
+    "RightEyeLidExpandedSqueeze",
+    "EyeLidExpandedSqueeze",
+    "CombinedEyeLidExpandedSqueeze",
+    "v2/EyeOpenLeft",
+    "v2/EyeOpenRight",
+    "v2/EyeOpen",
+    "v2/EyeClosedLeft",
+    "v2/EyeClosedRight",
+    "v2/EyeClosed",
+    "v2/EyeLidLeft",
+    "v2/EyeLidRight",
+    "v2/EyeLid",
+];
+
+/// Whether `addr` is an avatar parameter this application drives under `name`.
+///
+/// A parameter can reach an avatar in three forms and any of them means we are
+/// already driving it: the plain float or bool, a binary bit (`{name}1`,
+/// `{name}2`, `{name}4`...), and the binary sign companion (`{name}Negative`).
+/// [`EParam`](super::EParam) builds all three for every name, so checking only
+/// the plain form would miss avatars that use the binary encoding to save
+/// parameter space.
+///
+/// A numeric suffix only counts when it is a real binary step, because that is
+/// the condition under which a bit parameter is actually created. Treating
+/// `{name}3` as coverage would silence the endpoint over a parameter nothing
+/// drives.
+fn drives_parameter(name: &str, addr: &str) -> bool {
+    if matches_address(name, addr) {
+        return true;
+    }
+
+    name_suffixes(name, addr).into_iter().any(|suffix| {
+        suffix == "Negative"
+            || suffix
+                .parse::<u32>()
+                .is_ok_and(|index| get_binary_steps(index).is_some())
+    })
+}
+
+/// Whether the avatar carries any of `names`, in any form we drive.
+///
+/// Matched by name rather than by pattern, so a parameter that merely reads
+/// like an eye parameter cannot claim coverage it does not provide.
+fn drives_any(names: &[&str], avatar_params: &HashSet<String>) -> bool {
+    names.iter().any(|name| {
+        avatar_params
+            .iter()
+            .any(|addr| drives_parameter(name, addr))
+    })
+}
+
+/// Checks whether the avatar carries any of the gaze parameters we drive.
 ///
 /// This used to pattern-match instead, on "contains eye and ends with x or y".
 /// The word "eyebrow" contains "eye", so an avatar exposing `EyebrowY` and no
 /// gaze parameters at all looked like it had gaze covered, and the native
 /// endpoint went silent -- eyes that never moved.
 pub fn has_eye_xy_params(avatar_params: &HashSet<String>) -> bool {
-    GAZE_PARAM_NAMES
-        .iter()
-        .any(|name| avatar_params.iter().any(|addr| matches_address(name, addr)))
+    drives_any(GAZE_PARAM_NAMES, avatar_params)
 }
 
-/// Checks if avatar has any eye openness/lid parameters
+/// Checks whether the avatar carries any of the eyelid parameters we drive.
+///
+/// This used to pattern-match on "contains eye and contains open or lid",
+/// which missed the `v2/EyeClosed` family entirely -- those contain neither
+/// word, so an avatar driven through them was told its lids were uncovered and
+/// got the native endpoint on top.
 pub fn has_eye_lid_params(avatar_params: &HashSet<String>) -> bool {
-    avatar_params.iter().any(|p| {
-        let lower = p.to_lowercase();
-        lower.contains("eye") && (lower.contains("open") || lower.contains("lid"))
-    })
+    drives_any(EYELID_PARAM_NAMES, avatar_params)
 }
 
 /// Creates all native tracking parameters
@@ -265,6 +332,68 @@ mod tests {
     #[test]
     fn avatar_without_eye_parameters_gets_the_native_endpoint() {
         assert!(!has_eye_xy_params(&avatar(&["JawOpen", "MouthSmile"])));
+        assert!(!has_eye_lid_params(&avatar(&["JawOpen", "MouthSmile"])));
+    }
+
+    /// Every parameter is offered as binary bits as well as a plain float, so
+    /// an avatar that took the binary encoding to save space is just as covered
+    /// as one that took the float.
+    #[test]
+    fn binary_encoded_parameters_count_as_coverage() {
+        for p in ["v2/EyeLeftX1", "v2/EyeLeftX2", "EyesX4", "FT/v2/EyeRightY8"] {
+            assert!(has_eye_xy_params(&avatar(&[p])), "{p} should count as gaze");
+        }
+        assert!(has_eye_xy_params(&avatar(&["v2/EyeLeftXNegative"])));
+
+        for p in ["LeftEyeLidExpanded1", "CombinedEyeLidExpandedSqueeze8"] {
+            assert!(has_eye_lid_params(&avatar(&[p])), "{p} should count as lid");
+        }
+    }
+
+    /// A bit parameter is only created for a real binary step, so a suffix that
+    /// is not one drives nothing and must not silence the endpoint.
+    #[test]
+    fn a_suffix_that_is_not_a_binary_step_is_not_coverage() {
+        for p in ["v2/EyeLeftX3", "v2/EyeLeftX7", "EyesX0"] {
+            assert!(
+                !has_eye_xy_params(&avatar(&[p])),
+                "{p} is not a binary step and drives nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn eyelid_parameters_are_detected() {
+        for p in [
+            "LeftEyeLid",
+            "CombinedEyeLid",
+            "v2/EyeOpen",
+            "v2/EyeLidRight",
+            "FT/v2/EyeOpenLeft",
+        ] {
+            assert!(has_eye_lid_params(&avatar(&[p])), "{p} should count as lid");
+        }
+    }
+
+    /// The `v2/EyeClosed` family contains neither "open" nor "lid", so the old
+    /// pattern match read an avatar driven through it as having no eyelid
+    /// coverage and sent the native endpoint on top of the parameters we were
+    /// already driving.
+    #[test]
+    fn closed_amount_parameters_count_as_eyelid_coverage() {
+        for p in ["v2/EyeClosed", "v2/EyeClosedLeft", "v2/EyeClosedRight"] {
+            assert!(has_eye_lid_params(&avatar(&[p])), "{p} should count as lid");
+        }
+    }
+
+    #[test]
+    fn unrelated_parameters_are_not_mistaken_for_eyelids() {
+        for p in ["EyebrowLowererLeft", "v2/EyeSquintLeft", "MouthOpen"] {
+            assert!(
+                !has_eye_lid_params(&avatar(&[p])),
+                "{p} is not an eyelid parameter"
+            );
+        }
     }
 
     fn probe_param() -> NativeParameter {
