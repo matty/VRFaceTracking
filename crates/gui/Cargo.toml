@@ -1,0 +1,29 @@
+[package]
+name = "vrft-gui"
+version.workspace = true
+edition.workspace = true
+description = "Desktop app for VRFT: dashboard, Quest Pro cameras and eyes, and headset setup over adb"
+
+[[bin]]
+name = "vrft_gui"
+path = "src/main.rs"
+
+[dependencies]
+# Cargo.lock is not committed, and GPUI's API changes between snapshots, so
+# pin the exact release this app was written against.
+gpui-kit = "=0.6.6"
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+# GPUI images are built from `image` frames; this must match GPUI's version.
+image = { version = "0.25", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "3.1", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }

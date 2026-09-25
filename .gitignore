@@ -24,8 +24,19 @@ obj/
 bin/
 
 .local/
+__pycache__/
+models/quest-pro/*.pt
+models/quest-pro/*.download
+plugins/**/*.dll
 
 run/
 .worktrees/
 
 run_local.ps1
+
+# Android builds
+android/**/.gradle/
+android/**/build/
+android/**/local.properties
+android/questpro-camera/diagnostics/*.so
+android/questpro-camera/tests/out/

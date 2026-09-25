@@ -1,0 +1,73 @@
+plugins { id 'com.android.application' }
+
+// The version comes from the headset app's apk-v release tags. The release
+// workflow passes -PappVersion=2026.9.0; other builds describe the latest
+// apk-v tag, such as 2026.9.0-3-gabc1234, or dev-abc1234 before the first.
+def appVersion = providers.gradleProperty('appVersion').orNull ?: describeAppVersion()
+
+def describeAppVersion() {
+    try {
+        def described = project.providers.exec {
+            commandLine 'git', 'describe', '--tags', '--match', 'apk-v[0-9]*', '--always'
+            ignoreExitValue = true
+        }.standardOutput.asText.get().trim()
+        if (described.startsWith('apk-v')) return described.substring('apk-v'.length())
+        if (described) return "dev-${described}"
+    } catch (Exception ignored) {
+        // Git isn't available; fall back below.
+    }
+    return 'dev'
+}
+
+// YYYY.M.N becomes YYYYMMNN, so each release installs over the one before.
+// Builds before the first release keep 2, the last code before CalVer.
+def appVersionCode(String version) {
+    def calver = version =~ /^(\d{4})\.(\d{1,2})\.(\d+)(-|$)/
+    if (!calver.find()) return 2
+    int year = calver.group(1) as int
+    int month = calver.group(2) as int
+    int count = calver.group(3) as int
+    if (count > 99) throw new GradleException("$version: versionCode fits at most 100 releases a month")
+    return year * 10000 + month * 100 + count
+}
+
+// Release builds are signed only when a keystore is supplied, as the release
+// workflow does from repository secrets. Otherwise they come out unsigned.
+def releaseKeystore = System.getenv('VRFT_APK_KEYSTORE')
+
+android {
+    namespace 'io.github.matty.vrft.questprocamera'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.github.matty.vrft.questprocamera'
+        minSdk 29
+        targetSdk 34
+        versionCode appVersionCode(appVersion)
+        versionName appVersion
+    }
+
+    buildFeatures { buildConfig true }
+
+    signingConfigs {
+        if (releaseKeystore) {
+            release {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv('VRFT_APK_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('VRFT_APK_KEY_ALIAS')
+                keyPassword System.getenv('VRFT_APK_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseKeystore) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

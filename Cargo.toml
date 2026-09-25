@@ -3,6 +3,7 @@ members = [
     "crates/api",
     "crates/common",
     "crates/daemon",
+    "crates/gui",
     "crates/udp-rcv",
     "modules/vd_module",
     "modules/test_logger",

@@ -1,4 +1,10 @@
 use vrft_daemon::osc;
+mod daemon_status;
+mod quest_pro_camera;
+mod quest_pro_camera_capture;
+mod quest_pro_eye;
+mod quest_pro_settings;
+mod quest_pro_training;
 
 use vrft_daemon::dispatcher;
 use vrft_daemon::plugin_loader::{self, PluginKind};
@@ -21,6 +27,7 @@ use vrft_api::{
 };
 use vrft_common::{MutationConfig, UnifiedTrackingMutator};
 
+use daemon_status::{DaemonStatus, ModuleStatus, OutputTarget, RunMode};
 use dispatcher::Dispatcher;
 
 fn load_config(path: &Path) -> Result<MutationConfig> {
@@ -57,6 +64,40 @@ extern "C" fn module_log_callback(level: LogLevel, target: *const i8, message: *
     }
 }
 
+/// A development build lives in `<repo>/target/[<triple>/]<profile>/`. Started
+/// from there, for example by double-clicking it, the working directory has
+/// no config, plugins, Quest Pro models or recordings, so use the repository
+/// root instead. Release packages keep the executable beside those files and
+/// are unaffected, as is any run started from outside the target directory.
+fn use_repository_root_for_dev_builds() {
+    let (Ok(exe), Ok(cwd)) = (std::env::current_exe(), std::env::current_dir()) else {
+        return;
+    };
+    let Some(target) = exe
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "target"))
+    else {
+        return;
+    };
+    let Some(root) = target.parent() else {
+        return;
+    };
+    if !root.join("Cargo.toml").is_file() || !root.join("crates/daemon").is_dir() {
+        return;
+    }
+    let inside_target = match (cwd.canonicalize(), target.canonicalize()) {
+        (Ok(cwd), Ok(target)) => cwd.starts_with(target),
+        _ => false,
+    };
+    if inside_target && std::env::set_current_dir(root).is_ok() {
+        info!(
+            "Development build started inside {}; using the repository root {} as the working directory",
+            target.display(),
+            root.display()
+        );
+    }
+}
+
 fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         unsafe {
@@ -65,7 +106,8 @@ fn main() -> Result<()> {
     }
     env_logger::init();
 
-    info!("Starting...");
+    info!("Starting vrft_d {}...", env!("VRFT_VERSION"));
+    use_repository_root_for_dev_builds();
     debug!("Debug logging is active");
     trace!("Trace logging is active");
 
@@ -77,6 +119,21 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
+
+    let preview_only = std::env::args().any(|argument| argument == "--camera-preview-only");
+    let daemon_status = DaemonStatus::new(if preview_only {
+        RunMode::CameraPreviewOnly
+    } else {
+        RunMode::Normal
+    });
+    let mut quest_pro = quest_pro_camera::start(running.clone(), daemon_status.clone());
+    if preview_only {
+        info!("Running Quest Pro camera preview without tracking modules or OSC output");
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(200));
+        }
+        return Ok(());
+    }
 
     struct LoadedModule {
         name: String,
@@ -124,8 +181,18 @@ fn main() -> Result<()> {
         plugins_dir
     );
 
+    let mut module_status = ModuleStatus {
+        name: config.module.active.clone(),
+        runtime: None,
+        loaded: false,
+        error: None,
+    };
     match discovered.iter().find(|p| p.name == config.module.active) {
         Some(plugin) => {
+            module_status.runtime = Some(match plugin.kind {
+                PluginKind::Native => "native",
+                PluginKind::Managed => "dotnet",
+            });
             info!(
                 "Loading active plugin: {:?} ({:?})",
                 plugin.path, plugin.kind
@@ -150,7 +217,8 @@ fn main() -> Result<()> {
                             });
                         }
                         Err(e) => {
-                            error!("✗ Failed to load native module {:?}: {}", plugin.path, e)
+                            error!("✗ Failed to load native module {:?}: {}", plugin.path, e);
+                            module_status.error = Some(format!("Failed to load: {e}"));
                         }
                     }
                 }
@@ -167,13 +235,21 @@ fn main() -> Result<()> {
                                     _lib: None,
                                 });
                             }
-                            Err(e) => error!("✗ Failed to start VrcftRuntime: {}", e),
+                            Err(e) => {
+                                error!("✗ Failed to start VrcftRuntime: {}", e);
+                                module_status.error =
+                                    Some(format!("Failed to start VrcftRuntime: {e}"));
+                            }
                         }
                     } else {
                         error!(
                             "✗ Active plugin '{}' is a managed module but VrcftRuntime.exe was not found at {:?}",
                             plugin.name, host_exe
                         );
+                        module_status.error = Some(format!(
+                            "VrcftRuntime.exe was not found at {}",
+                            host_exe.display()
+                        ));
                     }
                 }
             }
@@ -185,14 +261,24 @@ fn main() -> Result<()> {
                 discovered.len(),
                 plugins_dir
             );
+            module_status.error = Some(format!("Not found in {}", plugins_dir.display()));
         }
     }
+    module_status.loaded = !modules.is_empty();
+    daemon_status.set_module(module_status.clone());
+    daemon_status.set_output(OutputTarget {
+        mode: format!("{:?}", config.osc.output_mode),
+        address: config.osc.send_address.clone(),
+        port: config.osc.send_port,
+        max_fps: config.max_fps,
+    });
 
     if modules.is_empty() {
         warn!("No modules loaded!");
     } else {
         info!("Loaded {} module(s) successfully", modules.len());
     }
+    quest_pro.set_module_loaded(!modules.is_empty());
 
     let shared_data = Arc::new(RwLock::new(UnifiedTrackingData::default()));
     let shared_data_for_host = shared_data.clone();
@@ -253,6 +339,11 @@ fn main() -> Result<()> {
                     "✗ Failed to initialize module {}: {}",
                     module_wrapper.name, e
                 );
+                daemon_status.set_module(ModuleStatus {
+                    loaded: false,
+                    error: Some(format!("Failed to initialize: {e}")),
+                    ..module_status.clone()
+                });
             }
         }
     }
@@ -372,7 +463,9 @@ fn main() -> Result<()> {
             let dt = now.duration_since(last_frame_time).as_secs_f32();
             last_frame_time = now;
 
+            quest_pro.observe(&received_data);
             mutator.mutate(&mut received_data, dt);
+            quest_pro.apply(&mut received_data);
 
             // Update shared data for OSC Query (non-blocking; host doesn't need every frame)
             if let Ok(mut write_guard) = shared_data_for_consumer.try_write() {
@@ -442,6 +535,7 @@ fn main() -> Result<()> {
         }
 
         if any_updated {
+            daemon_status.count_tracking_frame();
             let _ = tx.try_send(data.clone());
 
             frame_count += 1;
