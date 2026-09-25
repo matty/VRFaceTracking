@@ -14,8 +14,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, AnyElement, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
+    div, px, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity,
+    InteractiveElement as _, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Task, Window,
 };
 use std::net::{IpAddr, SocketAddr};
@@ -48,6 +48,15 @@ enum Busy {
     Stopping,
     Restarting,
     ReadingLog,
+}
+
+/// How the page found the headset's Wi-Fi address without being told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoundBy {
+    /// The headset connected to adb reported it.
+    Adb,
+    /// VRFT's camera stream comes from it.
+    Stream,
 }
 
 /// The panel an outcome is shown in.
@@ -120,7 +129,8 @@ pub struct HeadsetPage {
 impl HeadsetPage {
     pub fn new(daemon: Entity<DaemonState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let address = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Headset IP address, such as 192.168.1.20")
+            InputState::new(window, cx)
+                .placeholder("Headset IP address, found automatically when it can be")
         });
         let subscriptions = [
             // The stream panel shows what VRFT receives.
@@ -256,23 +266,29 @@ impl HeadsetPage {
         cx.notify();
     }
 
-    /// Fills the Wi-Fi field with the headset's address, from the headset
-    /// itself over USB or from VRFT's camera stream.
-    fn suggest_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from_stream = self
-            .daemon
-            .read(cx)
-            .status()
-            .and_then(|status| status.source.as_deref())
-            .and_then(|source| source.parse::<SocketAddr>().ok())
-            .map(|address| address.ip())
-            .filter(|ip| !ip.is_loopback());
-        let suggestion = self
+    /// The headset's address as found without asking: from the headset itself
+    /// over adb, or from where VRFT's camera stream comes from.
+    fn detected_address(&self, cx: &App) -> Option<(IpAddr, FoundBy)> {
+        let from_usb = self
             .details
             .as_ref()
             .and_then(|details| details.wifi_address)
-            .map(IpAddr::V4)
-            .or(from_stream);
+            .map(|ip| (IpAddr::V4(ip), FoundBy::Adb));
+        from_usb.or_else(|| {
+            self.daemon
+                .read(cx)
+                .status()
+                .and_then(|status| status.source.as_deref())
+                .and_then(|source| source.parse::<SocketAddr>().ok())
+                .map(|address| address.ip())
+                .filter(|ip| !ip.is_loopback())
+                .map(|ip| (ip, FoundBy::Stream))
+        })
+    }
+
+    /// Fills the Wi-Fi field with the detected address.
+    fn suggest_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let suggestion = self.detected_address(cx).map(|(ip, _)| ip);
         if suggestion.is_none() || suggestion == self.suggested {
             return;
         }
@@ -288,6 +304,65 @@ impl HeadsetPage {
                     .update(cx, |input, cx| input.set_value(ip.to_string(), window, cx));
             }
         }
+    }
+
+    /// Puts the detected address back after someone typed over it.
+    fn use_detected(&mut self, ip: IpAddr, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggested = Some(ip);
+        self.address
+            .update(cx, |input, cx| input.set_value(ip.to_string(), window, cx));
+        cx.notify();
+    }
+
+    /// The line under the Wi-Fi field, saying whether VRFT found the address
+    /// by itself and how, so nobody has to wonder where it came from.
+    fn address_hint(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let typed = self.address.read(cx).value();
+        let Some((ip, by)) = self.detected_address(cx) else {
+            return div()
+                .text_xs()
+                .text_color(muted)
+                .child(
+                    "VRFT fills this in by itself once the headset is plugged in with USB, or is streaming its cameras to VRFT. \
+                     Otherwise, find the address on the headset under Settings > Wi-Fi, in your network's details.",
+                )
+                .into_any_element();
+        };
+        let how = match by {
+            FoundBy::Adb => "the connected headset reported it",
+            FoundBy::Stream => "VRFT is receiving the headset's camera stream from it",
+        };
+        if typed.trim() == ip.to_string() {
+            return h_flex()
+                .gap_1p5()
+                .text_xs()
+                .text_color(muted)
+                .child(
+                    Icon::new(IconName::CircleCheck)
+                        .xsmall()
+                        .text_color(theme.success),
+                )
+                .child(format!("Found automatically: {how}."))
+                .into_any_element();
+        }
+        h_flex()
+            .gap_2()
+            .flex_wrap()
+            .text_xs()
+            .text_color(muted)
+            .child(format!("VRFT found the headset at {ip}: {how}."))
+            .child(
+                Button::new("use-detected-address")
+                    .ghost()
+                    .xsmall()
+                    .label(format!("Use {ip}"))
+                    .on_click(
+                        cx.listener(move |page, _, window, cx| page.use_detected(ip, window, cx)),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn selected_device(&self) -> Option<&Device> {
@@ -735,6 +810,7 @@ impl HeadsetPage {
                                     .on_click(cx.listener(|page, _, _, cx| page.connect(cx))),
                             ),
                     )
+                    .child(self.address_hint(cx))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "The headset takes adb over Wi-Fi once you choose Use Wi-Fi while it's on USB, until it restarts.",
                     )),

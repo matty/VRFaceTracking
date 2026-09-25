@@ -111,6 +111,100 @@ impl DaemonClient {
         }
     }
 
+    /// The guided tongue recording, if one is running, else how the last ended.
+    pub fn capture_status(&self) -> Result<CaptureStatus> {
+        self.get("capture/status")
+    }
+
+    /// Starts a guided tongue recording of `mode`: `core`, `direction`,
+    /// `negatives` or `follow`.
+    pub fn start_capture(&self, mode: &str) -> Result<CaptureStatus> {
+        self.post("capture/start", Some(serde_json::json!({ "mode": mode })))
+    }
+
+    /// `skip`, `pause` (which also resumes) or `stop` the running recording.
+    pub fn capture_command(&self, command: &str) -> Result<CaptureStatus> {
+        self.post(&format!("capture/{command}"), None)
+    }
+
+    /// Every tongue recording on this PC, oldest first.
+    pub fn recordings(&self) -> Result<Vec<Recording>> {
+        self.get("training/sessions")
+    }
+
+    /// Leaves the given poses of a recording out of training.
+    pub fn review_recording(&self, id: &str, excluded_steps: &[u64]) -> Result<()> {
+        let body = serde_json::json!({ "id": id, "excluded_steps": excluded_steps });
+        self.post::<serde_json::Value>("training/review", Some(body))
+            .map(drop)
+    }
+
+    pub fn delete_recording(&self, id: &str) -> Result<()> {
+        self.post::<serde_json::Value>("training/delete", Some(serde_json::json!({ "id": id })))
+            .map(drop)
+    }
+
+    /// One saved camera frame of a recording.
+    pub fn recorded_frame(&self, id: &str, index: u64) -> Result<Frame> {
+        let mut response = self
+            .agent
+            .get(format!("http://{}/training/frame", self.address))
+            .query("id", id)
+            .query("index", index.to_string())
+            .call()
+            .with_context(|| format!("Can't reach VRFT at {}", self.address))?;
+        if !response.status().is_success() {
+            let reason = response.body_mut().read_to_string().unwrap_or_default();
+            if reason.is_empty() {
+                bail!("VRFT answered {}", response.status());
+            }
+            bail!(reason);
+        }
+        Frame::new(index, response.body_mut().read_to_vec()?)
+    }
+
+    pub fn training_status(&self) -> Result<TrainingStatus> {
+        self.get("training/status")
+    }
+
+    pub fn start_training(&self, request: &TrainRequest) -> Result<()> {
+        self.post::<serde_json::Value>("training/start", Some(serde_json::to_value(request)?))
+            .map(drop)
+    }
+
+    pub fn cancel_training(&self) -> Result<()> {
+        self.post::<serde_json::Value>("training/cancel", Some(serde_json::json!({})))
+            .map(drop)
+    }
+
+    /// The built-in tongue model and every personal one trained on this PC.
+    pub fn models(&self) -> Result<Models> {
+        self.get("training/models")
+    }
+
+    /// Puts a saved model into use; `demo` is the built-in one.
+    pub fn activate_model(&self, id: &str) -> Result<()> {
+        self.post::<serde_json::Value>("training/activate", Some(serde_json::json!({ "id": id })))
+            .map(drop)
+    }
+
+    fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let mut response = self
+            .agent
+            .get(format!("http://{}/{path}", self.address))
+            .call()
+            .with_context(|| format!("Can't reach VRFT at {}", self.address))?;
+        match response.status().as_u16() {
+            200..=299 => {}
+            404 => bail!("This vrft_d can't record or train tongue models. Update VRFT."),
+            status => bail!("VRFT answered {status}"),
+        }
+        response
+            .body_mut()
+            .read_json()
+            .context("VRFT sent a reply this app doesn't understand")
+    }
+
     fn post<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -327,6 +421,136 @@ pub struct OutputTarget {
     pub max_fps: Option<f32>,
 }
 
+/// The daemon's guided tongue recording, from `/capture/status`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CaptureStatus {
+    pub active: bool,
+    pub mode: Option<String>,
+    pub pose: Option<String>,
+    pub instruction: Option<String>,
+    pub next_pose: Option<String>,
+    pub seconds_remaining: Option<f32>,
+    /// The current step lasts `step_seconds`; only the time after
+    /// `settle_seconds` is recorded.
+    pub step_seconds: f32,
+    pub settle_seconds: f32,
+    /// Follow the dot: `[seconds, horizontal, vertical]` keyframes of the
+    /// current round, and the seconds since its dot started (negative while
+    /// getting ready).
+    pub path: Option<Vec<[f32; 3]>>,
+    pub path_elapsed: Option<f32>,
+    pub recording: bool,
+    pub skipped: bool,
+    pub paused: bool,
+    /// 1-based.
+    pub step: Option<usize>,
+    pub total_steps: Option<usize>,
+    pub samples: u64,
+    /// Folder of the running recording, or of the last one.
+    pub directory: Option<String>,
+    /// Whether the headset's own face tracking is arriving, which recording needs.
+    pub native_recent: bool,
+    pub message: String,
+}
+
+/// One tongue recording, from `/training/sessions`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Recording {
+    /// `<unix ms>-<mode>-<pid>`.
+    pub id: String,
+    pub mode: Option<String>,
+    pub frames: u64,
+    pub poses: Vec<RecordedPose>,
+    pub coverage: Coverage,
+    pub basic_ready: bool,
+    /// Why the recording can't be read.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RecordedPose {
+    pub step: u64,
+    pub name: String,
+    pub frames: u64,
+    /// Frame indices of the pose's start, middle and end.
+    pub indices: [u64; 3],
+    /// Skipped while recording, so it can't be ticked back in.
+    pub skipped: bool,
+    /// Left out of training, whether skipped or unticked in review.
+    pub excluded: bool,
+}
+
+/// Usable frames in a recording: tongue out and in, and out in each basic
+/// direction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Coverage {
+    pub out: u64,
+    #[serde(rename = "in")]
+    pub inside: u64,
+    pub left: u64,
+    pub right: u64,
+    pub up: u64,
+    pub down: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TrainingStatus {
+    pub busy: bool,
+    /// The last job started since VRFT started.
+    pub id: Option<String>,
+    pub progress: Option<TrainingProgress>,
+    pub active_id: String,
+    /// `VRFT_TONGUE_MODEL_DIR` pins the model, so selection is off.
+    pub model_override: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TrainingProgress {
+    /// `checking`, `training`, `calibrating`, `complete`, `failed` or `cancelled`.
+    pub stage: String,
+    pub message: String,
+    pub fraction: Option<f32>,
+    pub eta_seconds: Option<f64>,
+    pub report: Option<TrainingReport>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TrainingReport {
+    pub recordings: Vec<String>,
+    pub seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Models {
+    pub active_id: String,
+    pub models: Vec<SavedModel>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SavedModel {
+    /// `demo` for the built-in model, else `<unix ms>-<pid>`.
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TrainRequest {
+    pub name: String,
+    pub recordings: Vec<String>,
+    /// `auto`, `cpu` or `cuda`.
+    pub device: &'static str,
+    pub epochs: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +617,40 @@ mod tests {
         let mismatch = status.headset_mismatch.unwrap();
         assert_eq!(mismatch.update, Update::Vrft);
         assert_eq!(mismatch.apk_version.as_deref(), Some("2027.1.0"));
+    }
+
+    #[test]
+    fn parses_recordings_training_and_models() {
+        let recordings: Vec<Recording> = serde_json::from_str(
+            r#"[{"id": "1758800000000-core-42", "mode": "core", "frames": 900,
+                 "poses": [{"step": 0, "name": "Neutral", "frames": 60, "indices": [0, 30, 59],
+                            "skipped": false, "excluded": true}],
+                 "positive_frames": 500, "negative_frames": 400,
+                 "coverage": {"out": 500, "in": 400, "left": 60, "right": 60, "up": 60, "down": 0},
+                 "basic_ready": false},
+                {"id": "broken", "error": "Frame/label count mismatch"}]"#,
+        )
+        .unwrap();
+        assert_eq!(recordings[0].coverage.inside, 400);
+        assert_eq!(recordings[0].poses[0].indices, [0, 30, 59]);
+        assert!(recordings[1].error.is_some());
+
+        let status: TrainingStatus = serde_json::from_str(
+            r#"{"busy": true, "id": "1-2", "active_id": "demo", "model_override": false,
+                "progress": {"stage": "training", "message": "Learning direction", "fraction": 0.4,
+                             "eta_seconds": 95.5, "epoch": 3}}"#,
+        )
+        .unwrap();
+        let progress = status.progress.unwrap();
+        assert_eq!(progress.fraction, Some(0.4));
+        assert_eq!(progress.eta_seconds, Some(95.5));
+
+        let models: Models = serde_json::from_str(
+            r#"{"active_id": "1-2", "models": [{"id": "demo", "name": "Built-in model", "report": null},
+                                                  {"id": "1-2", "name": "Mine", "report": {"name": "Mine"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(models.models[1].name.as_deref(), Some("Mine"));
     }
 
     #[test]

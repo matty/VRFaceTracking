@@ -13,6 +13,8 @@ path = "src/main.rs"
 # pin the exact release this app was written against.
 gpui-kit = "=0.6.6"
 anyhow = { workspace = true }
+# Local dates for recording and model names.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 log = { workspace = true }
 env_logger = "0.11"
 # GPUI images are built from `image` frames; this must match GPUI's version.

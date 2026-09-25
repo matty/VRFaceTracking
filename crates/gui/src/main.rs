@@ -15,7 +15,9 @@ mod live;
 mod paths;
 mod processes;
 mod shell;
+mod speech;
 mod summary;
+mod tongue;
 mod widgets;
 
 use gpui_kit::component::{Root, Theme, TitleBar};

@@ -7,8 +7,23 @@ use std::borrow::Cow;
 icon_assets!(
     ExtraIcons,
     [
-        Activity, Camera, CameraOff, CircleStop, Download, Glasses, Package, Puzzle, ScanEye,
-        ScanFace, ScrollText, Send, Unplug, Usb, Wifi,
+        Activity,
+        Camera,
+        CameraOff,
+        CircleStop,
+        Download,
+        Glasses,
+        Package,
+        Puzzle,
+        ScanEye,
+        ScanFace,
+        ScrollText,
+        Send,
+        SkipForward,
+        Trash,
+        Unplug,
+        Usb,
+        Wifi,
     ]
 );
 

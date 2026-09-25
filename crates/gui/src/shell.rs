@@ -1,5 +1,5 @@
 //! The window: title bar, navigation on the left, and the current page.
-use crate::camera::MouthCameraPage;
+use crate::camera::MouthPage;
 use crate::daemon::{Camera, DaemonClient, DEFAULT_ADDRESS};
 use crate::eyes::EyesPage;
 use crate::headset::HeadsetPage;
@@ -7,6 +7,7 @@ use crate::home::{HomePage, OpenPage};
 use crate::launcher::Launcher;
 use crate::live::{CameraFeed, DaemonState};
 use crate::summary::{Connection, Tone};
+use crate::tongue::TongueTraining;
 use crate::widgets::StatusPill;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -37,7 +38,7 @@ pub fn content_width(window: &Window) -> f32 {
 pub enum Page {
     Home,
     Headset,
-    MouthCameras,
+    Mouth,
     Eyes,
 }
 
@@ -48,7 +49,8 @@ pub struct Workspace {
     eye_feed: Entity<CameraFeed>,
     home: Entity<HomePage>,
     headset: Entity<HeadsetPage>,
-    mouth_cameras: Entity<MouthCameraPage>,
+    mouth: Entity<MouthPage>,
+    tongue: Entity<TongueTraining>,
     eyes: Entity<EyesPage>,
     _subscriptions: [Subscription; 2],
 }
@@ -66,8 +68,15 @@ impl Workspace {
         });
         let home = cx.new(|cx| HomePage::new(daemon.clone(), launcher.clone(), cx));
         let headset = cx.new(|cx| HeadsetPage::new(daemon.clone(), window, cx));
-        let mouth_cameras = cx.new(|cx| {
-            MouthCameraPage::new(daemon.clone(), mouth_feed.clone(), launcher.clone(), cx)
+        let tongue = cx.new(|cx| TongueTraining::new(daemon.clone(), window, cx));
+        let mouth = cx.new(|cx| {
+            MouthPage::new(
+                daemon.clone(),
+                mouth_feed.clone(),
+                launcher.clone(),
+                tongue.clone(),
+                cx,
+            )
         });
         let eyes =
             cx.new(|cx| EyesPage::new(daemon.clone(), eye_feed.clone(), launcher.clone(), cx));
@@ -83,7 +92,8 @@ impl Workspace {
             eye_feed,
             home,
             headset,
-            mouth_cameras,
+            mouth,
+            tongue,
             eyes,
             _subscriptions: subscriptions,
         }
@@ -97,14 +107,16 @@ impl Workspace {
         self.headset.update(cx, |headset, cx| {
             headset.set_watching(page == Page::Headset, cx)
         });
-        self.mouth_feed.update(cx, |feed, cx| {
-            feed.set_watching(page == Page::MouthCameras, cx)
+        self.mouth_feed
+            .update(cx, |feed, cx| feed.set_watching(page == Page::Mouth, cx));
+        self.tongue.update(cx, |tongue, cx| {
+            tongue.set_watching(page == Page::Mouth, cx)
         });
         self.eye_feed
             .update(cx, |feed, cx| feed.set_watching(page == Page::Eyes, cx));
         // Both camera pages show values that move with the wearer.
         self.daemon.update(cx, |daemon, _| {
-            daemon.set_fast(matches!(page, Page::MouthCameras | Page::Eyes))
+            daemon.set_fast(matches!(page, Page::Mouth | Page::Eyes))
         });
         cx.notify();
     }
@@ -179,7 +191,7 @@ impl Render for Workspace {
         let page: AnyView = match self.page {
             Page::Home => self.home.clone().into(),
             Page::Headset => self.headset.clone().into(),
-            Page::MouthCameras => self.mouth_cameras.clone().into(),
+            Page::Mouth => self.mouth.clone().into(),
             Page::Eyes => self.eyes.clone().into(),
         };
         let address = self.daemon.read(cx).address().to_string();
@@ -198,12 +210,7 @@ impl Render for Workspace {
                 SidebarGroup::new("Quest Pro").child(
                     SidebarMenu::new()
                         .child(self.nav_item("Headset", IconName::Glasses, Page::Headset, cx))
-                        .child(self.nav_item(
-                            "Mouth cameras",
-                            IconName::Camera,
-                            Page::MouthCameras,
-                            cx,
-                        ))
+                        .child(self.nav_item("Mouth", IconName::Camera, Page::Mouth, cx))
                         .child(self.nav_item("Eyes", IconName::ScanEye, Page::Eyes, cx)),
                 ),
             )

@@ -107,7 +107,7 @@ impl Render for HomePage {
                     .ghost()
                     .xsmall()
                     .label("View")
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenPage(Page::MouthCameras)))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenPage(Page::Mouth)))),
             ),
             StatTile::new(
                 IconName::ScanFace,

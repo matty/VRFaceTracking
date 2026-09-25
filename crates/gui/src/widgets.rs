@@ -92,12 +92,21 @@ impl Notice {
 
 impl RenderOnce for Notice {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Long notices wrap, with the dot beside their first line.
         h_flex()
             .gap_2()
+            .items_start()
             .text_sm()
             .text_color(cx.theme().foreground)
-            .child(StatusDot::new(self.tone))
-            .child(self.text)
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(20.))
+                    .flex()
+                    .items_center()
+                    .child(StatusDot::new(self.tone)),
+            )
+            .child(div().flex_1().min_w_0().child(self.text))
     }
 }
 

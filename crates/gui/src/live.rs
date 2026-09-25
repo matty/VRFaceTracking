@@ -223,7 +223,7 @@ impl CameraFeed {
     }
 }
 
-fn decode(frame: Frame) -> (u64, Arc<RenderImage>) {
+pub fn decode(frame: Frame) -> (u64, Arc<RenderImage>) {
     let buffer = image::RgbaImage::from_raw(FRAME_WIDTH, FRAME_HEIGHT, frame.to_bgra())
         .expect("a checked frame fills the image");
     let image = RenderImage::new(vec![image::Frame::new(buffer)]);

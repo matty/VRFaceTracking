@@ -1,16 +1,18 @@
-//! Mouth cameras: the live stereo image from the Quest Pro's lower-face
-//! cameras, and the tongue VRChat receives from it.
+//! Mouth: the live stereo image from the Quest Pro's lower-face cameras, the
+//! tongue VRChat receives from it, and the tongue model behind it.
 use crate::daemon::Status;
 use crate::launcher::{LaunchState, Launcher, StartVrft};
 use crate::live::{CameraFeed, DaemonState};
 use crate::summary::{self, Connection, Rates, Tone, TongueReading, TongueState};
+use crate::tongue::{DirectionPad, TongueTraining};
 use crate::widgets::{info_row, Meter, PageHeader, Panel, StatusPill};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{v_flex, ActiveTheme as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    black, div, img, px, AnyElement, App, Context, Entity, IntoElement, ObjectFit, ParentElement,
-    Render, RenderImage, RenderOnce, SharedString, Styled, StyledImage as _, Subscription, Window,
+    black, div, img, px, AnyElement, AnyView, App, Context, Entity, IntoElement, ObjectFit,
+    ParentElement, Render, RenderImage, RenderOnce, SharedString, Styled, StyledImage as _,
+    Subscription, Window,
 };
 use std::sync::Arc;
 
@@ -18,18 +20,20 @@ use std::sync::Arc;
 const SIDE_BY_SIDE_WIDTH: f32 = 860.;
 const PANEL_WIDTH: f32 = 300.;
 
-pub struct MouthCameraPage {
+pub struct MouthPage {
     daemon: Entity<DaemonState>,
     camera: Entity<CameraFeed>,
     launcher: Entity<Launcher>,
+    training: Entity<TongueTraining>,
     _subscriptions: [Subscription; 3],
 }
 
-impl MouthCameraPage {
+impl MouthPage {
     pub fn new(
         daemon: Entity<DaemonState>,
         camera: Entity<CameraFeed>,
         launcher: Entity<Launcher>,
+        training: Entity<TongueTraining>,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscriptions = [
@@ -41,12 +45,13 @@ impl MouthCameraPage {
             daemon,
             camera,
             launcher,
+            training,
             _subscriptions: subscriptions,
         }
     }
 }
 
-impl Render for MouthCameraPage {
+impl Render for MouthPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.daemon.read(cx);
         let status = state.status();
@@ -74,8 +79,8 @@ impl Render for MouthCameraPage {
             .gap_6()
             .child(
                 PageHeader::new(
-                    "Mouth cameras",
-                    "What the headset's lower-face cameras see, and the tongue your avatar gets.",
+                    "Mouth",
+                    "What the headset's lower-face cameras see, the tongue your avatar gets, and the model that tracks it.",
                 )
                 .trailing(pill),
             )
@@ -102,6 +107,7 @@ impl Render for MouthCameraPage {
                             .child(panel),
                     ),
             )
+            .child(AnyView::from(self.training.clone()))
     }
 }
 
@@ -270,7 +276,7 @@ fn side_panel(status: Option<&Status>, rates: &Rates, cx: &App) -> AnyElement {
                 v_flex()
                     .gap_4()
                     .items_center()
-                    .child(TonguePad { reading: tongue })
+                    .child(tongue_pad(tongue))
                     .child(
                         v_flex()
                             .w_full()
@@ -311,89 +317,15 @@ const PAD_SIZE: f32 = 200.;
 
 /// Tongue direction as seen in a mirror: your right is on the right. The dot
 /// grows the further out the tongue is.
-#[derive(IntoElement)]
-struct TonguePad {
-    reading: TongueReading,
-}
-
-impl RenderOnce for TonguePad {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.theme();
-        let middle = PAD_SIZE / 2.;
-        let radius = PAD_SIZE * 0.45;
-        let ring = |size: f32| {
-            div()
-                .absolute()
-                .left(px(middle - size / 2.))
-                .top(px(middle - size / 2.))
-                .size(px(size))
-                .rounded_full()
-                .border_1()
-                .border_color(theme.border)
-        };
-        let label = |text: &'static str| {
-            div()
-                .absolute()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(text)
-        };
-        let dot = (self.reading.state == TongueState::Out).then(|| {
-            let size = 14. + 14. * self.reading.out;
-            let x = middle + self.reading.horizontal * radius;
-            let y = middle - self.reading.vertical * radius;
-            div()
-                .absolute()
-                .left(px(x - size / 2.))
-                .top(px(y - size / 2.))
-                .size(px(size))
-                .rounded_full()
-                .bg(theme.chart_2)
-        });
-        div()
-            .relative()
-            .flex_none()
-            .size(px(PAD_SIZE))
-            .child(ring(radius * 2.).bg(theme.background))
-            .child(ring(radius).border_dashed())
-            .child(
-                div()
-                    .absolute()
-                    .left(px(middle - radius))
-                    .top(px(middle))
-                    .w(px(radius * 2.))
-                    .h(px(1.))
-                    .bg(theme.border),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(middle))
-                    .top(px(middle - radius))
-                    .w(px(1.))
-                    .h(px(radius * 2.))
-                    .bg(theme.border),
-            )
-            .child(
-                label("up")
-                    .top(px(middle - radius + 6.))
-                    .left(px(middle + 6.)),
-            )
-            .child(
-                label("down")
-                    .bottom(px(middle - radius + 6.))
-                    .left(px(middle + 6.)),
-            )
-            .child(
-                label("left")
-                    .left(px(middle - radius + 8.))
-                    .top(px(middle - 20.)),
-            )
-            .child(
-                label("right")
-                    .right(px(middle - radius + 8.))
-                    .top(px(middle - 20.)),
-            )
-            .children(dot)
+fn tongue_pad(reading: TongueReading) -> DirectionPad {
+    let pad = DirectionPad::new(PAD_SIZE);
+    if reading.state == TongueState::Out {
+        pad.dot(
+            reading.horizontal,
+            reading.vertical,
+            14. + 14. * reading.out,
+        )
+    } else {
+        pad
     }
 }
