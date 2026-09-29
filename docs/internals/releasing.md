@@ -12,14 +12,14 @@ Every other build is a dev build of the next release, `YYYY.M.N-dev.C`: `YYYY.M.
 
 | Component | Tag | Where the version shows |
 | --- | --- | --- |
-| VRFT (`vrft_d`, `vrft_gui`) | `v2026.9.0` | `/status` → `daemon.version`, the navigation and **Settings → Updates** in the app, the first line of `vrft_d.log` |
+| VRFT (`vrft_d`, `vrft_app`) | `v2026.9.0` | `/status` → `daemon.version`, the navigation and **Settings → Updates** in the app, the first line of `vrft_d.log` |
 | Headset app (`android/questpro-camera`) | `apk-v2026.9.0` | Android's `versionName`, and `apk_version` in the headset's status |
 
 A dev build also says so in its name: the desktop app is **VRFaceTracking (Dev)** in its window, navigation and installer, and the headset app is **VRFT Quest Pro Camera (Dev)**.
 
 A release tag is the only place a version is written down. Nothing in the repository is bumped by hand:
 
-- `build-support/version.rs`, run by the build scripts of `vrft_d` and `vrft_gui`, stamps `VRFT_VERSION` into both. CI sets it in the environment, for a release and a dev build alike. Any other build works out its dev version from git and today's date. The `version` in `Cargo.toml` is not used. `.github/scripts/next-calver.sh <prefix> [dev]` does the same for CI.
+- `build-support/version.rs`, run by the build scripts of `vrft_d` and `vrft_app`, stamps `VRFT_VERSION` into both. CI sets it in the environment, for a release and a dev build alike. Any other build works out its dev version from git and today's date. The `version` in `Cargo.toml` is not used. `.github/scripts/next-calver.sh <prefix> [dev]` does the same for CI.
 - `android/questpro-camera/app/build.gradle` does the same with `apk-v` tags. CI passes `-PappVersion`. The `versionCode` is `YYYYMMNN00` (`2026090000`), and a dev build of `YYYY.M.N` takes one of the 100 codes just below it (`2026.9.1-dev.14` is `2026090014`; commits past 99 share the last one). So every build installs over the ones before it, and a release over the dev builds leading to it. A build without git keeps `2`.
 
 ## Stream protocol

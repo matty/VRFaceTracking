@@ -50,7 +50,7 @@ jobs:
             channel=dev
             title="VRFaceTracking (Dev)"
           fi
-          # Stamped into vrft_d and vrft_gui.
+          # Stamped into vrft_d and vrft_app.
           echo "VRFT_VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
@@ -159,8 +159,8 @@ jobs:
           function Make-Package($name, $active, $bundle_dotnet) {
             New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
-            # vrft_gui starts vrft_d.
-            Copy-Item "$release_dir/vrft_d.exe", "$release_dir/vrft_gui.exe" "$name/"
+            # vrft_app starts vrft_d.
+            Copy-Item "$release_dir/vrft_d.exe", "$release_dir/vrft_app.exe" "$name/"
             Copy-Item "docs/guide/tongue-training.md", "docs/guide/quest-pro-eye-tracking.md" "$name/"
             New-Item -ItemType Directory -Force -Path "$name/models/quest-pro" | Out-Null
             Copy-Item "models/quest-pro/qpro-independent-visual-axis-v2.json" "$name/models/quest-pro/"
@@ -234,7 +234,7 @@ jobs:
           dotnet tool install -g vpk --version 1.2.161
           # Full packages only: dev keeps just its newest build.
           vpk pack --packId VRFaceTracking --packVersion "$VERSION" --packDir installer \
-            --mainExe vrft_gui.exe --packTitle "$TITLE" --packAuthors VRFaceTracking --runtime win-x64 \
+            --mainExe vrft_app.exe --packTitle "$TITLE" --packAuthors VRFaceTracking --runtime win-x64 \
             --icon crates/gui/resources/app.ico --channel "$CHANNEL" --delta None \
             --releaseNotes notes.md --outputDir velopack
           ls velopack

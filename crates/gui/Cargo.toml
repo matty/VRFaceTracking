@@ -6,7 +6,7 @@ repository.workspace = true
 description = "Desktop app for VRFT: dashboard, extensions such as Quest Pro support, and starting the daemon"
 
 [[bin]]
-name = "vrft_gui"
+name = "vrft_app"
 path = "src/main.rs"
 
 [dependencies]

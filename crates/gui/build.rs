@@ -1,5 +1,5 @@
 //! Embeds the app icon (the white face mark on a blue tile, drawn in
-//! `resources/app-icon*.svg`) into vrft_gui.exe, and rebuilds when a
+//! `resources/app-icon*.svg`) into vrft_app.exe, and rebuilds when a
 //! translation in `locales/` changes, and stamps in `VRFT_VERSION` (see
 //! `build-support/version.rs`).
 #[path = "../../build-support/version.rs"]

@@ -10,7 +10,7 @@ With the companion Quest Pro camera APK, VRFT can discover a live stereo feed an
 
 ## For End Users
 
-Download the latest release from [GitHub Releases](https://github.com/matty/VRFaceTracking/releases/latest), place your tracking module in `plugins/`, configure `config.json`, and run `vrft_gui.exe`, which starts `vrft_d.exe` beside it. The Quest Pro headset app has its own, less frequent releases, tagged `apk-v…`. Each VRFT release links the headset app release to use, and VRFT tells you if either needs updating.
+Download the latest release from [GitHub Releases](https://github.com/matty/VRFaceTracking/releases/latest), place your tracking module in `plugins/`, configure `config.json`, and run `vrft_app.exe`, which starts `vrft_d.exe` beside it. The Quest Pro headset app has its own, less frequent releases, tagged `apk-v…`. Each VRFT release links the headset app release to use, and VRFT tells you if either needs updating.
 
 **[Getting Started →](docs/guide/getting-started.md)**
 **[Configuration Reference →](docs/guide/configuration.md)**

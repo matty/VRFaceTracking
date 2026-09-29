@@ -24,14 +24,14 @@ The easiest way in is the installer, `VRFaceTracking-stable-Setup.exe` (or `VRFa
 
 You can still extract a zip to a location of your choice instead. That copy doesn't update itself.
 
-The Quest Pro headset app is released separately, in releases tagged `apk-v…`, and much less often. Each VRFT release links the headset app release to install and carries a copy of it in `headset-app/`, which the desktop app's **Headset** page installs for you. It is often an older one, and you don't need to reinstall the headset app when you update VRFT unless VRFT tells you to. If the two can't work together, the Headset tile in `vrft_gui.exe` says whether to update VRFT or the headset app.
+The Quest Pro headset app is released separately, in releases tagged `apk-v…`, and much less often. Each VRFT release links the headset app release to install and carries a copy of it in `headset-app/`, which the desktop app's **Headset** page installs for you. It is often an older one, and you don't need to reinstall the headset app when you update VRFT unless VRFT tells you to. If the two can't work together, the Headset tile in `vrft_app.exe` says whether to update VRFT or the headset app.
 
 ## Installation
 
 The extracted folder contains:
 
 ```
-vrft_gui.exe       ← the desktop app; starts vrft_d.exe
+vrft_app.exe       ← the desktop app; starts vrft_d.exe
 vrft_d.exe
 headset-app/       ← the Quest Pro headset app this VRFT works with
 platform-tools/    ← adb, once the Headset page has downloaded it
@@ -71,7 +71,7 @@ For a full reference of all config options, see [Configuration](configuration.md
 ## Running
 
 1. Start VRChat (or your target platform).
-2. Run `vrft_gui.exe`. It starts `vrft_d.exe`, stops it again when you close the app, and shows whether the module, output and headset are working. You can also run `vrft_d.exe` on its own; the app then connects to it and leaves it running when it closes.
+2. Run `vrft_app.exe`. It starts `vrft_d.exe`, stops it again when you close the app, and shows whether the module, output and headset are working. You can also run `vrft_d.exe` on its own; the app then connects to it and leaves it running when it closes.
 3. Watch the app, or `vrft_d.exe`'s console. You should see the module initialize and parameters begin to send.
 
 `vrft_d.exe` must be run from the same directory as `config.json` and the `plugins/` folder.
@@ -80,7 +80,7 @@ For a full reference of all config options, see [Configuration](configuration.md
 
 Quest Pro support is an extension, on by default. If you don't use a Quest Pro, turn it off on the desktop app's **Modules** page, under **Add-ons**, or set `"extensions": { "quest-pro": { "enabled": false } }` in `config.json` and restart VRFT.
 
-The rooted Quest Pro APK in [android/questpro-camera](../../android/questpro-camera/README.md) streams its two lower-face cameras to VRFT. It can also stream each eye's own gaze so avatar eyes converge; see [Quest Pro independent eye gaze](quest-pro-eye-tracking.md). Install and start that APK, then return to your streaming app (Virtual Desktop, Steam Link or another) on the headset. The cameras, eye gaze and tongue don't need a tracking module. The desktop app's **Headset** page can do this over adb: it connects over USB or Wi-Fi, installs or updates the headset app, and starts and stops its stream. It uses an adb that's already on the PC, or downloads the adb files from Google's Platform-Tools into a `platform-tools` folder beside `vrft_gui.exe` and uses that copy from then on. The first time, press **Download built-in model** on the app's **Training** page (or the preview's **Tongue** tab). VRFT downloads the Qpro-Enhanced-FT v0.1.10 release once (about 140 MB), checks it and both model files against fixed SHA-256 hashes, and saves the demo pair in `models/quest-pro/`. To use a release archive you already have, put `QproFaceTracking-0.1.10-poc.zip` in `.local/` first. Nothing else needs installing: VRFT runs the model itself, with no Python.
+The rooted Quest Pro APK in [android/questpro-camera](../../android/questpro-camera/README.md) streams its two lower-face cameras to VRFT. It can also stream each eye's own gaze so avatar eyes converge; see [Quest Pro independent eye gaze](quest-pro-eye-tracking.md). Install and start that APK, then return to your streaming app (Virtual Desktop, Steam Link or another) on the headset. The cameras, eye gaze and tongue don't need a tracking module. The desktop app's **Headset** page can do this over adb: it connects over USB or Wi-Fi, installs or updates the headset app, and starts and stops its stream. It uses an adb that's already on the PC, or downloads the adb files from Google's Platform-Tools into a `platform-tools` folder beside `vrft_app.exe` and uses that copy from then on. The first time, press **Download built-in model** on the app's **Training** page (or the preview's **Tongue** tab). VRFT downloads the Qpro-Enhanced-FT v0.1.10 release once (about 140 MB), checks it and both model files against fixed SHA-256 hashes, and saves the demo pair in `models/quest-pro/`. To use a release archive you already have, put `QproFaceTracking-0.1.10-poc.zip` in `.local/` first. Nothing else needs installing: VRFT runs the model itself, with no Python.
 
 Run `vrft_d.exe` from its folder with `models/quest-pro/` beside it. The model runs on the GPU (NVIDIA, AMD or Intel, through DX12 or Vulkan) when one works, and on the CPU otherwise, which is much slower. When camera frames arrive, VRFT starts the model automatically and sends its twelve detailed tongue expressions through its normal VRChat OSC output. If camera frames or model output are older than 250 ms, it uses the active tracking module's tongue values, if there is one, without interrupting other tracking. With no tracking module loaded or sending, VRFT still sends the camera tongue and eye gaze at the `max_fps` rate. The console logs discovery, connection, model readiness, inference time, skipped frames, and transitions between enhanced and module tracking. No Quest Pro device check or manual mode switch is required.
 
