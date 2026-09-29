@@ -93,6 +93,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PROTOCOL: ${{ steps.protocol.outputs.protocol }}
         run: |
+          # A newer push publishes its own dev build. GitHub also refuses to
+          # tag this commit once main's workflow files differ from it.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved on, so its own run publishes the dev build."
+            exit 0
+          fi
           {
             echo "Latest headset app build from \`main\`, for testing only. It reports version $VERSION and speaks headset stream protocol $PROTOCOL."
             echo

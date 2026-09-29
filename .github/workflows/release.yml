@@ -255,6 +255,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # A newer push publishes its own dev build. GitHub also refuses to
+          # tag this commit once main's workflow files differ from it.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved on, so its own run publishes the dev build."
+            exit 0
+          fi
           # Recreated rather than edited, so the tag moves to this commit and
           # the last build's installer packages go with it.
           gh release delete dev --cleanup-tag --yes || true
