@@ -1,0 +1,142 @@
+_version: 2
+camera:
+  visibility_weighted:
+    en: "Cameras and headset together"
+  visibility_weighted_about:
+    en: "Recommended"
+  visibility_camera:
+    en: "Cameras only"
+  visibility_camera_about:
+    en: "If your tongue rarely shows"
+  visibility_native:
+    en: "Headset only"
+  visibility_native_about:
+    en: "The headset's own reading"
+  visibility_agreement:
+    en: "Only when both see it out"
+  visibility_agreement_about:
+    en: "If it shows when it shouldn't"
+  smoothing_note:
+    en: "Lower reacts faster but jitters; higher is smoother but lags. The default is 55."
+  sent_out:
+    en: "Out"
+  sent_up:
+    en: "Up"
+  sent_down:
+    en: "Down"
+  sent_left:
+    en: "Left"
+  sent_right:
+    en: "Right"
+  sent_roll:
+    en: "Roll"
+  sent_bend_down:
+    en: "Bend down"
+  sent_curl_up:
+    en: "Curl up"
+  sent_squish:
+    en: "Squish"
+  sent_flat:
+    en: "Flat"
+  sent_twist_left:
+    en: "Twist left"
+  sent_twist_right:
+    en: "Twist right"
+  couldnt_save:
+    en: "Couldn't save"
+  couldnt_retry:
+    en: "Couldn't retry"
+  tongue_settings:
+    en: "Tongue settings"
+  smoothing:
+    en: "Smoothing"
+  when_to_show:
+    en: "When to show the tongue"
+  tongue_model:
+    en: "Tongue model: %{state}."
+  tongue_model_detail:
+    en: "Tongue model: %{state}. %{detail}"
+  open_training:
+    en: "Open Training"
+  frame_rate:
+    en: "Frame rate"
+  frame_age:
+    en: "Frame age"
+  model:
+    en: "Model"
+  skipped:
+    en: "Skipped"
+  fps:
+    en: "%{fps} fps"
+  milliseconds:
+    en: "%{ms} ms"
+  fewer:
+    en: "Fewer"
+  all:
+    en: "All %{count}"
+  what_vrchat_receives:
+    en: "What VRChat receives"
+  cameras_see_tongue:
+    en: "Cameras see the tongue"
+  headset_sees_tongue:
+    en: "Headset sees the tongue"
+  combined:
+    en: "Combined"
+  restart_vrft:
+    en: "Restart tracking"
+  retry:
+    en: "Retry"
+  open_headset:
+    en: "Open Headset"
+  page_title:
+    en: "Mouth"
+  page_description:
+    en: "What the mouth cameras see, and the tongue they find in it."
+  waiting_title:
+    en: "Waiting for the mouth cameras…"
+  waiting_detail:
+    en: "They run while an app on the headset uses face tracking."
+  retrying_in:
+    en: "%{state}. Trying again in %{seconds} s"
+  connecting:
+    en: "Connecting…"
+  starting:
+    en: "Starting tracking…"
+  side_left:
+    en: "Left"
+  side_right:
+    en: "Right"
+  support_not_running:
+    en: "Quest Pro support isn't running"
+  vrft_not_running:
+    en: "Tracking isn't running"
+  live_badge:
+    en: "Live"
+  live:
+    en: "Live"
+  source_cameras:
+    en: "Mouth cameras"
+  source_headset:
+    en: "Headset's own tracking"
+  your_tongue:
+    en: "Your tongue"
+  mirror_view:
+    en: "Mirror view"
+  how_far_out:
+    en: "How far out"
+  comes_from:
+    en: "Comes from"
+  tongue_in:
+    en: "Tongue in"
+  not_tracked:
+    en: "Not tracked"
+  cheek_puffs:
+    en: "Cheek puffs"
+  cheek_puffs_hint:
+    en: "Reads each cheek from the cameras once your tongue model has learned them."
+  cheek_left:
+    en: "Left"
+  cheek_right:
+    en: "Right"
+  cheeks_unlearned:
+    en: "Your tongue model hasn't learned cheek puffs yet. Record the cheek poses and train again."

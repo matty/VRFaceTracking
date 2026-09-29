@@ -1,0 +1,66 @@
+_version: 2
+adb:
+  origin_setting:
+    en: "Using the connection tool set by VRFT_ADB"
+  origin_app:
+    en: "Using the connection tool in the VRFaceTracking folder"
+  origin_running:
+    en: "Using the connection tool that's already running"
+  origin_workspace:
+    en: "Using the connection tool from the workspace"
+  origin_path:
+    en: "Using the connection tool on PATH"
+  origin_android_sdk:
+    en: "Using the connection tool from the Android SDK"
+  origin_sidequest:
+    en: "Using the connection tool from SideQuest"
+  origin_developer_hub:
+    en: "Using the connection tool from Meta Quest Developer Hub"
+  app_not_installed:
+    en: "The headset app isn't installed."
+  app_still_stopping:
+    en: "The headset app is still stopping its stream. Try again in a minute."
+  couldnt_run:
+    en: "Couldn't run %{path}"
+  command_timed_out:
+    en: "The connection tool didn't finish %{command} within %{seconds} seconds"
+  couldnt_write:
+    en: "Couldn't write to %{path}"
+  couldnt_download:
+    en: "Couldn't download the connection tool"
+  couldnt_save_download:
+    en: "Couldn't save the download in %{path}"
+  download_stopped:
+    en: "The download stopped part way"
+  download_missing_file:
+    en: "The download didn't contain %{file}."
+  couldnt_create:
+    en: "Couldn't create %{path}"
+  couldnt_replace:
+    en: "Couldn't replace %{file} in %{path}. If the connection tool there is still running, close whatever uses it and try again"
+  couldnt_unpack:
+    en: "Couldn't unpack the connection tool"
+  couldnt_unpack_because:
+    en: "Couldn't unpack the connection tool: %{reason}"
+  failed_silently:
+    en: "The connection tool failed without saying why"
+  headset_not_connected:
+    en: "The headset isn't connected."
+  headset_offline:
+    en: "The headset isn't responding. Unplug it and plug it back in."
+  headset_unauthorized:
+    en: "Put on the headset and allow USB debugging for this computer."
+  headset_disconnected:
+    en: "The headset has disconnected."
+  android_device:
+    en: "Android device"
+  connection_refused:
+    en: "%{target} refused the connection. The headset stops accepting Wi-Fi connections when it restarts: connect it with a USB cable and choose Use Wi-Fi."
+  no_answer:
+    en: "%{target} didn't answer. Check the address, and that the headset and this PC are on the same network."
+  waiting_for_allow:
+    en: "%{target} is waiting for you: put on the headset and allow USB debugging for this computer, with Always allow ticked."
+  install_different_signer:
+    en: "The headset's copy is signed with a different key, such as a development build."
+  install_downgrade:
+    en: "The headset has a newer version of the app."

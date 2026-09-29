@@ -1,19 +1,21 @@
 use vrft_daemon::osc;
+mod api;
+mod config_file;
 mod daemon_status;
-mod quest_pro_camera;
-mod quest_pro_camera_capture;
-mod quest_pro_eye;
-mod quest_pro_settings;
-mod quest_pro_training;
+mod dev_build;
+mod extensions;
+mod installed;
+mod modules;
 
 use vrft_daemon::dispatcher;
 use vrft_daemon::plugin_loader::{self, PluginKind};
 use vrft_daemon::strategies;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use libloading::{Library, Symbol};
 use log::{debug, error, info, trace, warn};
 use osc::query::host::OscQueryHost;
+use osc::query::target::VrchatTarget;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -26,11 +28,14 @@ use vrft_api::{
     LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
 };
 use vrft_common::{MutationConfig, UnifiedTrackingMutator};
+use vrft_extension::{ExtensionConfig, ExtensionReport, FrameHook, HostContext};
 
 use daemon_status::{DaemonStatus, ModuleStatus, OutputTarget, RunMode};
 use dispatcher::Dispatcher;
 
-fn load_config(path: &Path) -> Result<MutationConfig> {
+/// Loads `path`, or creates it with defaults, listing `extensions` so they
+/// are easy to find and turn off.
+fn load_config(path: &Path, extensions: &[&str]) -> Result<MutationConfig> {
     if path.exists() {
         info!("Loading config from {:?}", path);
         let file = fs::File::open(path)?;
@@ -39,7 +44,13 @@ fn load_config(path: &Path) -> Result<MutationConfig> {
         Ok(config)
     } else {
         info!("Config not found. Creating default at {:?}", path);
-        let config = MutationConfig::default();
+        let mut config = MutationConfig::default();
+        for id in extensions {
+            config.extensions.insert(
+                id.to_string(),
+                serde_json::to_value(ExtensionConfig::default())?,
+            );
+        }
         let file = fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
         serde_json::to_writer_pretty(writer, &config)?;
@@ -64,41 +75,17 @@ extern "C" fn module_log_callback(level: LogLevel, target: *const i8, message: *
     }
 }
 
-/// A development build lives in `<repo>/target/[<triple>/]<profile>/`. Started
-/// from there, for example by double-clicking it, the working directory has
-/// no config, plugins, Quest Pro models or recordings, so use the repository
-/// root instead. Release packages keep the executable beside those files and
-/// are unaffected, as is any run started from outside the target directory.
-fn use_repository_root_for_dev_builds() {
-    let (Ok(exe), Ok(cwd)) = (std::env::current_exe(), std::env::current_dir()) else {
-        return;
-    };
-    let Some(target) = exe
-        .ancestors()
-        .find(|dir| dir.file_name().is_some_and(|name| name == "target"))
-    else {
-        return;
-    };
-    let Some(root) = target.parent() else {
-        return;
-    };
-    if !root.join("Cargo.toml").is_file() || !root.join("crates/daemon").is_dir() {
-        return;
-    }
-    let inside_target = match (cwd.canonicalize(), target.canonicalize()) {
-        (Ok(cwd), Ok(target)) => cwd.starts_with(target),
-        _ => false,
-    };
-    if inside_target && std::env::set_current_dir(root).is_ok() {
-        info!(
-            "Development build started inside {}; using the repository root {} as the working directory",
-            target.display(),
-            root.display()
-        );
-    }
-}
-
 fn main() -> Result<()> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // Extension subcommands, such as Quest Pro's `train-tongue`, which the
+    // daemon starts as child processes of itself.
+    if let Some(name) = arguments.first() {
+        for extension in extensions::built_in() {
+            if let Some(result) = extension.run_subcommand(name, &arguments[1..]) {
+                return result;
+            }
+        }
+    }
     if std::env::var("RUST_LOG").is_err() {
         unsafe {
             std::env::set_var("RUST_LOG", "info");
@@ -107,7 +94,10 @@ fn main() -> Result<()> {
     env_logger::init();
 
     info!("Starting vrft_d {}...", env!("VRFT_VERSION"));
-    use_repository_root_for_dev_builds();
+    let dev_build = dev_build::use_repository_root();
+    if dev_build.is_none() {
+        installed::use_data_dir();
+    }
     debug!("Debug logging is active");
     trace!("Trace logging is active");
 
@@ -120,36 +110,26 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let preview_only = std::env::args().any(|argument| argument == "--camera-preview-only");
-    let daemon_status = DaemonStatus::new(if preview_only {
-        RunMode::CameraPreviewOnly
+    // `--camera-preview-only` is the name from before it applied to every
+    // extension.
+    let extensions_only = std::env::args()
+        .any(|argument| argument == "--extensions-only" || argument == "--camera-preview-only");
+    let mode = if extensions_only {
+        RunMode::ExtensionsOnly
     } else {
         RunMode::Normal
-    });
-    let mut quest_pro = quest_pro_camera::start(running.clone(), daemon_status.clone());
-    if preview_only {
-        info!("Running Quest Pro camera preview without tracking modules or OSC output");
-        while running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(200));
-        }
-        return Ok(());
-    }
+    };
+    let daemon_status = DaemonStatus::new(mode);
 
-    struct LoadedModule {
-        name: String,
-        module: Box<dyn TrackingModule>,
-        #[allow(dead_code)]
-        _lib: Option<Library>, // Keep library loaded; dropped on shutdown
-    }
-
+    let built_in = extensions::built_in();
+    let extension_ids: Vec<&str> = built_in.iter().map(|extension| extension.id()).collect();
     let config_path = Path::new("config.json");
-    let config = load_config(config_path).unwrap_or_else(|e| {
+    let config = load_config(config_path, &extension_ids).unwrap_or_else(|e| {
         error!("Failed to load config: {}. Using defaults.", e);
+        daemon_status.set_config_error(Some(format!("{e:#}")));
         MutationConfig::default()
     });
     info!("Loaded Config: {:?}", config);
-
-    let mut modules: Vec<LoadedModule> = Vec::new();
 
     // Resolve the single plugins directory (with dev-run parent fallback).
     let mut plugins_dir = Path::new("plugins").to_path_buf();
@@ -164,121 +144,74 @@ fn main() -> Result<()> {
         warn!("'plugins' directory not found. Creating it.");
         fs::create_dir_all(&plugins_dir)?;
     }
-
-    // Resolve the .NET host directory (outside the scanned plugins tree).
-    let mut host_exe = Path::new("runtime/VrcftRuntime.exe").to_path_buf();
-    if !host_exe.exists() {
-        let parent_host = Path::new("../runtime/VrcftRuntime.exe");
-        if parent_host.exists() {
-            host_exe = parent_host.to_path_buf();
-        }
+    if let Some(build) = &dev_build {
+        dev_build::install_modules(build, Path::new("modules"), &plugins_dir);
     }
 
-    let discovered = plugin_loader::discover_plugins(&plugins_dir);
-    info!(
-        "Discovered {} plugin(s) under {:?}",
-        discovered.len(),
-        plugins_dir
+    // Updates to modules that were in use last time replace them now,
+    // before any module loads.
+    vrft_daemon::module_registry::apply_pending(&plugins_dir);
+
+    let root = std::env::current_dir()?;
+    let (mut hooks, api_extensions) =
+        start_extensions(built_in, &config, &root, &running, mode, &daemon_status);
+    // The host for managed (.NET / VRCFT) modules, outside the scanned
+    // plugins tree so it is never mistaken for a plugin.
+    let dotnet_host = plugin_loader::find_dotnet_host(&root);
+    // How the local API asks the tracking loop to load another module.
+    let switch = modules::ModuleSwitch::default();
+    let module_manager = modules::ModuleManager::new(
+        root.join(&plugins_dir),
+        root.join(config_path),
+        config
+            .module
+            .registry_url
+            .clone()
+            .unwrap_or_else(|| vrft_daemon::module_registry::DEFAULT_REGISTRY_URL.into()),
+        dotnet_host.clone(),
+        (!extensions_only).then(|| switch.clone()),
     );
-
-    let mut module_status = ModuleStatus {
-        name: config.module.active.clone(),
-        runtime: None,
-        loaded: false,
-        error: None,
-    };
-    match discovered.iter().find(|p| p.name == config.module.active) {
-        Some(plugin) => {
-            module_status.runtime = Some(match plugin.kind {
-                PluginKind::Native => "native",
-                PluginKind::Managed => "dotnet",
-            });
-            info!(
-                "Loading active plugin: {:?} ({:?})",
-                plugin.path, plugin.kind
-            );
-            match plugin.kind {
-                PluginKind::Native => {
-                    match (|| -> Result<(Box<dyn TrackingModule>, Library)> {
-                        unsafe {
-                            let lib = Library::new(&plugin.path)?;
-                            let func: Symbol<unsafe extern "C" fn() -> Box<dyn TrackingModule>> =
-                                lib.get(b"create_module")?;
-                            let module = func();
-                            Ok((module, lib))
-                        }
-                    })() {
-                        Ok((module, lib)) => {
-                            info!("✓ Successfully loaded native module: {}", plugin.name);
-                            modules.push(LoadedModule {
-                                name: plugin.name.clone(),
-                                module,
-                                _lib: Some(lib),
-                            });
-                        }
-                        Err(e) => {
-                            error!("✗ Failed to load native module {:?}: {}", plugin.path, e);
-                            module_status.error = Some(format!("Failed to load: {e}"));
-                        }
-                    }
-                }
-                PluginKind::Managed => {
-                    if host_exe.exists() {
-                        let mut proxy = ProxyModule::new();
-                        info!("Starting VrcftRuntime for module: {:?}", plugin.path);
-                        match proxy.start(&host_exe, &plugin.path) {
-                            Ok(_) => {
-                                info!("✓ VrcftRuntime started successfully.");
-                                modules.push(LoadedModule {
-                                    name: plugin.name.clone(),
-                                    module: Box::new(proxy),
-                                    _lib: None,
-                                });
-                            }
-                            Err(e) => {
-                                error!("✗ Failed to start VrcftRuntime: {}", e);
-                                module_status.error =
-                                    Some(format!("Failed to start VrcftRuntime: {e}"));
-                            }
-                        }
-                    } else {
-                        error!(
-                            "✗ Active plugin '{}' is a managed module but VrcftRuntime.exe was not found at {:?}",
-                            plugin.name, host_exe
-                        );
-                        module_status.error = Some(format!(
-                            "VrcftRuntime.exe was not found at {}",
-                            host_exe.display()
-                        ));
-                    }
-                }
-            }
+    api::start(
+        daemon_status.clone(),
+        running.clone(),
+        root.join(config_path),
+        root.join(&plugins_dir),
+        module_manager,
+        api_extensions,
+    );
+    if extensions_only {
+        info!("Running extensions only, without tracking modules or OSC output");
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(200));
         }
-        None => {
-            error!(
-                "Active plugin '{}' not found among {} discovered plugin(s) in {:?}",
-                config.module.active,
-                discovered.len(),
-                plugins_dir
-            );
-            module_status.error = Some(format!("Not found in {}", plugins_dir.display()));
-        }
+        return Ok(());
     }
-    module_status.loaded = !modules.is_empty();
-    daemon_status.set_module(module_status.clone());
+
+    // Native libraries of modules switched away from. They stay loaded, as a
+    // module may leave threads or callbacks behind that would crash the
+    // daemon if its code were unmapped.
+    let mut retired: Vec<Library> = Vec::new();
+    let mut current = load_module(
+        &config.module.active,
+        &plugins_dir,
+        dotnet_host.as_deref(),
+        &daemon_status,
+        &mut retired,
+    );
     daemon_status.set_output(OutputTarget {
         mode: format!("{:?}", config.osc.output_mode),
         address: config.osc.send_address.clone(),
         port: config.osc.send_port,
         max_fps: config.max_fps,
+        smoothing: config.mutator.enabled.then_some(config.mutator.smoothness),
+        vrchat: None,
     });
-
-    if modules.is_empty() {
-        warn!("No modules loaded!");
-    } else {
-        info!("Loaded {} module(s) successfully", modules.len());
+    for hook in &mut hooks {
+        hook.module_loaded(current.is_some());
     }
-    quest_pro.set_module_loaded(!modules.is_empty());
+    // Tells the consumer thread's hooks when a switch loads, or fails to
+    // load, another module.
+    let (module_loaded_tx, module_loaded_rx) = std::sync::mpsc::channel::<bool>();
 
     let shared_data = Arc::new(RwLock::new(UnifiedTrackingData::default()));
     let shared_data_for_host = shared_data.clone();
@@ -290,8 +223,13 @@ fn main() -> Result<()> {
 
     let mut data = UnifiedTrackingData::default();
 
+    let vrchat_target = VrchatTarget::new(&config.osc.send_address, config.osc.send_port);
+    if config.osc.output_mode == vrft_common::OutputMode::VRChat {
+        daemon_status.set_vrchat(vrchat_target.clone());
+    }
     let osc_context = strategies::OscContext {
         tracking_data: shared_data_for_host.clone(),
+        vrchat: vrchat_target,
     };
     let (strategy, strategy_router, _avatar_change_rx) =
         strategies::create_strategy(&config, osc_context);
@@ -325,32 +263,18 @@ fn main() -> Result<()> {
 
     let mut mutator = UnifiedTrackingMutator::new(config.clone());
 
-    info!("Initializing Modules...");
-    for module_wrapper in &mut modules {
-        let logger_name = format!("vrft_d::plugins::{}", module_wrapper.name);
-        let logger = ModuleLogger::new(module_log_callback, logger_name);
-
-        match module_wrapper.module.initialize(logger) {
-            Ok(_) => {
-                info!("✓ Initialized module: {}", module_wrapper.name);
-            }
-            Err(e) => {
-                error!(
-                    "✗ Failed to initialize module {}: {}",
-                    module_wrapper.name, e
-                );
-                daemon_status.set_module(ModuleStatus {
-                    loaded: false,
-                    error: Some(format!("Failed to initialize: {e}")),
-                    ..module_status.clone()
-                });
-            }
-        }
-    }
-
     let (tx, rx) = sync_channel::<UnifiedTrackingData>(1);
 
     let running_consumer = running.clone();
+    // How often to send frames the tracking module didn't produce, while an
+    // extension has live data: max_fps, or 60 when it is unset or invalid.
+    let live_frame_interval = Duration::from_secs_f32(
+        1.0 / config
+            .max_fps
+            .filter(|fps| fps.is_finite() && *fps > 0.0)
+            .unwrap_or(60.0)
+            .max(10.0),
+    );
 
     thread::spawn(move || {
         info!("Consumer Thread Started");
@@ -362,8 +286,24 @@ fn main() -> Result<()> {
         let mut last_received_data: Option<UnifiedTrackingData> = None;
 
         while running_consumer.load(Ordering::SeqCst) {
-            let mut received_data = match rx.recv_timeout(Duration::from_millis(100)) {
+            while let Ok(loaded) = module_loaded_rx.try_recv() {
+                // Don't keep repeating the previous module's last frame.
+                last_received_data = None;
+                for hook in &mut hooks {
+                    hook.module_loaded(loaded);
+                }
+            }
+            // An extension with its own live data (such as headset cameras)
+            // keeps frames flowing at full rate without a tracking module.
+            let wait = if hooks.iter().any(|hook| hook.has_live_data()) {
+                live_frame_interval
+            } else {
+                Duration::from_millis(100)
+            };
+            let mut from_module = false;
+            let mut received_data = match rx.recv_timeout(wait) {
                 Ok(data) => {
+                    from_module = true;
                     last_received_data = Some(data.clone());
                     data
                 }
@@ -463,9 +403,15 @@ fn main() -> Result<()> {
             let dt = now.duration_since(last_frame_time).as_secs_f32();
             last_frame_time = now;
 
-            quest_pro.observe(&received_data);
+            if from_module {
+                for hook in &mut hooks {
+                    hook.before_mutation(&received_data);
+                }
+            }
             mutator.mutate(&mut received_data, dt);
-            quest_pro.apply(&mut received_data);
+            for hook in &mut hooks {
+                hook.after_mutation(&mut received_data);
+            }
 
             // Update shared data for OSC Query (non-blocking; host doesn't need every frame)
             if let Ok(mut write_guard) = shared_data_for_consumer.try_write() {
@@ -499,40 +445,25 @@ fn main() -> Result<()> {
         .map(|fps| Duration::from_secs_f32(1.0 / fps));
 
     while running.load(Ordering::SeqCst) {
-        let mut any_updated = false;
-
-        let active_plugin = &config.module.active;
-        let mut active_module_found = false;
-
-        for module_wrapper in &mut modules {
-            if module_wrapper.name == *active_plugin {
-                active_module_found = true;
-                if module_wrapper.module.update(&mut data).is_ok() {
-                    any_updated = true;
-                }
+        if let Some(key) = switch.take() {
+            if let Some(old) = current.take() {
+                info!("Unloading {} to switch modules", old.name);
+                retire_module(old, &mut retired);
             }
+            data = UnifiedTrackingData::default();
+            current = load_module(
+                &key,
+                &plugins_dir,
+                dotnet_host.as_deref(),
+                &daemon_status,
+                &mut retired,
+            );
+            let _ = module_loaded_tx.send(current.is_some());
         }
 
-        if !active_module_found && !modules.is_empty() {
-            use std::cell::Cell;
-            thread_local! {
-                static LAST_PLUGIN_WARN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
-            }
-            let now = std::time::Instant::now();
-            let should_log = LAST_PLUGIN_WARN.with(|cell| match cell.get() {
-                Some(last) if now.duration_since(last).as_secs() < 5 => false,
-                _ => {
-                    cell.set(Some(now));
-                    true
-                }
-            });
-            if should_log {
-                warn!(
-                    "Active plugin '{}' not found among loaded modules!",
-                    active_plugin
-                );
-            }
-        }
+        let any_updated = current
+            .as_mut()
+            .is_some_and(|loaded| loaded.module.update(&mut data).is_ok());
 
         if any_updated {
             daemon_status.count_tracking_frame();
@@ -571,8 +502,199 @@ fn main() -> Result<()> {
 
     info!("Shutting down...");
 
-    for module_wrapper in &mut modules {
-        module_wrapper.module.unload();
+    if let Some(loaded) = current.take() {
+        retire_module(loaded, &mut retired);
     }
     Ok(())
+}
+
+/// A tracking module the daemon is running.
+struct LoadedModule {
+    name: String,
+    module: Box<dyn TrackingModule>,
+    /// A native module's library, which must outlive `module`.
+    lib: Option<Library>,
+}
+
+/// Opens `plugin`: loads a native library, or starts the .NET host on a
+/// managed one.
+fn open_module(
+    plugin: &plugin_loader::DiscoveredPlugin,
+    dotnet_host: Option<&Path>,
+) -> Result<LoadedModule> {
+    match plugin.kind {
+        PluginKind::Native => unsafe {
+            let lib = Library::new(&plugin.path).context("Failed to load")?;
+            let create: Symbol<unsafe extern "C" fn() -> Box<dyn TrackingModule>> = lib
+                .get(b"create_module")
+                .context("Failed to load: it has no create_module")?;
+            let module = create();
+            Ok(LoadedModule {
+                name: plugin.name.clone(),
+                module,
+                lib: Some(lib),
+            })
+        },
+        PluginKind::Managed => {
+            let host = dotnet_host.with_context(|| {
+                format!(
+                    "It's a VRCFT module, and {} isn't installed to run it",
+                    plugin_loader::DOTNET_HOST
+                )
+            })?;
+            info!("Starting VrcftRuntime for module: {:?}", plugin.path);
+            let mut proxy = ProxyModule::new();
+            proxy
+                .start(host, &plugin.path)
+                .context("Failed to start VrcftRuntime")?;
+            Ok(LoadedModule {
+                name: plugin.name.clone(),
+                module: Box::new(proxy),
+                lib: None,
+            })
+        }
+    }
+}
+
+/// Finds the module `wanted` names in `plugins`, loads and initializes it,
+/// and reports how that went in `/status`.
+fn load_module(
+    wanted: &str,
+    plugins: &Path,
+    dotnet_host: Option<&Path>,
+    daemon_status: &DaemonStatus,
+    retired: &mut Vec<Library>,
+) -> Option<LoadedModule> {
+    let discovered = plugin_loader::discover_plugins(plugins);
+    info!(
+        "Discovered {} plugin(s) under {:?}",
+        discovered.len(),
+        plugins
+    );
+    let mut status = ModuleStatus {
+        name: wanted.to_string(),
+        loading: true,
+        ..ModuleStatus::default()
+    };
+    let Some(plugin) = plugin_loader::find_plugin(&discovered, wanted) else {
+        error!(
+            "Active plugin '{}' not found among {} discovered plugin(s) in {:?}",
+            wanted,
+            discovered.len(),
+            plugins
+        );
+        status.loading = false;
+        status.error = Some(format!("Not found in {}", plugins.display()));
+        daemon_status.set_module(status);
+        return None;
+    };
+    status.label = Some(config_file::plugin_name(plugin));
+    status.runtime = Some(config_file::runtime_name(plugin.kind).into());
+    daemon_status.set_module(status.clone());
+    info!(
+        "Loading active plugin: {:?} ({:?})",
+        plugin.path, plugin.kind
+    );
+
+    let result = open_module(plugin, dotnet_host).and_then(|mut loaded| {
+        let logger = ModuleLogger::new(
+            module_log_callback,
+            format!("vrft_d::plugins::{}", plugin.name),
+        );
+        match loaded.module.initialize(logger) {
+            Ok(()) => Ok(loaded),
+            Err(error) => {
+                retire_module(loaded, retired);
+                Err(error.context("Failed to initialize"))
+            }
+        }
+    });
+    status.loading = false;
+    let loaded = match result {
+        Ok(loaded) => {
+            info!("✓ Loaded and initialized module: {}", plugin.name);
+            status.loaded = true;
+            Some(loaded)
+        }
+        Err(error) => {
+            error!("✗ Module {:?} didn't load: {error:#}", plugin.path);
+            status.error = Some(format!("{error:#}"));
+            None
+        }
+    };
+    daemon_status.set_module(status);
+    loaded
+}
+
+/// Unloads `loaded`, keeping a native module's library loaded in `retired`.
+fn retire_module(loaded: LoadedModule, retired: &mut Vec<Library>) {
+    let LoadedModule {
+        name,
+        mut module,
+        lib,
+    } = loaded;
+    module.unload();
+    // The module's code lives in the library, so it goes first.
+    drop(module);
+    retired.extend(lib);
+    info!("Unloaded module: {name}");
+}
+
+/// Starts each enabled extension, returning their frame hooks and what the
+/// local API serves for them.
+fn start_extensions(
+    built_in: Vec<Box<dyn vrft_extension::DaemonExtension>>,
+    config: &MutationConfig,
+    root: &Path,
+    running: &Arc<AtomicBool>,
+    mode: RunMode,
+    daemon_status: &DaemonStatus,
+) -> (Vec<Box<dyn FrameHook>>, Vec<api::ApiExtension>) {
+    let mut hooks = Vec::new();
+    let mut served = Vec::new();
+    let mut reports = Vec::new();
+    for extension in built_in {
+        let (id, name) = (extension.id(), extension.name());
+        let settings = match config.extensions.get(id) {
+            None => ExtensionConfig::default(),
+            Some(value) => serde_json::from_value(value.clone()).unwrap_or_else(|error| {
+                warn!("Ignoring extensions.{id} in config.json ({error}); using its defaults");
+                ExtensionConfig::default()
+            }),
+        };
+        let mut report = ExtensionReport {
+            id: id.into(),
+            name: name.into(),
+            enabled: settings.enabled,
+            error: None,
+        };
+        if settings.enabled {
+            let host = HostContext {
+                root: root.to_path_buf(),
+                running: running.clone(),
+                mode,
+            };
+            match extension.start(host) {
+                Ok(started) => {
+                    info!("✓ Started extension: {name}");
+                    hooks.extend(started.frame_hook);
+                    served.push(api::ApiExtension {
+                        id,
+                        routes: started.routes,
+                        page: started.page,
+                        status: started.status,
+                    });
+                }
+                Err(error) => {
+                    error!("✗ Failed to start extension {name}: {error:#}");
+                    report.error = Some(format!("{error:#}"));
+                }
+            }
+        } else {
+            info!("Extension {name} is turned off in config.json");
+        }
+        reports.push(report);
+    }
+    daemon_status.set_extensions(reports);
+    (hooks, served)
 }

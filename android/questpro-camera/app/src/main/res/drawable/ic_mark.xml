@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The VRFaceTracking mark: scan corners, eyes and a smile. crates/gui/resources/mark.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="156"
+    android:viewportHeight="156">
+    <group android:translateX="-50" android:translateY="-50">
+        <path
+            android:pathData="M62,102 V86 A24,24 0 0 1 86,62 H102 M154,62 H170 A24,24 0 0 1 194,86 V102 M194,154 V170 A24,24 0 0 1 170,194 H154 M102,194 H86 A24,24 0 0 1 62,170 V154"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="18"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M102,150 Q128,174 154,150"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="18"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M110,97 A9,9 0 0 1 119,106 V118 A9,9 0 0 1 101,118 V106 A9,9 0 0 1 110,97 Z M146,97 A9,9 0 0 1 155,106 V118 A9,9 0 0 1 137,118 V106 A9,9 0 0 1 146,97 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

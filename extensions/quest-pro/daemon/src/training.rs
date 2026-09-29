@@ -1,0 +1,921 @@
+//! Local capture review, training jobs and reversible model selection.
+use crate::capture::CaptureManager;
+use axum::{
+    extract::{Query, State},
+    http::{header, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use crate::builtin::{self, BuiltinModel};
+use vrft_quest_pro_protocol::{
+    routes, BuiltinStatus, CaptureMode, Coverage, FrameQuery, ModelActivated, Models, RecordedPose,
+    Recording, RecordingDeleted, RecordingId, RenameModel, ReviewRequest, ReviewSaved, SavedModel,
+    TrainRequest, TrainerRequest, TrainingCancelled, TrainingProgress, TrainingReport,
+    TrainingStage, TrainingStarted, TrainingStatus, FRAME_BYTES,
+};
+use vrft_tongue::Role;
+
+/// Whether `dir` holds both halves of a model pair.
+pub fn complete_pair(dir: &Path) -> bool {
+    Role::Gate.find(dir).is_some() && Role::Direction.find(dir).is_some()
+}
+type ApiError = (StatusCode, String);
+fn bad(error: impl ToString) -> ApiError {
+    (StatusCode::BAD_REQUEST, error.to_string())
+}
+
+#[derive(Default)]
+struct Job {
+    child: Option<Child>,
+    id: Option<String>,
+    /// How the job ended, when the trainer couldn't say itself.
+    terminal: Option<TrainingProgress>,
+}
+
+#[derive(Clone)]
+pub struct TrainingManager {
+    root: PathBuf,
+    capture: CaptureManager,
+    job: Arc<Mutex<Job>>,
+    builtin: BuiltinModel,
+}
+
+impl TrainingManager {
+    pub fn new(root: PathBuf, capture: CaptureManager) -> Self {
+        Self {
+            root,
+            capture,
+            job: Arc::new(Mutex::new(Job::default())),
+            builtin: BuiltinModel::default(),
+        }
+    }
+    pub fn busy(&self) -> bool {
+        let mut job = self.job.lock().unwrap();
+        poll_job(&mut job, &self.root);
+        job.child.is_some()
+    }
+    pub fn cancel(&self) {
+        let mut job = self.job.lock().unwrap();
+        if let Some(mut child) = job.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            job.terminal = Some(TrainingProgress::new(
+                TrainingStage::Cancelled,
+                "Training cancelled. Your active model is unchanged.",
+            ));
+        }
+    }
+    fn idle(&self) -> Result<(), ApiError> {
+        if self.busy() || self.capture.status().active {
+            Err(bad("Finish the current recording or training first"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn routes(manager: TrainingManager) -> Router {
+    let mut router = Router::new();
+    if crate::camera::BROWSER_PAGES {
+        router = router.route(
+            routes::TRAINING_SCRIPT,
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("training.js"),
+                )
+            }),
+        );
+    }
+    router
+        .route(routes::TRAINING_SESSIONS, get(sessions))
+        .route(routes::TRAINING_REVIEW, post(review))
+        .route(routes::TRAINING_DELETE, post(delete_recording))
+        .route(routes::TRAINING_FRAME, get(frame))
+        .route(routes::TRAINING_START, post(start))
+        .route(routes::TRAINING_CANCEL, post(cancel))
+        .route(routes::TRAINING_STATUS, get(status))
+        .route(routes::TRAINING_MODELS, get(models))
+        .route(routes::TRAINING_ACTIVATE, post(activate))
+        .route(routes::TRAINING_DELETE_MODEL, post(delete_model))
+        .route(routes::TRAINING_RENAME_MODEL, post(rename_model))
+        .route(routes::TRAINING_BUILTIN, post(install_builtin))
+        .with_state(manager)
+}
+
+fn safe_child(root: &Path, id: &str) -> Result<PathBuf, String> {
+    if id.is_empty()
+        || id.len() > 120
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("Invalid recording or model identifier".into());
+    }
+    let child = root.join(id).canonicalize().map_err(|e| e.to_string())?;
+    let parent = root.canonicalize().map_err(|e| e.to_string())?;
+    if child.parent() != Some(parent.as_path()) {
+        return Err("Path leaves the data directory".into());
+    }
+    Ok(child)
+}
+
+fn read_json(path: &Path) -> Result<Value, String> {
+    serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+fn save_json(path: &Path, value: &Value) -> Result<(), String> {
+    let temp = path.with_extension("json.tmp");
+    fs::write(
+        &temp,
+        serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::rename(temp, path).map_err(|e| e.to_string())
+}
+
+fn labels(path: &Path) -> Result<Vec<Value>, String> {
+    let file = File::open(path.join("samples.jsonl")).map_err(|e| e.to_string())?;
+    BufReader::new(file)
+        .lines()
+        .map(|line| {
+            serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+fn excluded(path: &Path, file: &str) -> Result<Vec<u64>, String> {
+    let file = path.join(file);
+    if !file.exists() {
+        return Ok(vec![]);
+    }
+    let value = read_json(&file)?;
+    serde_json::from_value(value["excluded_steps"].clone()).map_err(|e| e.to_string())
+}
+
+async fn sessions(
+    State(manager): State<TrainingManager>,
+) -> Result<Json<Vec<Recording>>, ApiError> {
+    let root = manager.root.join(".local/tongue-captures");
+    let mut result = vec![];
+    if root.exists() {
+        let active = manager.capture.status();
+        for entry in fs::read_dir(&root).map_err(bad)? {
+            let entry = entry.map_err(bad)?;
+            if !entry.file_type().map_err(bad)?.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            let shown = path.to_string_lossy();
+            let writing = |directory: &Option<String>| directory.as_deref() == Some(&*shown);
+            // A recording still being written is not listed or trainable yet.
+            if active.active && writing(&active.directory) {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let details = (|| -> Result<Recording, String> {
+                let metadata = read_json(&path.join("metadata.json"))?;
+                let samples = labels(&path)?;
+                if fs::metadata(path.join("frames.gray8"))
+                    .map_err(|e| e.to_string())?
+                    .len()
+                    != samples.len() as u64 * FRAME_BYTES as u64
+                {
+                    return Err("Frame/label count mismatch".into());
+                }
+                let skipped = excluded(&path, "excluded_steps.json")?;
+                let rejected = excluded(&path, "review.json")?;
+                let mut poses: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
+                for sample in &samples {
+                    poses
+                        .entry(sample["step"].as_u64().ok_or("Invalid pose step")?)
+                        .or_default()
+                        .push(sample);
+                }
+                let usable: Vec<_> = poses
+                    .iter()
+                    .filter(|(step, values)| {
+                        values.len() >= 8 && !skipped.contains(step) && !rejected.contains(step)
+                    })
+                    .flat_map(|(_, values)| values.iter().copied())
+                    .collect();
+                let target = |s: &Value, column: usize| s["targets"][column].as_f64().unwrap_or(0.);
+                let visible: Vec<&Value> = usable
+                    .iter()
+                    .copied()
+                    .filter(|s| target(s, 0) >= 0.5)
+                    .collect();
+                let positives = visible.len();
+                let negatives = usable.len() - positives;
+                // Visible frames per basic direction; the trainer needs 8 of each.
+                let direction = |column: usize, sign: f64| {
+                    visible
+                        .iter()
+                        .filter(|s| target(s, column) * sign > 0.1)
+                        .count()
+                };
+                // Cheek puffs count with the tongue in or out; recordings
+                // from before them have no such label.
+                let puffed =
+                    |column: usize| usable.iter().filter(|s| target(s, column) > 0.1).count();
+                let coverage = Coverage {
+                    out: positives as u64,
+                    inside: negatives as u64,
+                    left: direction(2, -1.) as u64,
+                    right: direction(2, 1.) as u64,
+                    up: direction(3, 1.) as u64,
+                    down: direction(3, -1.) as u64,
+                    cheek_left: puffed(10) as u64,
+                    cheek_right: puffed(11) as u64,
+                };
+                let directions = [coverage.left, coverage.right, coverage.up, coverage.down]
+                    .iter()
+                    .all(|count| *count >= 8);
+                let index = |sample: &Value| sample["index"].as_u64().unwrap_or(0);
+                // Most of a pose's frames with the headset seeing the tongue
+                // one way and the prompt asking for the other.
+                let suspect = |values: &[&Value]| {
+                    let judged: Vec<bool> = values
+                        .iter()
+                        .filter_map(|sample| {
+                            let native = sample["native_tongue_out"].as_f64()?;
+                            Some((native >= 0.5) != (target(sample, 0) >= 0.5))
+                        })
+                        .collect();
+                    judged.len() >= 8
+                        && judged.iter().filter(|disagrees| **disagrees).count() * 10
+                            > judged.len() * 6
+                };
+                let poses = poses
+                    .into_iter()
+                    .map(|(step, values)| RecordedPose {
+                        step,
+                        name: values[0]["pose"].as_str().unwrap_or_default().to_owned(),
+                        frames: values.len() as u64,
+                        indices: [
+                            index(values[0]),
+                            index(values[values.len() / 2]),
+                            index(values[values.len() - 1]),
+                        ],
+                        skipped: skipped.contains(&step),
+                        excluded: rejected.contains(&step) || skipped.contains(&step),
+                        suspect: suspect(&values),
+                    })
+                    .collect();
+                Ok(Recording {
+                    id: id.clone(),
+                    mode: metadata["mode"].as_str().and_then(CaptureMode::from_name),
+                    frames: samples.len() as u64,
+                    poses,
+                    positive_frames: positives as u64,
+                    negative_frames: negatives as u64,
+                    coverage,
+                    basic_ready: positives >= 20 && negatives >= 20 && directions,
+                    error: None,
+                })
+            })();
+            result.push(details.unwrap_or_else(|error| Recording {
+                id,
+                error: Some(error),
+                ..Recording::default()
+            }));
+        }
+    }
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(Json(result))
+}
+
+async fn review(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<ReviewRequest>,
+) -> Result<Json<ReviewSaved>, ApiError> {
+    manager.idle()?;
+    let path =
+        safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
+    let samples = labels(&path).map_err(bad)?;
+    if request
+        .excluded_steps
+        .iter()
+        .any(|step| !samples.iter().any(|s| s["step"].as_u64() == Some(*step)))
+    {
+        return Err(bad("Unknown pose step"));
+    }
+    save_json(
+        &path.join("review.json"),
+        &json!({"excluded_steps":request.excluded_steps}),
+    )
+    .map_err(bad)?;
+    Ok(Json(ReviewSaved { saved: true }))
+}
+
+async fn delete_recording(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<RecordingId>,
+) -> Result<Json<RecordingDeleted>, ApiError> {
+    // Idle: never delete the recording being captured or read by training.
+    manager.idle()?;
+    let path =
+        safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
+    if !path.join("metadata.json").is_file() {
+        return Err(bad("Not a recording"));
+    }
+    fs::remove_dir_all(&path).map_err(bad)?;
+    Ok(Json(RecordingDeleted { deleted: true }))
+}
+
+async fn frame(
+    State(manager): State<TrainingManager>,
+    Query(request): Query<FrameQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let path =
+        safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
+    let mut file = File::open(path.join("frames.gray8")).map_err(bad)?;
+    if request.index >= file.metadata().map_err(bad)?.len() / FRAME_BYTES as u64 {
+        return Err(bad("Frame is outside recording"));
+    }
+    file.seek(SeekFrom::Start(request.index * FRAME_BYTES as u64))
+        .map_err(bad)?;
+    let mut pixels = vec![0; FRAME_BYTES];
+    file.read_exact(&mut pixels).map_err(bad)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        pixels,
+    ))
+}
+
+async fn start(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<TrainRequest>,
+) -> Result<Json<TrainingStarted>, ApiError> {
+    manager.idle()?;
+    if request.name.trim().is_empty()
+        || request.name.len() > 100
+        || !(1..=60).contains(&request.epochs)
+    {
+        return Err(bad("Invalid training name or epoch count"));
+    }
+    if request.recordings.is_empty() {
+        return Err(bad("Tick at least one recording to train on"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut recordings = vec![];
+    for id in request.recordings.iter().filter(|id| seen.insert(*id)) {
+        recordings.push(safe_child(&manager.root.join(".local/tongue-captures"), id).map_err(bad)?);
+    }
+    let base = crate::camera::base_model_dir(&manager.root).map_err(bad)?;
+    // Training runs in a child vrft_d, so cancelling can simply end it.
+    let trainer = std::env::current_exe().map_err(bad)?;
+    let id = format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(bad)?
+            .as_millis(),
+        std::process::id()
+    );
+    let parent = manager.root.join(".local/tongue-models");
+    fs::create_dir_all(&parent).map_err(bad)?;
+    let output = parent.join(&id);
+    fs::create_dir(&output).map_err(bad)?;
+    let trainer_request = TrainerRequest {
+        name: Some(request.name.trim().to_owned()),
+        device: request.device,
+        base_model_dir: base,
+        recordings,
+    };
+    save_json(
+        &output.join("request.json"),
+        &serde_json::to_value(&trainer_request).map_err(bad)?,
+    )
+    .map_err(bad)?;
+    let log = File::create(output.join("training.log")).map_err(bad)?;
+    let mut command = Command::new(trainer);
+    command
+        .arg("train-tongue")
+        .arg("--request")
+        .arg(output.join("request.json"))
+        .arg("--output")
+        .arg(&output)
+        .arg("--epochs")
+        .arg(request.epochs.to_string())
+        .current_dir(&manager.root)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(bad)?)
+        .stderr(log);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    // Reserve the job under the mutex immediately before spawning.
+    let mut job = manager.job.lock().unwrap();
+    if job.child.is_some() {
+        return Err(bad("A training job is already running"));
+    }
+    job.child = Some(command.spawn().map_err(bad)?);
+    job.id = Some(id.clone());
+    job.terminal = None;
+    Ok(Json(TrainingStarted { id }))
+}
+
+async fn cancel(State(manager): State<TrainingManager>) -> Json<TrainingCancelled> {
+    manager.cancel();
+    Json(TrainingCancelled { cancelled: true })
+}
+
+/// What the trainer last wrote to job `id`'s `progress.json`.
+fn read_progress(root: &Path, id: &str) -> Option<TrainingProgress> {
+    let path = root
+        .join(".local/tongue-models")
+        .join(id)
+        .join("progress.json");
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+async fn status(State(manager): State<TrainingManager>) -> Json<TrainingStatus> {
+    let mut job = manager.job.lock().unwrap();
+    poll_job(&mut job, &manager.root);
+    let progress = job.terminal.clone().or_else(|| {
+        job.id
+            .as_ref()
+            .and_then(|id| read_progress(&manager.root, id))
+    });
+    Json(TrainingStatus {
+        busy: job.child.is_some(),
+        id: job.id.clone(),
+        progress,
+        active_id: active_id(&manager.root),
+        model_override: std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some(),
+        builtin: Some(builtin_status(&manager)),
+    })
+}
+
+fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
+    let state = manager.builtin.state();
+    BuiltinStatus {
+        installed: builtin::installed(&manager.root),
+        installing: state.installing,
+        fraction: state.fraction.map(|fraction| fraction as f32),
+        error: state.error,
+    }
+}
+
+/// Downloads and verifies the built-in model pair in the background.
+async fn install_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+    if !builtin::installed(&manager.root) {
+        manager.builtin.start(manager.root.clone());
+    }
+    Json(builtin_status(&manager))
+}
+
+fn poll_job(job: &mut Job, root: &Path) {
+    if let Some(child) = job.child.as_mut() {
+        if let Ok(Some(exit)) = child.try_wait() {
+            job.child = None;
+            if exit.success() {
+                // Put the finished model straight into use, unless an
+                // environment override pins the model directory.
+                let selected = match job.id.as_deref() {
+                    Some(id) if std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_none() => {
+                        select_model(root, id)
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(error) = selected {
+                    job.terminal = Some(TrainingProgress::new(
+                        TrainingStage::Failed,
+                        format!("Training finished, but the new model could not be switched on: {error}"),
+                    ));
+                }
+            } else {
+                let reported = job.id.as_ref().and_then(|id| read_progress(root, id));
+                job.terminal = Some(
+                    reported
+                        .filter(|progress| progress.stage == TrainingStage::Failed)
+                        .unwrap_or_else(|| {
+                            TrainingProgress::new(
+                                TrainingStage::Failed,
+                                "the trainer exited with an error. See training.log in the model's folder.",
+                            )
+                        }),
+                );
+            }
+        }
+    }
+}
+
+fn active_id(root: &Path) -> String {
+    read_json(&root.join(".local/tongue-active.json"))
+        .ok()
+        .and_then(|v| v["id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "demo".into())
+}
+
+pub fn selected_dir(root: &Path, base: PathBuf) -> Result<PathBuf, String> {
+    if std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some() {
+        return Ok(base);
+    }
+    let id = active_id(root);
+    if id == "demo" {
+        return Ok(base);
+    }
+    safe_child(&root.join(".local/tongue-models"), &id)
+}
+
+async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, ApiError> {
+    let mut result = vec![SavedModel {
+        id: "demo".into(),
+        name: Some("Built-in model".into()),
+        report: None,
+    }];
+    let root = manager.root.join(".local/tongue-models");
+    if root.exists() {
+        for entry in fs::read_dir(root).map_err(bad)? {
+            let entry = entry.map_err(bad)?;
+            let path = entry.path();
+            if let Ok(report) = read_json(&path.join("report.json")) {
+                if complete_pair(&path) {
+                    let report: Option<TrainingReport> = serde_json::from_value(report).ok();
+                    result.push(SavedModel {
+                        id: entry.file_name().to_string_lossy().into_owned(),
+                        name: report
+                            .as_ref()
+                            .map(|report| report.name.clone())
+                            .filter(|name| !name.is_empty()),
+                        report,
+                    });
+                }
+            }
+        }
+    }
+    Ok(Json(Models {
+        active_id: active_id(&manager.root),
+        models: result,
+    }))
+}
+
+/// Deletes a trained model, unless it's the one in use.
+async fn delete_model(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<RecordingId>,
+) -> Result<Json<RecordingDeleted>, ApiError> {
+    manager.idle()?;
+    if request.id == "demo" {
+        return Err(bad("The built-in model can't be deleted"));
+    }
+    if request.id == active_id(&manager.root) {
+        return Err(bad("Switch to another model before deleting this one"));
+    }
+    let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
+    if !path.join("report.json").is_file() && !complete_pair(&path) {
+        return Err(bad("Not a trained model"));
+    }
+    fs::remove_dir_all(&path).map_err(bad)?;
+    Ok(Json(RecordingDeleted { deleted: true }))
+}
+
+/// Renames a trained model, in its `report.json`.
+async fn rename_model(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<RenameModel>,
+) -> Result<Json<SavedModel>, ApiError> {
+    let name = request.name.trim();
+    if name.is_empty() || name.len() > 100 {
+        return Err(bad("Give the model a name of up to 100 characters"));
+    }
+    if request.id == "demo" {
+        return Err(bad("The built-in model can't be renamed"));
+    }
+    let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
+    let report_path = path.join("report.json");
+    let mut report = read_json(&report_path).map_err(bad)?;
+    report["name"] = json!(name);
+    save_json(&report_path, &report).map_err(bad)?;
+    Ok(Json(SavedModel {
+        id: request.id,
+        name: Some(name.to_owned()),
+        report: serde_json::from_value(report).ok(),
+    }))
+}
+
+async fn activate(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<RecordingId>,
+) -> Result<Json<ModelActivated>, ApiError> {
+    manager.idle()?;
+    select_model(&manager.root, &request.id).map_err(bad)?;
+    Ok(Json(ModelActivated {
+        active_id: request.id,
+    }))
+}
+
+/// Point live inference at a saved pair, or at the starting model for "demo".
+/// Inference notices the change within a second and reloads.
+fn select_model(root: &Path, id: &str) -> Result<(), String> {
+    if std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some() {
+        return Err(
+            "Remove VRFT_TONGUE_MODEL_DIR and restart VRFaceTracking to use saved model selection"
+                .into(),
+        );
+    }
+    if id != "demo" {
+        let path = safe_child(&root.join(".local/tongue-models"), id)?;
+        read_json(&path.join("report.json"))?;
+        if !complete_pair(&path) {
+            return Err("Model pair is incomplete".into());
+        }
+    }
+    fs::create_dir_all(root.join(".local")).map_err(|e| e.to_string())?;
+    save_json(&root.join(".local/tongue-active.json"), &json!({"id":id}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reject_path_traversal_before_filesystem_access() {
+        for id in ["", "..", "../capture", "C:\\file", "a/b", "a.b"] {
+            assert!(safe_child(Path::new("."), id)
+                .unwrap_err()
+                .starts_with("Invalid"));
+        }
+    }
+
+    fn test_root(name: &str) -> PathBuf {
+        let parent =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.local/tongue-tests-rust");
+        fs::create_dir_all(&parent).unwrap();
+        let root = parent.join(format!(
+            "{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn remove_test_root(root: PathBuf) {
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../.local/tongue-tests-rust")
+            .canonicalize()
+            .unwrap();
+        let target = root.canonicalize().unwrap();
+        assert_eq!(target.parent(), Some(parent.as_path()));
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    /// A capture whose frame file has the right length without writing pixels.
+    fn capture(root: &Path, id: &str, poses: &[(&str, [f32; 10])]) -> PathBuf {
+        capture_seen(root, id, poses, None)
+    }
+
+    /// A recording whose headset tracking saw `native` throughout, or what
+    /// each pose asked for.
+    fn capture_seen(
+        root: &Path,
+        id: &str,
+        poses: &[(&str, [f32; 10])],
+        native: Option<f32>,
+    ) -> PathBuf {
+        let path = root.join(".local/tongue-captures").join(id);
+        fs::create_dir_all(&path).unwrap();
+        save_json(&path.join("metadata.json"), &json!({"mode":"core"})).unwrap();
+        let mut lines = String::new();
+        let mut index = 0;
+        for (step, (pose, targets)) in poses.iter().enumerate() {
+            for _ in 0..8 {
+                lines += &json!({"index":index, "step":step, "pose":pose, "targets":targets,
+                    "native_tongue_out":native.unwrap_or(targets[0])})
+                .to_string();
+                lines.push('\n');
+                index += 1;
+            }
+        }
+        fs::write(path.join("samples.jsonl"), lines).unwrap();
+        File::create(path.join("frames.gray8"))
+            .unwrap()
+            .set_len(index * 320000)
+            .unwrap();
+        path
+    }
+
+    fn out(horizontal: f32, vertical: f32) -> [f32; 10] {
+        [1., 1., horizontal, vertical, 0., 0., 0., 0., 0., 0.]
+    }
+
+    #[tokio::test]
+    async fn recordings_report_direction_coverage_and_can_be_deleted() {
+        let root = test_root("sessions");
+        let hidden = [0.; 10];
+        capture(
+            &root,
+            "basic",
+            &[
+                ("Neutral", hidden),
+                ("Speech", hidden),
+                ("Smile", hidden),
+                ("Straight", out(0., 0.)),
+                ("Left", out(-1., 0.)),
+                ("Right", out(1., 0.)),
+                ("Up", out(0., 1.)),
+                ("Down", out(0., -1.)),
+            ],
+        );
+        capture(
+            &root,
+            "partial",
+            &[("Neutral", hidden), ("Left", out(-1., 0.))],
+        );
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        let Json(list) = sessions(State(manager.clone())).await.unwrap();
+        let basic = &list[0];
+        assert_eq!(basic.id, "basic");
+        assert_eq!(
+            basic.coverage,
+            Coverage {
+                out: 40,
+                inside: 24,
+                left: 8,
+                right: 8,
+                up: 8,
+                down: 8,
+                cheek_left: 0,
+                cheek_right: 0,
+            }
+        );
+        assert!(basic.basic_ready);
+        assert_eq!(list[1].coverage.right, 0);
+        assert!(!list[1].basic_ready);
+
+        fs::create_dir_all(root.join(".local/tongue-captures/not-a-recording")).unwrap();
+        let delete = |id: &str| {
+            delete_recording(State(manager.clone()), Json(RecordingId { id: id.into() }))
+        };
+        assert!(delete("not-a-recording").await.is_err());
+        assert!(delete("..").await.is_err());
+        assert!(delete("partial").await.unwrap().0.deleted);
+        assert!(!root.join(".local/tongue-captures/partial").exists());
+        assert!(root.join(".local/tongue-captures/basic").exists());
+        remove_test_root(root);
+    }
+
+    #[test]
+    fn finished_training_is_switched_on() {
+        let root = test_root("finished");
+        let pair = root.join(".local/tongue-models/personal");
+        fs::create_dir_all(&pair).unwrap();
+        for role in [Role::Gate, Role::Direction] {
+            fs::write(role.safetensors(&pair), b"test").unwrap();
+        }
+        save_json(&pair.join("report.json"), &json!({"name":"test"})).unwrap();
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit 0"]);
+            command
+        } else {
+            Command::new("true")
+        };
+        let mut job = Job {
+            child: Some(command.spawn().unwrap()),
+            id: Some("personal".into()),
+            terminal: None,
+        };
+        while job.child.is_some() {
+            poll_job(&mut job, &root);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(job.terminal.is_none());
+        assert_eq!(active_id(&root), "personal");
+        remove_test_root(root);
+    }
+
+    #[tokio::test]
+    async fn poses_the_headset_disagreed_with_are_flagged() {
+        let root = test_root("suspect");
+        let hidden = [0.; 10];
+        capture_seen(
+            &root,
+            "doubtful",
+            &[("Neutral", hidden), ("Tongue out", out(0., 0.))],
+            Some(1.0),
+        );
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        let Json(list) = sessions(State(manager)).await.unwrap();
+        let poses = &list[0].poses;
+        assert!(
+            poses[0].suspect,
+            "the headset saw a tongue in a tongue-in pose"
+        );
+        assert!(!poses[1].suspect, "it agreed with the tongue-out pose");
+        remove_test_root(root);
+    }
+
+    #[tokio::test]
+    async fn trained_models_can_be_renamed_and_deleted_but_not_while_in_use() {
+        let root = test_root("manage");
+        let pair = root.join(".local/tongue-models/personal");
+        fs::create_dir_all(&pair).unwrap();
+        for role in [Role::Gate, Role::Direction] {
+            fs::write(role.safetensors(&pair), b"test").unwrap();
+        }
+        save_json(
+            &pair.join("report.json"),
+            &json!({"name": "Old", "seconds": 5.0}),
+        )
+        .unwrap();
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+
+        let Json(renamed) = rename_model(
+            State(manager.clone()),
+            Json(RenameModel {
+                id: "personal".into(),
+                name: "  Evening  ".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.name.as_deref(), Some("Evening"));
+        let report = read_json(&pair.join("report.json")).unwrap();
+        assert_eq!(report["name"], "Evening");
+        assert_eq!(report["seconds"], 5.0, "the rest of the report is kept");
+
+        select_model(&root, "personal").unwrap();
+        let delete =
+            |id: &str| delete_model(State(manager.clone()), Json(RecordingId { id: id.into() }));
+        assert!(delete("personal").await.is_err(), "the model in use stays");
+        assert!(delete("demo").await.is_err());
+        select_model(&root, "demo").unwrap();
+        assert!(delete("personal").await.unwrap().0.deleted);
+        assert!(!pair.exists());
+        remove_test_root(root);
+    }
+
+    #[tokio::test]
+    async fn incomplete_pair_cannot_replace_selection_and_restore_is_atomic() {
+        // Exercise pointer replacement on Windows as well as preserving base files.
+        let parent =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.local/tongue-tests-rust");
+        fs::create_dir_all(&parent).unwrap();
+        let root = parent.join(format!(
+            "selection-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pair = root.join(".local/tongue-models/personal");
+        fs::create_dir_all(&pair).unwrap();
+        fs::write(Role::Gate.safetensors(&pair), b"test gate").unwrap();
+        save_json(&pair.join("report.json"), &json!({"name":"test"})).unwrap();
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        assert!(activate(
+            State(manager.clone()),
+            Json(RecordingId {
+                id: "personal".into()
+            })
+        )
+        .await
+        .is_err());
+        assert_eq!(active_id(&root), "demo");
+        fs::write(Role::Direction.safetensors(&pair), b"test direction").unwrap();
+        let _ = activate(
+            State(manager.clone()),
+            Json(RecordingId {
+                id: "personal".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(active_id(&root), "personal");
+        let _ = activate(State(manager), Json(RecordingId { id: "demo".into() }))
+            .await
+            .unwrap();
+        assert_eq!(active_id(&root), "demo");
+        assert_eq!(
+            fs::read(Role::Gate.safetensors(&pair)).unwrap(),
+            b"test gate"
+        );
+        let target = root.canonicalize().unwrap();
+        assert_eq!(
+            target.parent(),
+            Some(parent.canonicalize().unwrap().as_path())
+        );
+        fs::remove_dir_all(target).unwrap();
+    }
+}

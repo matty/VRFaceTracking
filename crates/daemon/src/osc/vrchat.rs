@@ -1,8 +1,9 @@
 use crate::osc::parameters::registry::ParameterRegistry;
 use crate::osc::parameters::ParamType;
 use crate::osc::query::service::{OscParamType, OscParameterInfo, OscQueryService};
+use crate::osc::query::target::VrchatTarget;
 use anyhow::Result;
-use log::{error, info};
+use log::{error, info, warn};
 use rosc::{decoder, encoder, OscBundle, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
@@ -15,7 +16,9 @@ use vrft_common::UnifiedTrackingData;
 
 pub struct VRChatOsc {
     socket: Mutex<Option<UdpSocket>>,
-    target_addr: String,
+    target: VrchatTarget,
+    /// The socket VRChat's replies arrive on, until the listener takes it.
+    recv_socket: Mutex<Option<UdpSocket>>,
     receive_port: u16,
     osc_query_service: Mutex<Option<OscQueryService>>,
     query_rx: Mutex<Receiver<Option<Vec<OscParameterInfo>>>>,
@@ -27,16 +30,24 @@ pub struct VRChatOsc {
 }
 
 impl VRChatOsc {
-    pub fn new(target_addr: &str, receive_port: u16) -> Self {
+    /// Listens for VRChat's replies on `receive_port`, or on any free port
+    /// when that's taken; see [`Self::receive_port`].
+    pub fn new(target: VrchatTarget, receive_port: u16) -> Self {
+        let recv_socket = bind_receive(receive_port);
+        let receive_port = recv_socket
+            .as_ref()
+            .and_then(|socket| socket.local_addr().ok())
+            .map_or(receive_port, |addr| addr.port());
         let (query_tx, query_rx) = channel();
         let (change_tx_avatar, change_rx_avatar) = channel();
         let (change_tx_query, change_rx_query) = channel();
 
-        let osc_query_service = OscQueryService::new(query_tx, change_rx_query);
+        let osc_query_service = OscQueryService::new(query_tx, change_rx_query, target.clone());
 
         Self {
             socket: Mutex::new(None),
-            target_addr: target_addr.to_string(),
+            target,
+            recv_socket: Mutex::new(recv_socket),
             receive_port,
             osc_query_service: Mutex::new(Some(osc_query_service)),
             query_rx: Mutex::new(query_rx),
@@ -46,6 +57,11 @@ impl VRChatOsc {
             param_registry: Mutex::new(ParameterRegistry::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The port VRChat's replies arrive on, to advertise over OSCQuery.
+    pub fn receive_port(&self) -> u16 {
+        self.receive_port
     }
 
     pub fn initialize(&mut self) -> Result<()> {
@@ -61,7 +77,12 @@ impl VRChatOsc {
             }
         }
 
-        let recv_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.receive_port))?;
+        let recv_socket = self
+            .recv_socket
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No port free to listen for VRChat on"))?;
         // Set socket timeout for graceful shutdown (500ms)
         recv_socket.set_read_timeout(Some(Duration::from_millis(500)))?;
 
@@ -69,6 +90,7 @@ impl VRChatOsc {
         let tx_query = self.change_tx_query.clone();
         let port = self.receive_port;
         let shutdown = self.shutdown_flag.clone();
+        let target = self.target.clone();
 
         thread::spawn(move || {
             info!("Listening for OSC messages on port {}", port);
@@ -79,7 +101,7 @@ impl VRChatOsc {
                 match recv_socket.recv_from(&mut buf) {
                     Ok((size, _addr)) => {
                         if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
-                            handle_packet(packet, &tx_avatar, &tx_query);
+                            handle_packet(packet, &tx_avatar, &tx_query, &target);
                         }
                     }
                     Err(ref e)
@@ -153,8 +175,9 @@ impl VRChatOsc {
                     // Reset parameter registry with real types from OSC Query
                     if let Ok(mut registry) = self.param_registry.lock() {
                         log::info!("Calling registry.reset()...");
-                        registry.reset(&avatar_params, &param_types);
+                        let relevant = registry.reset(&avatar_params, &param_types);
                         log::info!("registry.reset() completed");
+                        self.target.set_avatar_face_tracking(Some(relevant > 0));
                     } else {
                         log::error!("Failed to acquire param_registry lock!");
                     }
@@ -198,7 +221,7 @@ impl VRChatOsc {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("VRChatOsc socket not available"))?;
 
-        match socket.send_to(&msg_buf, &self.target_addr) {
+        match socket.send_to(&msg_buf, self.target.send_addr()) {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!(
@@ -218,7 +241,33 @@ impl VRChatOsc {
     }
 }
 
-fn handle_packet(packet: OscPacket, tx_avatar: &Sender<String>, tx_query: &Sender<String>) {
+/// Binds the socket VRChat's replies arrive on: `port`, or any free port when
+/// another app has it.
+fn bind_receive(port: u16) -> Option<UdpSocket> {
+    let socket = UdpSocket::bind(("0.0.0.0", port))
+        .or_else(|e| {
+            warn!(
+                "Port {} is in use ({}); listening for VRChat on a free port instead",
+                port, e
+            );
+            UdpSocket::bind("0.0.0.0:0")
+        })
+        .inspect_err(|e| error!("Failed to listen for VRChat: {}", e))
+        .ok()?;
+    // Set socket timeout for graceful shutdown (500ms)
+    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(500))) {
+        error!("Failed to set the VRChat listener's timeout: {}", e);
+        return None;
+    }
+    Some(socket)
+}
+
+fn handle_packet(
+    packet: OscPacket,
+    tx_avatar: &Sender<String>,
+    tx_query: &Sender<String>,
+    target: &VrchatTarget,
+) {
     match packet {
         OscPacket::Message(msg) => {
             if msg.addr == "/avatar/change" {
@@ -231,14 +280,58 @@ fn handle_packet(packet: OscPacket, tx_avatar: &Sender<String>, tx_query: &Sende
                     "Unknown".to_string()
                 };
                 info!("Avatar change detected! New Avatar ID: {}", avatar_id);
+                // Not known for the new avatar until its parameters are read.
+                target.set_avatar_face_tracking(None);
                 let _ = tx_avatar.send(avatar_id.clone());
                 let _ = tx_query.send(avatar_id);
             }
         }
         OscPacket::Bundle(bundle) => {
             for packet in bundle.content {
-                handle_packet(packet, tx_avatar, tx_query);
+                handle_packet(packet, tx_avatar, tx_query, target);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rosc::OscMessage;
+
+    #[test]
+    fn a_taken_receive_port_falls_back_to_a_free_one() {
+        let taken = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let socket = bind_receive(port).expect("a free port");
+        assert_ne!(socket.local_addr().unwrap().port(), port);
+    }
+
+    #[test]
+    fn the_advertised_port_is_the_one_bound() {
+        let taken = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", 9000), port);
+        assert_ne!(osc.receive_port(), port);
+        assert_ne!(osc.receive_port(), 0);
+    }
+
+    #[test]
+    fn an_avatar_change_forgets_whether_the_avatar_had_face_tracking() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.found(Some(9000));
+        target.set_avatar_face_tracking(Some(true));
+        let (tx_avatar, rx_avatar) = channel();
+        let (tx_query, rx_query) = channel();
+        let change = OscPacket::Message(OscMessage {
+            addr: "/avatar/change".into(),
+            args: vec![OscType::String("avtr_test".into())],
+        });
+
+        handle_packet(change, &tx_avatar, &tx_query, &target);
+
+        assert_eq!(target.link().avatar_face_tracking, None);
+        assert_eq!(rx_avatar.try_recv().unwrap(), "avtr_test");
+        assert_eq!(rx_query.try_recv().unwrap(), "avtr_test");
     }
 }

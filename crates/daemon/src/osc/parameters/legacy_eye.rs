@@ -66,7 +66,7 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
 
     // Eye Dilation
     params.push(Box::new(EParam::simple("EyesDilation", |d| {
-        (d.eye.left.pupil_diameter_mm + d.eye.right.pupil_diameter_mm) / 2.0
+        d.eye.dilation()
     })));
     params.push(Box::new(EParam::simple("EyesPupilDiameter", |d| {
         (d.eye.left.pupil_diameter_mm + d.eye.right.pupil_diameter_mm) * 0.5

@@ -2,7 +2,7 @@
 
 This Android 14 APK relays the Quest Pro's two lower-face cameras to a PC on the local network over Wi-Fi. It serves the existing `QPLIVE3` protocol as two 400 × 400 grayscale views side by side. Android NSD advertises `_vrftcam._tcp.local.`; the Rust daemon discovers it, runs the enhanced tongue model when set up, sends tongue expressions through its VRChat output, and serves a local browser preview. If the feed or inference stops, VRFT uses its tracking module's tongue values.
 
-Version 0.2 adds, on the same TCP stream, optional independent per-eye gaze (`QPGAZE1` raw vectors), a status object (`QPSTAT1`), low-rate eye-camera preview snapshots, and selectable camera frame rate. All of this is opt-in and configured in the app; see [Stream settings](#stream-settings) and [Independent eye gaze](#independent-eye-gaze-experimental).
+Version 0.2 adds, on the same TCP stream, optional independent per-eye gaze (`QPGAZE1` raw vectors), a status object (`QPSTAT1`), low-rate eye-camera preview snapshots, and selectable camera frame rate. Per-eye gaze is on by default; all of it is configured in the app; see [Stream settings](#stream-settings) and [Independent eye gaze](#independent-eye-gaze-experimental).
 
 ## Status and plan
 
@@ -23,9 +23,10 @@ When the relay connects but no frame arrives, the locally rebuilt helper writes 
 
 ## Build
 
-This project targets Android API 34 with Android Gradle Plugin 8.5.2, Gradle 8.7, and **JDK 17**. Android's [AGP 8.5 compatibility table](https://developer.android.com/build/releases/agp-8-5-0-release-notes) specifies these versions. The local `build.ps1` uses the SDK/JDK installed in the sibling `toolchain` folder of this workspace. Standard Android Studio/Gradle builds can use the supplied Gradle wrapper.
+This project targets Android API 34 with Android Gradle Plugin 8.5.2, Gradle 8.7, and **JDK 17**. Android's [AGP 8.5 compatibility table](https://developer.android.com/build/releases/agp-8-5-0-release-notes) specifies these versions. `setup-toolchain.ps1` downloads the JDK and SDK into the repo's gitignored `.local/toolchain` folder (add `-Ndk` for the NDK that `build-native.ps1` needs), and `build.ps1` uses them from there, falling back to a sibling `toolchain` folder beside the repo. Standard Android Studio/Gradle builds can use the supplied Gradle wrapper.
 
 ```powershell
+.\setup-toolchain.ps1   # once
 .\build.ps1
 ..\..\..\android-tools\platform-tools\adb.exe install -r .\app\build\outputs\apk\debug\app-debug.apk
 ..\..\..\android-tools\platform-tools\adb.exe shell am start -n io.github.matty.vrft.questprocamera/.MainActivity
@@ -33,7 +34,7 @@ This project targets Android API 34 with Android Gradle Plugin 8.5.2, Gradle 8.7
 
 `.\build.ps1 -Release` builds the release APK instead. It is unsigned unless the release key is supplied; see [Versions and Releases](../../docs/internals/releasing.md#signing-the-headset-app).
 
-In the APK, press **Start camera stream**. Grant **VRFT Quest Pro Camera** Superuser access in Magisk when prompted. Then press **Open Virtual Desktop** and connect to the PC; this activates the face cameras while the foreground service runs behind it. Press **Stop camera stream** in the APK to stop capture. The injected library stays loaded until the headset is rebooted, as with the reference implementation.
+In the APK, press **Start streaming**. Grant **VRFT Quest Pro Camera** Superuser access in Magisk when prompted. Then open your streaming app (Virtual Desktop, Steam Link or another) and connect to the PC; an app using face tracking activates the face cameras while the foreground service runs behind it. VRFT doesn't need a tracking module for the cameras, eye gaze or tongue. Press **Stop streaming** in the APK to stop capture. The injected library stays loaded until the headset is rebooted, as with the reference implementation.
 
 On the PC, launch the Rust daemon from its normal working directory:
 
@@ -41,20 +42,20 @@ On the PC, launch the Rust daemon from its normal working directory:
 .\vrft_d.exe
 ```
 
-Open [the local preview](http://127.0.0.1:27275/) in a browser on that PC. It shows cameras 2 and 3 side by side with the latest frame sequence. Use `.\vrft_d.exe --camera-preview-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
+Open the desktop app's Quest Pro pages to see cameras 2 and 3 and the latest frame sequence. (The daemon's browser preview is turned off for now: `BROWSER_PAGES` in `extensions/quest-pro/daemon/src/camera.rs`.) Use `.\vrft_d.exe --extensions-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
 
-For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`) and can press Start or Stop (`start_probe`, `stop_probe`). Quest reuses an open panel for a new `am start`, so the extras also work while the app is already open:
+For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`) and can press Start or Stop (`start_probe`, `stop_probe`). Quest reuses an open panel for a new `am start`, so the extras also work while the app is already open. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
 
 ```powershell
 $adb = '..\..\..\android-tools\platform-tools\adb.exe'
-& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_enabled true --ei camera_fps 24 --ei eye_preview_fps 2 --ez start_probe true
+& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_enabled true --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true
 & $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez stop_probe true
 & $adb logcat -d -s VRFTCamera:I AndroidRuntime:E '*:S'
 ```
 
 Over USB, `adb forward tcp:27274 tcp:27274` and `$env:VRFT_QUEST_PRO_ADDR = '127.0.0.1:27274'` connect the daemon without Wi-Fi discovery.
 
-Meta's eye tracker only runs while the headset is worn and an app is consuming eye tracking (for example Virtual Desktop streaming). With the headset on a desk, the trace instance stays empty even though the pipeline is set up correctly: `per_cpu/cpu*/stats` under `/sys/kernel/tracing/instances/vrft_eye` shows `read events: 0`.
+Meta's eye tracker only runs while the headset is worn and an app is consuming eye tracking (for example Virtual Desktop or Steam Link streaming with face tracking on). With the headset on a desk, the trace instance stays empty even though the pipeline is set up correctly: `per_cpu/cpu*/stats` under `/sys/kernel/tracing/instances/vrft_eye` shows `read events: 0`.
 
 ## Versions and stream protocol
 
@@ -64,11 +65,11 @@ Bump the protocol only when an existing message changes. A new message type keep
 
 ## Stream settings
 
-The app's main screen has controls that are read from `SharedPreferences` and **applied at the next stream start** (never live — start/stop the stream to change them):
+The app's main screen has controls that are read from `SharedPreferences` and **applied at the next stream start** (never live). Changing **Independent eye gaze** during a stream restarts the stream to apply it; for the others, stop and start the stream:
 
 - **Camera FPS** — 12, 15, 20, 24 (default), 30, 36. Passed to the relay as `--max-fps`.
-- **Eye-camera preview snapshots** — Off, 1, 2 (default), 5 fps. Passed to the relay as `--eye-fps`. When on, the relay interleaves a low-rate eye-camera frame (cameras 0 + 1, `QPLIVE3` mask `0x03`, 800 × 400) into the stream, cut from the same stabilized sensor frame as the mouth frame it follows and carrying that frame's sequence and timestamp. These are for a coarse eye preview only; the PC never feeds mask `0x03` frames to tongue inference or capture.
-- **Independent eye gaze** — a checkbox, default **off**. See below.
+- **Eye-camera snapshots** — Off, 1, 2, 5 (default) fps. Passed to the relay as `--eye-fps`. When on, the relay interleaves a low-rate eye-camera frame (cameras 0 + 1, `QPLIVE3` mask `0x03`, 800 × 400) into the stream, cut from the same stabilized sensor frame as the mouth frame it follows and carrying that frame's sequence and timestamp. The PC measures pupil size from them and shows them in the eye preview; it never feeds mask `0x03` frames to tongue inference or capture. At 5 fps they add about 1.6 MB/s to the stream. Before 5 became the default, the rate was saved under another key with a default of 2; a saved 2 moves to 5, any other saved rate carries over.
+- **Independent eye gaze** — a checkbox, default **on**. On firmware it doesn't support, the stream carries on without it. See below.
 
 The relay is launched as:
 

@@ -34,10 +34,14 @@ impl EuroFilter {
     }
 
     pub fn new_with_config(min_cutoff: f32, beta: f32) -> Self {
+        Self::new_with_params(min_cutoff, beta, 0.1)
+    }
+
+    pub fn new_with_params(min_cutoff: f32, beta: f32, d_cutoff: f32) -> Self {
         Self {
             min_cutoff,
             beta,
-            d_cutoff: 0.1,
+            d_cutoff,
             ..Default::default()
         }
     }

@@ -1,0 +1,134 @@
+_version: 2
+eyes:
+  recenter_first_count:
+    en: "Look straight ahead at something far away. %{count}"
+  recentered:
+    en: "Recentered"
+  recenter_failed:
+    en: "Recenter failed"
+  recentered_notice:
+    en: "Recentered. Your avatar now looks straight ahead when you do."
+  recenter_undone:
+    en: "Recenter undone."
+  couldnt_undo:
+    en: "Couldn't undo it"
+  couldnt_save:
+    en: "Couldn't save"
+  output_reset:
+    en: "Output set back to the defaults."
+  recenter:
+    en: "Recenter"
+  look_ahead:
+    en: "Look ahead…"
+  recentering:
+    en: "Recentering…"
+  recenter_hint:
+    en: "Look straight ahead at something far away. The three-second countdown is read aloud, so you can do it in the headset."
+  support_not_running:
+    en: "Quest Pro support isn't running. Restart tracking to start it."
+  restart_vrft:
+    en: "Restart tracking"
+  waiting_for_eye_data:
+    en: "Waiting for eye data from the headset…"
+  undo:
+    en: "Undo"
+  undo_recenter:
+    en: "Undo recenter"
+  track_each_eye:
+    en: "Track each eye separately"
+  track_each_eye_hint:
+    en: "Lets your avatar's eyes meet at what you look at."
+  pupils:
+    en: "Measure pupil size"
+  pupils_hint:
+    en: "Sends how wide your pupils are, read from the eye cameras."
+  pupils_looking:
+    en: "Looking for your pupils…"
+  pupils_need_snapshots:
+    en: "Needs eye camera snapshots. Turn them on in the headset app."
+  dilation:
+    en: "Dilation"
+  left_pupil:
+    en: "Left pupil"
+  right_pupil:
+    en: "Right pupil"
+  millimetres:
+    en: "%{mm} mm"
+  output_hint:
+    en: "Leave these as they are unless your avatar's eyes misbehave in VRChat."
+  mirror:
+    en: "Mirror left and right"
+  mirror_hint:
+    en: "Try this if your avatar looks left when you look right."
+  swap:
+    en: "Swap left and right eyes"
+  swap_hint:
+    en: "Try this if the eyes spread apart when you look at something close."
+  reset_to_defaults:
+    en: "Reset to defaults"
+  engine_profile:
+    en: "Eye model setup"
+  per_eye_model:
+    en: "Per-eye model"
+  active:
+    en: "Active"
+  not_active:
+    en: "Not active"
+  yes:
+    en: "Yes"
+  no:
+    en: "No"
+  calibration_file:
+    en: "Calibration file"
+  meeting_distance:
+    en: "Distance where eyes meet"
+  calibrated:
+    en: "Calibrated"
+  demo_calibration:
+    en: "Demo calibration: may be off"
+  eyes_look_wrong:
+    en: "Avatar's eyes look wrong?"
+  eyes_look_wrong_sub:
+    en: "Mirror or swap left and right"
+  details:
+    en: "Details"
+  pill:
+    en: "%{value} · %{detail}"
+  avatar_left_eye:
+    en: "Avatar's left eye"
+  avatar_right_eye:
+    en: "Avatar's right eye"
+  eyes_meet:
+    en: "Eyes meet"
+  gaze:
+    en: "Gaze"
+  combined:
+    en: "Combined"
+  gaze_from_above:
+    en: "Gaze, seen from above"
+  stock_model:
+    en: "The headset is using Meta's eye model. Turn on per-eye gaze to move each eye on its own."
+  open_headset:
+    en: "Open Headset"
+  eye_cameras:
+    en: "Eye cameras"
+  snapshot_age:
+    en: "Snapshot %{sequence} · %{age} ms old"
+  title:
+    en: "Eyes"
+  description:
+    en: "Where your avatar looks, and how to line it up with you."
+  eye_angles:
+    en: "%{across} · vertical %{vertical}"
+  left_eye:
+    en: "Left eye"
+  right_eye:
+    en: "Right eye"
+  where_they_meet:
+    en: "Where they meet"
+  metres:
+    en: "%{metres} m"
+  no_eye_images:
+    en: "No eye camera images"
+  no_eye_images_hint:
+    en: "To see them, set Eye-camera preview snapshots above 0 in the headset app."

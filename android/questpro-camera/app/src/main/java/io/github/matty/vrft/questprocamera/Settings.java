@@ -5,23 +5,40 @@ import android.content.SharedPreferences;
 
 /**
  * User-facing stream settings, stored in {@link SharedPreferences} and applied
- * at the next stream start (never live). Values are validated against the
+ * at the next stream start (never live; the panel restarts a running stream
+ * when eye gaze changes). Values are validated against the
  * allowed choices so a corrupt preference cannot feed a bad relay argument.
  */
 public final class Settings {
     public static final String PREFS = "vrft_camera";
 
     private static final String KEY_CAMERA_FPS = "camera_fps";
-    private static final String KEY_EYE_PREVIEW_FPS = "eye_preview_fps";
+    private static final String KEY_EYE_PREVIEW_FPS = "eye_snapshot_fps";
+    /**
+     * Where the rate was kept while 2 fps was the default. The spinner saves
+     * its value when the panel first opens, so a 2 there was most likely
+     * never chosen and moves to the new default; anything else carries over.
+     */
+    private static final String LEGACY_KEY_EYE_PREVIEW_FPS = "eye_preview_fps";
+    private static final int LEGACY_DEFAULT_EYE_PREVIEW_FPS = 2;
     private static final String KEY_EYE_ENABLED = "eye_enabled";
 
     /** Camera FPS choices (relay {@code --max-fps}); default is 24. */
     public static final int[] CAMERA_FPS_CHOICES = {12, 15, 20, 24, 30, 36};
     public static final int DEFAULT_CAMERA_FPS = 24;
 
-    /** Eye-preview FPS choices (relay {@code --eye-fps}); 0 = Off, default 2. */
+    /**
+     * Eye-camera snapshot FPS choices (relay {@code --eye-fps}); 0 = Off,
+     * default 5. The PC measures pupil size from the snapshots.
+     */
     public static final int[] EYE_PREVIEW_FPS_CHOICES = {0, 1, 2, 5};
-    public static final int DEFAULT_EYE_PREVIEW_FPS = 2;
+    public static final int DEFAULT_EYE_PREVIEW_FPS = 5;
+
+    /**
+     * Independent eye gaze, on unless turned off. On firmware it doesn't
+     * support, the stream carries on without it.
+     */
+    public static final boolean DEFAULT_EYE_ENABLED = true;
 
     private Settings() { }
 
@@ -40,7 +57,13 @@ public final class Settings {
     }
 
     public static int getEyePreviewFps(Context context) {
-        return clampToChoices(prefs(context).getInt(KEY_EYE_PREVIEW_FPS, DEFAULT_EYE_PREVIEW_FPS),
+        SharedPreferences prefs = prefs(context);
+        int fallback = DEFAULT_EYE_PREVIEW_FPS;
+        if (!prefs.contains(KEY_EYE_PREVIEW_FPS) && prefs.contains(LEGACY_KEY_EYE_PREVIEW_FPS)) {
+            int legacy = prefs.getInt(LEGACY_KEY_EYE_PREVIEW_FPS, LEGACY_DEFAULT_EYE_PREVIEW_FPS);
+            if (legacy != LEGACY_DEFAULT_EYE_PREVIEW_FPS) fallback = legacy;
+        }
+        return clampToChoices(prefs.getInt(KEY_EYE_PREVIEW_FPS, fallback),
                 EYE_PREVIEW_FPS_CHOICES, DEFAULT_EYE_PREVIEW_FPS);
     }
 
@@ -50,7 +73,7 @@ public final class Settings {
     }
 
     public static boolean isEyeEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_EYE_ENABLED, false);
+        return prefs(context).getBoolean(KEY_EYE_ENABLED, DEFAULT_EYE_ENABLED);
     }
 
     public static void setEyeEnabled(Context context, boolean enabled) {

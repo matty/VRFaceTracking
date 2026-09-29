@@ -27,6 +27,10 @@ jobs:
     - name: Build
       run: cargo build --verbose
 
+    - name: Build without extensions
+      # The daemon and app must also build with every extension left out.
+      run: cargo build -p vrft-daemon -p vrft-gui --no-default-features
+
     - name: Validate Plugin Structure
       shell: pwsh
       run: |
@@ -46,7 +50,9 @@ jobs:
       run: cargo test --verbose
 
     - name: Clippy
-      run: cargo clippy -- -D warnings
+      run: |
+        cargo clippy -- -D warnings
+        cargo clippy -p vrft-daemon -p vrft-gui --no-default-features -- -D warnings
 
     - name: Check formatting
       run: cargo fmt -- --check

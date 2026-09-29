@@ -28,12 +28,14 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Owns the root relay and advertises a LAN stream while VD is foreground. */
+/** Owns the root relay and advertises a LAN stream while any app is foreground. */
 public final class CameraStreamService extends Service {
     public static final String ACTION_START = "io.github.matty.vrft.questprocamera.START";
     public static final String ACTION_STOP = "io.github.matty.vrft.questprocamera.STOP";
@@ -46,8 +48,16 @@ public final class CameraStreamService extends Service {
     private static final String[] HELPERS = {
             "libquestpro-camera-streamer-v8.so", "questpro-camera-injector", "questpro-camera-relay-v8"
     };
+    /** Where a stream is, for the panel. */
+    public enum Phase { STOPPED, STARTING, WAITING, CONNECTED, STREAMING, FAILED }
+
+    private static volatile Phase phase = Phase.STOPPED;
     private static volatile String status = "Stopped";
-    private static volatile String eyeStatusLine = "";
+    private static volatile EyePipeline.EyeStatus eyeStatus;
+    /** Whether a stream runs, so the panel can restart it to apply eye gaze. */
+    private static volatile boolean active;
+    /** The threads finishing a stop: the relay stop and the eye model restore. */
+    private static final Set<Thread> finishing = ConcurrentHashMap.newKeySet();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean clientBusy = new AtomicBoolean(false);
     /** Guards every whole message written to the current client (frames, gaze, status). */
@@ -64,9 +74,20 @@ public final class CameraStreamService extends Service {
     private NsdManager nsd;
     private NsdManager.RegistrationListener registration;
 
-    public static String getStatus() {
-        String eye = eyeStatusLine;
-        return eye.isEmpty() ? status : status + "\nEye: " + eye;
+    public static Phase getPhase() { return phase; }
+
+    /** The latest step, or why the stream failed, in a line. */
+    public static String getStatus() { return status; }
+
+    /** The stream's eye gaze, or null before one has started. */
+    public static EyePipeline.EyeStatus getEyeStatus() { return eyeStatus; }
+
+    public static boolean isActive() { return active; }
+
+    /** Whether a stopped stream is still putting things back. */
+    public static boolean isFinishing() {
+        finishing.removeIf(thread -> !thread.isAlive());
+        return !finishing.isEmpty();
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -79,6 +100,9 @@ public final class CameraStreamService extends Service {
         }
         if (running) return START_NOT_STICKY;
         running = true;
+        active = true;
+        eyeStatus = null;
+        setStatus(Phase.STARTING, "Starting");
         cameraFps = Settings.getCameraFps(this);
         eyePreviewFps = Settings.getEyePreviewFps(this);
         eyeEnabled = Settings.isEyeEnabled(this);
@@ -90,9 +114,9 @@ public final class CameraStreamService extends Service {
         PendingIntent pending = PendingIntent.getActivity(this, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification notification = new Notification.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.presence_video_online)
-                .setContentTitle("VRFT camera stream")
-                .setContentText("Camera stream available on local network")
+                .setSmallIcon(R.drawable.ic_mark)
+                .setContentTitle("Streaming Quest Pro cameras")
+                .setContentText("Your PC can connect over Wi-Fi.")
                 .setContentIntent(pending)
                 .setOngoing(true)
                 .build();
@@ -103,7 +127,7 @@ public final class CameraStreamService extends Service {
 
     private void runServer() {
         try {
-            setStatus("Requesting root and preparing camera relay...");
+            setStatus(Phase.STARTING, "Getting root access. Allow it in Magisk if asked");
             copyHelpers();
             String root = runRoot("id", 60);
             if (!root.contains("uid=0")) throw new IOException("Magisk did not grant root");
@@ -113,7 +137,7 @@ public final class CameraStreamService extends Service {
             // Eye pipeline runs before camera injection so the patched model is
             // active before the tracking service is otherwise disturbed.
             if (eyeEnabled) {
-                setStatus("Preparing independent eye gaze...");
+                setStatus(Phase.STARTING, "Preparing eye gaze");
                 eyePipeline.start();
             } else {
                 onEyeStatusChanged();
@@ -134,7 +158,7 @@ public final class CameraStreamService extends Service {
                     .append(" && chmod 666 /data/local/tmp/questpro-live-v8.log");
             runRoot(install.toString(), 20);
             if (!running) return;
-            setStatus("Injecting camera helper...");
+            setStatus(Phase.STARTING, "Starting the cameras");
             runRoot(ROOT_DIR + "/questpro-camera-injector "
                     + ROOT_DIR + "/libquestpro-camera-streamer-v8.so", 30);
             runRoot(ROOT_DIR + "/questpro-camera-relay-v8 --stop", 10);
@@ -154,7 +178,7 @@ public final class CameraStreamService extends Service {
             listener.setSoTimeout(1000);
             server = listener;
             advertise();
-            setStatus("Listening on port " + LAN_PORT + ". Open Virtual Desktop, then connect vrft_d.");
+            setStatus(Phase.WAITING, "Listening on port " + LAN_PORT);
             while (running) {
                 try {
                     Socket client = listener.accept();
@@ -171,14 +195,14 @@ public final class CameraStreamService extends Service {
                             try { client.close(); } catch (IOException ignored) { }
                             currentClient = null;
                             clientBusy.set(false);
-                            if (running) setStatus("Waiting for PC on port " + LAN_PORT);
+                            if (running) setStatus(Phase.WAITING, "Listening on port " + LAN_PORT);
                         }
                     }, "camera-client").start();
                 } catch (SocketTimeoutException ignored) { }
             }
         } catch (Exception error) {
             if (running) {
-                setStatus("Camera stream failed: " + error.getMessage());
+                setStatus(Phase.FAILED, String.valueOf(error.getMessage()));
                 stopSelf();
             }
         }
@@ -198,7 +222,7 @@ public final class CameraStreamService extends Service {
             byte[] header = new byte[64];
             byte[] pixels = new byte[800 * 400];
             long lastSequence = 0;
-            setStatus("PC connected; waiting for Virtual Desktop cameras...");
+            setStatus(Phase.CONNECTED, "PC connected");
             while (running && !client.isClosed()) {
                 if (!readFully(fromRelay, header, true)) continue;
                 ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
@@ -220,7 +244,7 @@ public final class CameraStreamService extends Service {
                 if (mask == MOUTH_MASK) {
                     long sequence = fields.getLong(16);
                     if (lastSequence == 0 || sequence - lastSequence >= 30) {
-                        setStatus("Streaming cameras 2 + 3 to PC | frame " + sequence);
+                        setStatus(Phase.STREAMING, "Streaming, frame " + sequence);
                         lastSequence = sequence;
                     }
                 }
@@ -274,8 +298,7 @@ public final class CameraStreamService extends Service {
     private void onEyeStatusChanged() {
         EyePipeline pipeline = eyePipeline;
         if (pipeline != null) {
-            EyePipeline.EyeStatus eye = pipeline.getStatus();
-            eyeStatusLine = eye.state + " - " + eye.message;
+            eyeStatus = pipeline.getStatus();
         }
         sendStatus();
     }
@@ -361,9 +384,15 @@ public final class CameraStreamService extends Service {
 
     private static String quote(String path) { return "'" + path.replace("'", "'\\''") + "'"; }
 
-    private static void setStatus(String message) {
+    private static void setStatus(Phase next, String message) {
+        phase = next;
         status = message;
-        Log.i("VRFTCamera", message);
+        Log.i("VRFTCamera", next + ": " + message);
+    }
+
+    private static void finish(Thread thread) {
+        finishing.add(thread);
+        thread.start();
     }
 
     @Override public void onDestroy() {
@@ -379,18 +408,19 @@ public final class CameraStreamService extends Service {
         // The desktop app waits for the "stop-relay" and "stop-eye" threads to
         // finish before it replaces this app, so keep those names.
         if (relay != null) {
-            new Thread(() -> {
+            finish(new Thread(() -> {
                 try { runRoot(ROOT_DIR + "/questpro-camera-relay-v8 --stop", 5); }
                 catch (Exception ignored) { }
                 relay.destroy();
-            }, "stop-relay").start();
+            }, "stop-relay"));
         }
         // Restore the stock eye model on a background thread, like the relay stop.
         if (pipeline != null) {
-            new Thread(pipeline::stop, "stop-eye").start();
+            finish(new Thread(pipeline::stop, "stop-eye"));
         }
+        active = false;
         worker.shutdownNow();
-        if (!status.startsWith("Camera stream failed:")) setStatus("Stopped");
+        if (phase != Phase.FAILED) setStatus(Phase.STOPPED, "Stopped");
         super.onDestroy();
     }
 }

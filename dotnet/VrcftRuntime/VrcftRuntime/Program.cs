@@ -49,6 +49,18 @@ class Program
     private static MemoryMappedFile _mmf;
     private static MemoryMappedViewAccessor _accessor;
 
+    // Cleared when the host shuts down, to stop the module's update thread.
+    private static volatile bool _running = true;
+    // When the module's Update() last returned, in Environment.TickCount64
+    // milliseconds, so a long-blocking update can be logged.
+    private static long _lastUpdateReturned = Environment.TickCount64;
+    // Shortest time between the starts of two Update() calls, so a module
+    // whose Update() returns at once doesn't spin a core. Matches how often
+    // the data is copied to shared memory.
+    private const int MinUpdateIntervalMs = 10;
+    // How long Update() can go without returning before it's logged.
+    private const int SlowUpdateWarningMs = 10_000;
+
     static void Main(string[] args)
     {
         LogLevel logLevel = LogLevel.Information;
@@ -89,6 +101,7 @@ class Program
         }
         finally
         {
+            _running = false;
             try { _module?.Teardown(); } catch { }
             _accessor?.Dispose();
             _mmf?.Dispose();
@@ -179,11 +192,47 @@ class Program
     {
         private readonly System.Runtime.Loader.AssemblyDependencyResolver _resolver;
         private readonly ILogger _logger;
+        // The module's own folder. Registry modules rarely ship a .deps.json,
+        // so the resolver alone finds nothing; their dependencies sit beside
+        // them or in subfolders such as ModuleLibs/.
+        private readonly string _moduleDir;
 
         public ModuleLoadContext(string mainAssemblyPath, ILogger logger) : base("ModuleContext", isCollectible: true)
         {
             _resolver = new System.Runtime.Loader.AssemblyDependencyResolver(mainAssemblyPath);
             _logger = logger;
+            _moduleDir = Path.GetDirectoryName(mainAssemblyPath) ?? ".";
+        }
+
+        /// <summary>The first file named <paramref name="fileName"/> in the module's folder, then its subfolders.</summary>
+        private string? FindInModule(string fileName)
+        {
+            string direct = Path.Combine(_moduleDir, fileName);
+            if (File.Exists(direct)) return direct;
+            try
+            {
+                return Directory.EnumerateFiles(_moduleDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Couldn't search {Dir} for {File}", _moduleDir, fileName);
+                return null;
+            }
+        }
+
+        protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
+        {
+            string? path = _resolver.ResolveUnmanagedDllToPath(unmanagedDllName);
+            if (path == null)
+            {
+                string fileName = unmanagedDllName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                    ? unmanagedDllName
+                    : unmanagedDllName + ".dll";
+                path = FindInModule(Path.GetFileName(fileName));
+            }
+            if (path == null) return IntPtr.Zero;
+            _logger.LogDebug("ALC Resolved native: {Name} -> {Path}", unmanagedDllName, path);
+            return LoadUnmanagedDllFromPath(path);
         }
 
         protected override Assembly Load(AssemblyName assemblyName)
@@ -202,6 +251,13 @@ class Program
                 return LoadFromAssemblyPath(assemblyPath);
             }
 
+            string? besideModule = FindInModule(assemblyName.Name + ".dll");
+            if (besideModule != null)
+            {
+                _logger.LogDebug("ALC Found: {Name} -> {Path}", assemblyName.Name, besideModule);
+                return LoadFromAssemblyPath(besideModule);
+            }
+
             return null;
         }
     }
@@ -213,19 +269,70 @@ class Program
         _logger.LogInformation(@"Shared memory setup complete: Local\VRCFT_TrackingData");
     }
 
+    /// <summary>
+    /// Calls the module's Update() over and over on its own thread, as VRCFT
+    /// does. Modules may block in Update() while they wait for their device,
+    /// sometimes for seconds, so it mustn't hold up the heartbeat the daemon
+    /// watches to tell whether this host is still alive.
+    /// </summary>
+    static void StartUpdateThread()
+    {
+        var thread = new Thread(() =>
+        {
+            while (_running)
+            {
+                long started = Environment.TickCount64;
+                try
+                {
+                    _module.Update();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in module update");
+                    Thread.Sleep(1000);
+                }
+                long now = Environment.TickCount64;
+                Interlocked.Exchange(ref _lastUpdateReturned, now);
+                int remaining = MinUpdateIntervalMs - (int)Math.Min(now - started, MinUpdateIntervalMs);
+                if (remaining > 0) Thread.Sleep(remaining);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Module update",
+        };
+        thread.Start();
+    }
+
     static unsafe void RunLoop()
     {
         _logger.LogInformation("Entering update loop...");
+        StartUpdateThread();
         var data = new MarshaledTrackingData();
         ulong lastMainAppHeartbeat = 0;
         DateTime lastMainAppUpdate = DateTime.UtcNow;
+        bool slowUpdateLogged = false;
 
         while (true)
         {
             try
             {
-                _module.Update();
-                
+                long sinceUpdate = Environment.TickCount64 - Interlocked.Read(ref _lastUpdateReturned);
+                if (sinceUpdate > SlowUpdateWarningMs && !slowUpdateLogged)
+                {
+                    _logger.LogWarning(
+                        "The module's Update() hasn't returned for {Seconds} s. It may be waiting for its device; the last data is kept until it does.",
+                        sinceUpdate / 1000);
+                    slowUpdateLogged = true;
+                }
+                else if (sinceUpdate <= SlowUpdateWarningMs && slowUpdateLogged)
+                {
+                    _logger.LogInformation("The module's Update() is returning again.");
+                    slowUpdateLogged = false;
+                }
+
+                // Copies what the module last wrote. Update() writes it on its
+                // own thread, as it does in VRCFT, which reads it the same way.
                 // Access UnifiedTracking.Data dynamically
                 dynamic src = _unifiedTracking;
                 dynamic eye = src.Eye;

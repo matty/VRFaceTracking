@@ -1,0 +1,6 @@
+_version: 2
+widgets:
+  error:
+    en: "%{prefix}: %{error}"
+  copy_details:
+    en: Copy details

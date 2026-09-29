@@ -1,0 +1,25 @@
+[package]
+name = "vrft-gui-core"
+version.workspace = true
+edition.workspace = true
+description = "What the VRFT desktop app and its extensions share"
+
+[lib]
+name = "vrft_gui_core"
+
+[dependencies]
+vrft-protocol = { workspace = true }
+gpui-kit = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+rust-i18n = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }

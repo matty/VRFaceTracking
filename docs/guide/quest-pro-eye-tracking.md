@@ -1,6 +1,6 @@
 # Quest Pro independent eye gaze
 
-The Quest Pro's own eye tracker blends both eyes into one binocular estimate before Virtual Desktop sees it. Both avatar eyes therefore point the same way, and convergence (both eyes turning inward to look at something close) never shows. With the rooted-headset camera APK, VRFT can instead send each eye's own gaze, so the avatar's eyes converge and diverge.
+The Quest Pro's own eye tracker blends both eyes into one binocular estimate before streaming apps such as Virtual Desktop or Steam Link see it. Both avatar eyes therefore point the same way, and convergence (both eyes turning inward to look at something close) never shows. With the rooted-headset camera APK, VRFT can instead send each eye's own gaze, so the avatar's eyes converge and diverge.
 
 This is a port of the independent-gaze feature from [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT), including the engine profile for build `51503870024400340` added by the [Fwooffy fork](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless). It needs a rooted Quest Pro, the camera APK in [android/questpro-camera](../../android/questpro-camera/README.md), and Wi-Fi between the headset and PC. No USB or ADB connection is needed while tracking.
 
@@ -8,7 +8,7 @@ This is a port of the independent-gaze feature from [Qpro-Enhanced-FT](https://g
 
 1. When **Independent eye gaze** is on, the APK briefly replaces Meta's experimental eye model with a copy patched so its public gaze output comes from each eye's own branch instead of the blended one. The patch changes two bytes of the model graph. The original file is never modified: the patched copy is bind-mounted over it until the stream stops.
 2. The APK traces the tracker's per-eye visual-axis vectors in the kernel and streams them to VRFT with the camera frames.
-3. VRFT converts each vector to yaw and pitch, applies a per-eye calibration, filters each eye separately (a three-sample median, then a One Euro filter), and replaces the tracking module's gaze. Eye openness, pupils and all face expressions still come from the tracking module.
+3. VRFT converts each vector to yaw and pitch, applies a per-eye calibration, filters each eye separately (a three-sample median, then a One Euro filter), and replaces the tracking module's gaze. Eye openness, pupils and all face expressions still come from the tracking module, if one is running. Without one, VRFT still sends the per-eye gaze.
 4. If eye samples stop for 250 ms, VRFT falls back to the tracking module's gaze without interrupting anything else.
 
 Stopping the stream in the APK unmounts the patched model, restores Meta's setting and restarts the tracking service. If the APK or headset crashes first, the APK restores everything the next time it starts; a headset reboot also removes the mount. See the APK README for the manual restore commands.
@@ -26,8 +26,8 @@ On any other build the APK reports "Unsupported tracking-engine build" in the pr
 
 ## Using it
 
-1. In the headset app, tick **Independent eye gaze** and start the stream. The first start takes a few seconds longer while the tracking service restarts.
-2. Open [the local preview](http://127.0.0.1:27275/). The **Eyes** tab shows:
+1. Start the stream. **Independent eye gaze** is ticked by default in the headset app; untick it there, or use **Per-eye gaze** on the desktop app's Headset page, to turn it off. Changing it restarts a running stream. The first start takes a few seconds longer while the tracking service restarts.
+2. Open the desktop app's **Eyes** page. (The [local preview](http://127.0.0.1:27275/)'s **Eyes** tab is turned off for now.) It shows:
    - whether gaze is active and its sample rate;
    - whether the headset reports the patched model as active (**Per-eye model**);
    - the left and right angles VRFT sends, and under **Eyes meet** the estimated focus distance, with the difference between the two angles (positive means converging);
@@ -48,6 +48,16 @@ VRFT maps each eye's detector angles to gaze with an affine calibration in the r
 3. `models/quest-pro/qpro-independent-visual-axis-v2.json`, the reference author's demonstration profile.
 
 The demonstration profile was fitted to one person on the older firmware. Its absolute alignment and depth may be off for you; **Recenter** fixes the offset but not the scale. Its own quality gate records that depth was never validated, and the preview says so. A profile made with the reference project's calibration tools (which use Project Babble's VR calibration routine) can be copied to `.local/eye-calibration.json`.
+
+## Pupil size
+
+Meta's eye tracking reports no pupil size, so streaming apps send a fixed one. VRFT instead measures each pupil in the eye camera snapshots the APK sends (5 a second by default; set in the APK's **Eye-camera snapshots**) and sends it as pupil dilation. It works with or without the modified eye model.
+
+Under the headset's infrared light the pupil is the darkest round area of each eye image. VRFT finds it, outlines it halfway between its own darkness and the iris around it, fills in the lights' reflections on it, and measures its width along its longest axis, so a pupil partly under the eyelid still measures right. A snapshot where it is too faint, too small, or mostly covered, as in a blink, is skipped, and the median of the last three measurements is used so one bad snapshot does not show.
+
+Camera pixels are not millimetres, and the size in pixels depends on how far each eye sits from its camera. So each eye's width is mapped onto the range that eye has shown so far, which slowly forgets its extremes over a couple of minutes, and that onto 2 to 8 mm, a typical adult pupil's range. Dilation, what VRChat's `PupilDilation` parameters carry, is therefore right after your pupils have changed size once or twice, as they do when you look from something bright to something dark. The millimetre values are an estimate on that scale, not a measurement. Until an eye has changed by 30% its range is widened to that much, so small wobbles don't read as full dilation. After a snapshot VRFT keeps the measurement for 1.5 seconds; after that the tracking module's pupils are sent again.
+
+The desktop app's Eyes page shows the dilation and each pupil under **Measure pupil size**, whose switch turns it on and off.
 
 ## Limitations
 

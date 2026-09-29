@@ -1,0 +1,106 @@
+_version: 2
+settings:
+  title:
+    en: Settings
+  description:
+    en: "Adjust your settings here."
+  runtime_vrcft:
+    en: VRCFT module
+  runtime_native:
+    en: Native module
+  needs_dotnet_host:
+    en: "VRCFT modules need the .NET host, which isn't installed. Reinstall to get it."
+  invalid_frame_rate:
+    en: "\"%{value}\" isn't a frame rate. Use a number, or leave it empty for no limit."
+  invalid_port:
+    en: "\"%{value}\" isn't a port. Use a number from 1 to 65535."
+  no_limit:
+    en: No limit
+  read_failed:
+    en: Couldn't read the settings
+  module_saved:
+    en: "%{name} is saved. It loads when tracking runs with a module."
+  switch_failed:
+    en: Couldn't switch modules
+  save_failed:
+    en: Couldn't save
+  address:
+    en: Address
+  port:
+    en: Port
+  frame_rate_limit:
+    en: Frame rate limit
+  frame_rate_limit_hint:
+    en: Leave it empty to send every frame the module gives.
+  per_second:
+    en: a second
+  switching:
+    en: "Switching…"
+  module_state:
+    en: "%{runtime} · %{state}"
+  not_in_plugins:
+    en: Not in the plugins folder
+  choose_on_modules:
+    en: Choose one on Modules
+  no_module_chosen:
+    en: No module chosen
+  no_modules:
+    en: There are no tracking modules in the plugins folder. Get one from Modules.
+  chosen_missing:
+    en: "%{module} is chosen, but it isn't in the plugins folder. Choose another."
+  dotnet_host_missing:
+    en: "VRCFT modules need the .NET host, which isn't installed. Reinstall to get it."
+  try_again:
+    en: Try again
+  load_again:
+    en: Load it again
+  change:
+    en: Change
+  change_tooltip:
+    en: Choose the module on the Modules page
+  restart_to_apply:
+    en: Restart to apply your changes
+  restart_to_apply_detail:
+    en: They're saved, and used from the next start.
+  revert:
+    en: Revert
+  revert_tooltip:
+    en: "Go back to the settings in use"
+  restart_now:
+    en: Restart now
+  restart_now_tooltip:
+    en: "Tracking stops for a few seconds while it restarts"
+  start_to_change:
+    en: "Start tracking to change settings here, or edit config.json yourself."
+  reading:
+    en: Reading the settings…
+  send_to:
+    en: Sends tracking to
+  send_to_description:
+    en: VRChat is found by itself.
+  another_device:
+    en: VRChat on another device
+  another_device_hint:
+    en: "The address of the PC or headset VRChat runs on. It's found there the same way."
+  use_this_pc:
+    en: Use this PC
+  discovery_not_running:
+    en: Shows once tracking is running
+  discovery_looking:
+    en: Looking for VRChat, with OSC on
+  discovery_found:
+    en: "Found VRChat · sending to %{address}"
+  discovery_face_tracking:
+    en: "Found VRChat · sending to %{address} · your avatar has face tracking"
+  discovery_no_face_tracking:
+    en: "Found VRChat · sending to %{address} · this avatar has no face tracking"
+  discovery_how:
+    en: VRChat announces itself on the network with OSCQuery, which gives the port to send to.
+  frame_rate:
+    en: Frame rate
+  frame_rate_description:
+    en: How often tracking is sent.
+  tracking_module:
+    en: Tracking module
+  tracking_module_description:
+    en: Where face tracking comes from.

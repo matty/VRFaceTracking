@@ -3,23 +3,59 @@ members = [
     "crates/api",
     "crates/common",
     "crates/daemon",
+    "crates/extension",
     "crates/gui",
+    "crates/gui-core",
+    "crates/protocol",
+    "crates/tongue",
     "crates/udp-rcv",
     "modules/vd_module",
     "modules/test_logger",
+    "extensions/quest-pro/daemon",
+    "extensions/quest-pro/gui",
+    "extensions/quest-pro/protocol",
 ]
 resolver = "2"
 
 [workspace.package]
+# Not the version builds report: that's CalVer, stamped in from the release
+# tags by build-support/version.rs.
 version = "0.1.0"
 edition = "2021"
+# The desktop app updates itself from this repository's GitHub releases.
+repository = "https://github.com/matty/VRFaceTracking"
 
 [workspace.dependencies]
 vrft-api = { path = "crates/api" }
 vrft-common = { path = "crates/common" }
+vrft-tongue = { path = "crates/tongue" }
+vrft-extension = { path = "crates/extension" }
+vrft-protocol = { path = "crates/protocol" }
+vrft-quest-pro-protocol = { path = "extensions/quest-pro/protocol" }
+vrft-quest-pro-daemon = { path = "extensions/quest-pro/daemon" }
+vrft-gui-core = { path = "crates/gui-core" }
+vrft-quest-pro-gui = { path = "extensions/quest-pro/gui" }
 anyhow = "1.0"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 glam = "0.31"
 windows = "0.62"
+axum = "0.8"
+tokio = { version = "1.49", features = ["full"] }
+ureq = { version = "3.1", features = ["json"] }
+# Cargo.lock is not committed, and GPUI's API changes between snapshots, so
+# pin the exact release the desktop app was written against.
+gpui-kit = "=0.6.6"
+# The desktop app's translations. gpui-component uses it for its own widget
+# text, so one locale covers both.
+rust-i18n = "4"
+sys-locale = "0.3"
+
+# The tongue model (Burn) is unusably slow unoptimised, and dev builds run
+# live tracking, so optimise dependencies and vrft-tongue even in debug.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.vrft-tongue]
+opt-level = 3

@@ -1,0 +1,21 @@
+[package]
+name = "vrft-tongue"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "vrft_tongue"
+path = "src/lib.rs"
+
+[dependencies]
+burn = { version = "=0.21.0", default-features = false, features = ["std", "wgpu", "flex", "simd", "autodiff", "fusion", "autotune"] }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+vrft-quest-pro-protocol = { workspace = true }
+safetensors = "0.7"
+rand = "0.9"
+rayon = "1"
+burn-flex = { version = "=0.21.0", features = ["rayon", "simd"] }
+burn-store = { version = "=0.21.0", default-features = false, features = ["std", "pytorch"] }

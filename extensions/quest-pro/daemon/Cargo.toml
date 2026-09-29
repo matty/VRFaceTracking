@@ -1,0 +1,26 @@
+[package]
+name = "vrft-quest-pro-daemon"
+version.workspace = true
+edition.workspace = true
+description = "Quest Pro support for vrft_d: camera stream, eye gaze and tongue tracking"
+
+[lib]
+name = "vrft_quest_pro_daemon"
+
+[dependencies]
+vrft-api = { workspace = true }
+vrft-extension = { workspace = true }
+vrft-tongue = { workspace = true }
+vrft-quest-pro-protocol = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+log = { workspace = true }
+mdns-sd = "0.17"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+ureq = { workspace = true }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tokio = { workspace = true }

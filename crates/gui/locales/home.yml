@@ -1,0 +1,78 @@
+_version: 2
+home:
+  end_vrft:
+    en: "Force stop"
+  restart:
+    en: Restart
+  restart_tooltip:
+    en: Tracking stops for a few seconds
+  keep_tracking:
+    en: Keep tracking
+  stop_tracking:
+    en: Stop tracking
+  stop:
+    en: Stop
+  details:
+    en: Details
+  copy_details:
+    en: Copy details
+  module_not_chosen:
+    en: Not chosen
+  output_on_this_pc:
+    en: "%{output} on this PC · %{address}:%{port}"
+  output_at:
+    en: "%{output} · %{address}:%{port}"
+  output_unknown:
+    en: "Shows once tracking is running"
+  vrchat_waiting:
+    en: "Waiting for VRChat, with OSC on"
+  vrchat_found:
+    en: VRChat found
+  vrchat_face_tracking:
+    en: "VRChat · Your avatar has face tracking"
+  vrchat_no_face_tracking:
+    en: "VRChat · This avatar has no face tracking"
+  at_address:
+    en: "%{text} · %{address}"
+  headset_step:
+    en: "Stream to this PC from %{app} with face tracking on. This updates by itself once tracking arrives."
+  headset_step_no_module:
+    en: "Stream to this PC from your headset's app with face tracking on. This updates by itself once tracking arrives."
+  tracking_module:
+    en: Tracking module
+  where_tracking_goes:
+    en: Sends tracking to
+  put_headset_on:
+    en: Put your headset on
+  smoothing:
+    en: Smoothing
+  smoothing_off:
+    en: "Off"
+  output:
+    en: Output
+  rate_per_second:
+    en: "%{rate}/s"
+  add_on_section:
+    en: "%{name} add-on"
+  module_failed:
+    en: "The tracking module couldn't load, so nothing reaches VRChat."
+  choose_module:
+    en: Choose a module
+  open_log:
+    en: Open log
+  steps_done:
+    en: "%{done} of %{total}"
+  getting_started:
+    en: Getting Started
+  generic_udp:
+    en: Generic UDP
+  state_live:
+    en: LIVE
+  state_working:
+    en: WORKING
+  state_needs_you:
+    en: NEEDS YOU
+  state_stopped:
+    en: STOPPED
+  change:
+    en: Change

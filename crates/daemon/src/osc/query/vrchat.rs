@@ -1,16 +1,24 @@
 use axum::{extract::State, routing::get, Json, Router};
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
 use vrft_common::UnifiedTrackingData;
 
 #[derive(Clone)]
 struct VRChatState {
     data: Arc<RwLock<UnifiedTrackingData>>,
+    osc_ip: IpAddr,
     osc_port: u16,
 }
 
-pub fn get_router(data: Arc<RwLock<UnifiedTrackingData>>, osc_port: u16) -> Router {
-    let state = VRChatState { data, osc_port };
+/// `osc_ip` is the address of this PC VRChat can reach, where it sends
+/// avatar changes back to.
+pub fn get_router(data: Arc<RwLock<UnifiedTrackingData>>, osc_ip: IpAddr, osc_port: u16) -> Router {
+    let state = VRChatState {
+        data,
+        osc_ip,
+        osc_port,
+    };
 
     Router::new()
         .route("/", get(root_handler))
@@ -23,7 +31,7 @@ async fn root_handler(State(state): State<VRChatState>) -> Json<Value> {
     Json(json!({
         "DESCRIPTION": "VRFaceTracking",
         "OSC_PORT": state.osc_port,
-        "OSC_IP": "127.0.0.1"
+        "OSC_IP": state.osc_ip.to_string()
     }))
 }
 
@@ -31,7 +39,7 @@ async fn host_info_handler(State(state): State<VRChatState>) -> Json<Value> {
     Json(json!({
         "name": "VRFaceTracking",
         "osc_port": state.osc_port,
-        "osc_ip": "127.0.0.1",
+        "osc_ip": state.osc_ip.to_string(),
         "extensions": {
             "ACCESS": true,
             "CLIPMODE": false,

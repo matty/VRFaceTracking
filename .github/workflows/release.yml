@@ -1,8 +1,11 @@
 name: Release
 
-# Every push to main republishes the rolling `dev` prerelease. Running this
-# workflow by hand on main publishes a CalVer release, vYYYY.M.N. The headset
-# app is versioned and released separately, by release-apk.yml.
+# Every push to main republishes the rolling `dev` prerelease, a dev build
+# versioned YYYY.M.N-dev.C. Running this workflow by hand on main publishes a
+# CalVer release, vYYYY.M.N. Each carries zips and a Velopack installer: the
+# installed app updates itself from the `stable` channel (releases) or the
+# `dev` channel (the dev prerelease). The headset app is versioned and
+# released separately, by release-apk.yml.
 on:
   push:
     branches: [ "main" ]
@@ -40,27 +43,28 @@ jobs:
               exit 1
             fi
             version=$(bash .github/scripts/next-calver.sh v)
-            # crates/daemon/build.rs stamps this into vrft_d.
-            echo "VRFT_VERSION=$version" >> "$GITHUB_ENV"
+            channel=stable
+            title=VRFaceTracking
           else
-            # The same description build.rs stamps into a dev build.
-            described=$(git describe --tags --match 'v[0-9]*' --always)
-            case $described in
-              v*) version=${described#v} ;;
-              *) version=dev-$described ;;
-            esac
+            version=$(bash .github/scripts/next-calver.sh v dev)
+            channel=dev
+            title="VRFaceTracking (Dev)"
           fi
+          # build-support/version.rs stamps this into vrft_d and vrft_gui.
+          echo "VRFT_VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
 
       - name: Find headset app
         id: headset
         shell: bash
         run: |
-          # The headset stream protocols this build reads, from quest_pro_camera.rs.
-          range=$(sed -n 's/^const PROTOCOLS: RangeInclusive<u32> = \([0-9]*\)\.\.=\([0-9]*\);$/\1 \2/p' crates/daemon/src/quest_pro_camera.rs)
+          # The headset stream protocols this build reads, from the Quest Pro extension's camera.rs.
+          range=$(sed -n 's/^const PROTOCOLS: RangeInclusive<u32> = \([0-9]*\)\.\.=\([0-9]*\);$/\1 \2/p' extensions/quest-pro/daemon/src/camera.rs)
           read -r low high <<<"$range"
           if [ -z "$high" ]; then
-            echo "::error::Couldn't find PROTOCOLS in crates/daemon/src/quest_pro_camera.rs"
+            echo "::error::Couldn't find PROTOCOLS in extensions/quest-pro/daemon/src/camera.rs"
             exit 1
           fi
           protocols=$low
@@ -121,7 +125,6 @@ jobs:
 
             # vrft_gui starts the vrft_d beside it.
             Copy-Item "$release_dir/vrft_d.exe", "$release_dir/vrft_gui.exe" "$name/"
-            Copy-Item "qpro_model.py", "tongue_inference.py", "tongue_runtime_check.py", "setup-quest-pro-tongue.ps1", "prepare_vrft_tongue.py", "train_vrft_tongue.py" "$name/"
             Copy-Item "docs/guide/tongue-training.md", "docs/guide/quest-pro-eye-tracking.md" "$name/"
             New-Item -ItemType Directory -Force -Path "$name/models/quest-pro" | Out-Null
             Copy-Item "models/quest-pro/qpro-independent-visual-axis-v2.json" "$name/models/quest-pro/"
@@ -158,23 +161,66 @@ jobs:
           Make-Package "vrft_d-x86_64-windows-std"           "vd_module.dll"                   $false
           Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "VirtualDesktop.FaceTracking.dll" $true
 
+          # The installer holds the std package plus the .NET host, so VRCFT
+          # modules work too.
+          Copy-Item "vrft_d-x86_64-windows-std" "installer" -Recurse
+          New-Item -ItemType Directory -Force -Path "installer/runtime" | Out-Null
+          Copy-Item "dotnet/publish/VrcftRuntime.exe" "installer/runtime/"
+
+      - name: Write release notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          HEADSET_APP: ${{ steps.headset.outputs.line }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            {
+              echo "$HEADSET_APP"
+              echo
+              bash .github/scripts/release-notes.sh v ':(exclude)android'
+            } > notes.md
+          else
+            {
+              echo "Latest build from \`main\`, for testing only. It reports version $VERSION, and the installed app updates itself from each new dev build."
+              echo
+              echo "$HEADSET_APP"
+              echo
+              echo "Commit: $GITHUB_SHA"
+            } > notes.md
+          fi
+
+      - name: Pack installer
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+          TITLE: ${{ steps.version.outputs.title }}
+        run: |
+          # Keep vpk in step with the velopack crate in crates/gui/Cargo.toml.
+          dotnet tool install -g vpk --version 1.2.161
+          # Every update downloads the full package: the rolling dev release
+          # keeps only its newest build, so there's nothing to make deltas from.
+          vpk pack --packId VRFaceTracking --packVersion "$VERSION" --packDir installer \
+            --mainExe vrft_gui.exe --packTitle "$TITLE" --packAuthors VRFaceTracking --runtime win-x64 \
+            --icon crates/gui/resources/app.ico --channel "$CHANNEL" --delta None \
+            --releaseNotes notes.md --outputDir velopack
+          ls velopack
+
       - name: Publish Dev Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          name: "Dev Build"
-          prerelease: true
-          make_latest: false
-          body: |
-            Latest build from `main`, for testing only. It reports version ${{ steps.version.outputs.version }}.
-
-            ${{ steps.headset.outputs.line }}
-
-            Commit: ${{ github.sha }}
-          files: |
-            vrft_d-x86_64-windows-std.zip
-            vrft_d-x86_64-windows-vrcft-runtime.zip
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Recreated rather than edited, so the tag moves to this commit and
+          # the last build's installer packages go with it.
+          gh release delete dev --cleanup-tag --yes || true
+          gh release create dev --target "$GITHUB_SHA" --title "Dev Build ($VERSION)" \
+            --notes-file notes.md --prerelease --latest=false \
+            vrft_d-x86_64-windows-std.zip vrft_d-x86_64-windows-vrcft-runtime.zip \
+            velopack/VRFaceTracking-dev-Setup.exe velopack/VRFaceTracking-dev-Portable.zip \
+            velopack/*.nupkg velopack/releases.dev.json
 
       - name: Publish Release
         if: github.event_name == 'workflow_dispatch'
@@ -182,13 +228,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          HEADSET_APP: ${{ steps.headset.outputs.line }}
         run: |
-          {
-            echo "$HEADSET_APP"
-            echo
-            bash .github/scripts/release-notes.sh v ':(exclude)android'
-          } > notes.md
           gh release create "v$VERSION" --target "$GITHUB_SHA" --title "VRFT $VERSION" \
             --notes-file notes.md --latest \
-            vrft_d-x86_64-windows-std.zip vrft_d-x86_64-windows-vrcft-runtime.zip
+            vrft_d-x86_64-windows-std.zip vrft_d-x86_64-windows-vrcft-runtime.zip \
+            velopack/VRFaceTracking-stable-Setup.exe velopack/VRFaceTracking-stable-Portable.zip \
+            velopack/*.nupkg velopack/releases.stable.json

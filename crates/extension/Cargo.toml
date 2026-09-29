@@ -1,0 +1,16 @@
+[package]
+name = "vrft-extension"
+version.workspace = true
+edition.workspace = true
+description = "The API daemon extensions, such as Quest Pro support, are built against"
+
+[lib]
+name = "vrft_extension"
+
+[dependencies]
+vrft-api = { workspace = true }
+vrft-protocol = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

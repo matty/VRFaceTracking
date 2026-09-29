@@ -1,0 +1,100 @@
+_version: 2
+tracking:
+  not_a_number_zero_or_more:
+    en: '"%{text}" isn''t a %{name}. Use a number 0 or more, or leave it empty.'
+  not_a_number_above_zero:
+    en: '"%{text}" isn''t a %{name}. Use a number above 0, or leave it empty.'
+  minimum_cutoff_name:
+    en: minimum cutoff
+  beta_name:
+    en: beta
+  derivative_cutoff_name:
+    en: derivative cutoff
+  auto:
+    en: Auto
+  read_failed:
+    en: Couldn't read the settings
+  save_failed:
+    en: Couldn't save
+  tune_tracking:
+    en: Tune tracking
+  tune_tracking_hint:
+    en: Turns on smoothing, corrections and expression ranges.
+  amount:
+    en: Amount
+  "off":
+    en: "Off"
+  quicker:
+    en: Quicker
+  steadier:
+    en: Steadier
+  smooth_head:
+    en: Smooth head movement
+  smooth_head_hint:
+    en: Smooths head movement too.
+  fine_tuning:
+    en: Fine-tuning
+  fine_tuning_hint:
+    en: "For when the amount isn't enough. Leave cutoff and beta empty to use the amount's values."
+  minimum_cutoff:
+    en: Minimum cutoff (Hz)
+  beta:
+    en: Beta
+  derivative_cutoff:
+    en: Derivative cutoff (Hz)
+  corrections:
+    en: Corrections
+  corrections_hint:
+    en: Fixes shapes that clash.
+  mouth_closed_clamp:
+    en: "Stop lips passing through each other"
+  mouth_closed_clamp_hint:
+    en: "Limits mouth closed to how far the jaw is open."
+  lip_suck_limiter:
+    en: Limit lip suck
+  lip_suck_limiter_hint:
+    en: Eases lip suck as the lip opens.
+  eye_look_symmetrize:
+    en: Match vertical gaze
+  eye_look_symmetrize_hint:
+    en: Keeps both eyes level.
+  eyelid_blend:
+    en: "Match left and right eyes and brows"
+  eyelid_blend_hint:
+    en: How much each side follows the other. At 100% both move together.
+  head:
+    en: Head
+  face:
+    en: Face
+  expression_ranges:
+    en: Expression ranges
+  expression_ranges_hint:
+    en: "Applies the range set for each expression."
+  use_full_range:
+    en: Use the full range
+  title:
+    en: "Tracking Settings"
+  description:
+    en: How tracking is tuned before it is sent.
+  start_to_change:
+    en: "Start tracking to change these settings here, or edit config.json yourself."
+  reading:
+    en: Reading the settings…
+  tuning_group:
+    en: Tuning
+  tuning_group_hint:
+    en: "Smoothing, corrections and expression ranges."
+  smoothing_group:
+    en: Smoothing
+  smoothing_group_hint:
+    en: Steadier, but slower to follow your face.
+  too_old:
+    en: "This version is too old for corrections and expression ranges. Update to change them here."
+  corrections_group:
+    en: Corrections
+  corrections_group_hint:
+    en: Fixes shapes that clash, and links left and right.
+  expression_ranges_group:
+    en: Expression ranges
+  expression_ranges_group_hint:
+    en: Sets how weak or strong each expression can be.

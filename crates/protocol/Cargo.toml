@@ -1,0 +1,12 @@
+[package]
+name = "vrft-protocol"
+version.workspace = true
+edition.workspace = true
+description = "The daemon's local API as types, shared by vrft_d and the desktop app"
+
+[lib]
+name = "vrft_protocol"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,3 +1,4 @@
+use crate::osc::query::target::VrchatTarget;
 use crate::osc::query::vrchat;
 use crate::osc::vrchat::VRChatOsc;
 use crate::strategies::OscContext;
@@ -13,13 +14,15 @@ use std::sync::mpsc::Receiver;
 
 impl VRChatOscStrategy {
     pub fn new(
-        target_addr: &str,
+        target: VrchatTarget,
         receive_port: u16,
         context: OscContext,
     ) -> (Self, Router, Option<Receiver<String>>) {
-        let inner = VRChatOsc::new(target_addr, receive_port);
-        // Advertise the port we actually listen on, not a fixed default.
-        let router = vrchat::get_router(context.tracking_data, receive_port);
+        let reply_ip = target.reply_ip();
+        let inner = VRChatOsc::new(target, receive_port);
+        // Advertise the address and port we actually listen on, not fixed
+        // defaults.
+        let router = vrchat::get_router(context.tracking_data, reply_ip, inner.receive_port());
 
         let change_rx = inner.change_rx.lock().unwrap().take();
 

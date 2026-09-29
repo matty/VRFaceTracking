@@ -1,0 +1,82 @@
+_version: 2
+modules:
+  vrcft_module:
+    en: "VRCFT module"
+  native_module:
+    en: "Native module"
+  needs_dotnet_host:
+    en: "VRCFT modules need the .NET host, which isn't installed. Reinstall to get it."
+  search_placeholder:
+    en: "Search modules"
+  read_failed:
+    en: "Couldn't read the modules"
+  removed:
+    en: "Removed %{name}."
+  chosen_extensions_only:
+    en: "%{name} is chosen. It loads when tracking runs with a module."
+  switching_to:
+    en: "Switching to %{name}…"
+  use:
+    en: "Use"
+  use_tooltip:
+    en: "Switch to this module. It loads straight away."
+  update_to_version:
+    en: "Update to %{version}"
+  downloading_percent:
+    en: "Downloading %{percent}%"
+  downloading:
+    en: "Downloading…"
+  installing:
+    en: "Installing…"
+  install_failed:
+    en: "Couldn't install it: %{reason}"
+  comes_with_vrft:
+    en: "comes with VRFaceTracking"
+  remove:
+    en: "Remove"
+  open_page:
+    en: "Open the module's page"
+  update_downloaded:
+    en: "An update is downloaded. Restart tracking to finish installing it."
+  restart_vrft:
+    en: "Restart tracking"
+  try_again:
+    en: "Try again"
+  remove_confirm_hint:
+    en: "Press Remove again to delete its files from the plugins folder."
+  in_use:
+    en: "In use"
+  installed:
+    en: "Installed"
+  install:
+    en: "Install"
+  downloads:
+    en: "%{count} downloads"
+  by_author:
+    en: "· by %{author}"
+  missing_dotnet_host:
+    en: "VRCFT modules need the .NET host, which isn't installed. Reinstall to get it."
+  none_installed:
+    en: "No tracking modules are installed. Install one from Get modules."
+  fetch_again:
+    en: "Load the list again"
+  registry_failed:
+    en: "Couldn't load the module list: %{error}"
+  fetching_registry:
+    en: "Loading available modules…"
+  no_matches:
+    en: "No modules match that search."
+  registry_footer:
+    en: "From VRCFT's module list. They run here, so VRCFT isn't needed. Modules come from their authors: install only ones you trust."
+  get_modules:
+    en: "Get modules"
+  title:
+    en: "Modules"
+  description:
+    en: "Where face tracking comes from. Switching is instant."
+  add_ons:
+    en: "Add-ons"
+  start_to_manage:
+    en: "Start tracking to install and manage modules."
+  reading:
+    en: "Reading the modules…"

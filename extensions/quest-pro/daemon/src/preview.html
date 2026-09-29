@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quest Pro face tracking</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0c; --panel: #111113; --raised: #18181b; --hover: #212125; --screen: #000;
+    --line: #222226; --line-strong: #303036; --track: #26262b;
+    --text: #ededee; --muted: #9b9ba4; --faint: #6b6b74;
+    --button: #ededee; --button-hover: #fff; --button-ink: #0b0b0c;
+    --accent: #5b8ef5;
+    --ok: #4bb070; --ok-soft: rgba(75, 176, 112, .1); --ok-edge: rgba(75, 176, 112, .28); --ok-text: #a3dcb6;
+    --warn: #d9a441; --warn-soft: rgba(217, 164, 65, .1); --warn-edge: rgba(217, 164, 65, .28); --warn-text: #ecca8c;
+    --bad: #e5675a; --bad-soft: rgba(229, 103, 90, .1); --bad-edge: rgba(229, 103, 90, .32); --bad-text: #f4b2aa;
+    --rec: #ef4444; --rec-soft: rgba(239, 68, 68, .14); --rec-text: #fca5a5;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font: 15px/1.5 var(--font); color: var(--text); background: var(--bg);
+    min-height: 100%;
+  }
+  body { max-width: 1280px; margin: 0 auto; padding: 24px 16px 28px; background: var(--bg); }
+  h1, h2, h3 { margin: 0; line-height: 1.25; }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .hint { color: var(--muted); font-size: .85rem; margin: 8px 0 0; }
+  .hint:empty { display: none; }
+  code { font-size: .86em; background: var(--raised); padding: 1px 5px; border-radius: 4px; }
+  [hidden] { display: none !important; }
+  .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Header, status and tabs */
+  .app-head { display: flex; align-items: center; justify-content: space-between; gap: 14px 24px; flex-wrap: wrap; padding-bottom: 20px; }
+  h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: -.01em; }
+  .brand-sub { margin: 2px 0 0; font-size: .82rem; color: var(--faint); }
+  .chips { display: flex; gap: 6px 20px; flex-wrap: wrap; }
+  .chip { display: inline-block; max-width: 280px; color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; vertical-align: 2px; background: var(--faint); }
+  .chip.ok { color: var(--text); } .chip.ok::before { background: var(--ok); }
+  .chip.warn::before { background: var(--warn); }
+  .chip.bad { color: var(--bad-text); } .chip.bad::before { background: var(--bad); }
+  .tabs { display: flex; gap: 28px; border-bottom: 1px solid var(--line); margin-bottom: 24px; overflow-x: auto; }
+  .tabs button { min-height: 0; background: none; border: 0; border-bottom: 1px solid transparent; border-radius: 0; margin-bottom: -1px;
+    color: var(--muted); padding: 8px 0 12px; font-size: .92rem; font-weight: 500; }
+  .tabs button:hover:not(:disabled) { background: none; color: var(--text); }
+  .tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--text); }
+
+  /* Cards and layout */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card + .card { margin-top: 16px; }
+  .card-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+  .card-title { flex: 1; min-width: 0; }
+  .card-title h2 { font-size: 1rem; font-weight: 600; }
+  .card-title p { margin: 2px 0 0; color: var(--muted); font-size: .87rem; }
+  .step-num { flex: none; display: grid; place-items: center; width: 22px; height: 22px; margin-top: -2px; border: 1px solid var(--line-strong); border-radius: 6px;
+    color: var(--muted); font-weight: 600; font-size: .76rem; font-variant-numeric: tabular-nums; }
+  .panel { border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  .eyebrow, .panel h3 { margin: 0 0 10px; font-size: .8rem; font-weight: 500; color: var(--muted); }
+  .tongue-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: start; }
+  .steps { display: grid; gap: 16px; }
+  .steps .card + .card { margin-top: 0; }
+  @media (max-width: 960px) { .tongue-layout { grid-template-columns: minmax(0, 1fr); } }
+  @media (min-width: 961px) { .viewer { position: sticky; top: 16px; } }
+
+  /* Camera screens */
+  canvas { display: block; width: 100%; background: var(--screen); }
+  .screen { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--screen); }
+  #feed, #eye-feed { image-rendering: pixelated; aspect-ratio: 2 / 1; }
+  #vergence { aspect-ratio: 2 / 1; }
+  .screen-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    padding: 16px; text-align: center; background: rgba(0, 0, 0, .84); color: var(--muted); font-size: .85rem; }
+  .screen-overlay strong { color: var(--text); font-size: .95rem; font-weight: 600; }
+  .screen-overlay .icon { width: 24px; height: 24px; color: var(--faint); margin-bottom: 6px; }
+  .live-badge { position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px;
+    border-radius: 6px; background: rgba(0, 0, 0, .6); color: var(--text); font-size: .72rem; font-weight: 600; }
+  .live-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+
+  /* Buttons and inputs */
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 6px 14px;
+    border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--text);
+    font: inherit; font-size: .88rem; font-weight: 500; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; }
+  button:hover:not(:disabled) { background: var(--hover); border-color: #3d3d44; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--button); border-color: var(--button); color: var(--button-ink); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--button-hover); border-color: var(--button-hover); }
+  button.primary:disabled { opacity: 1; background: var(--raised); border-color: var(--line-strong); color: var(--faint); }
+  button.big { min-height: 40px; padding: 8px 18px; font-size: .92rem; }
+  button.danger { background: transparent; border-color: var(--bad-edge); color: var(--bad-text); }
+  button.danger:hover:not(:disabled) { background: var(--bad-soft); border-color: var(--bad); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover:not(:disabled) { background: var(--hover); border-color: transparent; color: var(--text); }
+  button.ghost.danger:hover:not(:disabled) { background: var(--bad-soft); color: var(--bad-text); }
+  button.small { min-height: 30px; padding: 4px 10px; border-radius: 6px; font-size: .82rem; }
+  button.icon-only { width: 30px; padding: 0; }
+  button.icon-only .icon { width: 16px; height: 16px; }
+  button.link { min-height: 0; padding: 4px 6px; background: none; border: 0; color: var(--muted); font-size: .86rem; text-decoration: underline; text-underline-offset: 3px; }
+  button.link:hover:not(:disabled) { background: none; color: var(--text); }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input:not([type=checkbox]):not([type=range]), select { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px;
+    background-color: var(--raised); color: var(--text); font: inherit; font-size: .9rem; }
+  select { appearance: none; max-width: 100%; padding-right: 34px; cursor: pointer; background-repeat: no-repeat; background-position: right 11px center;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b9ba4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+  select:disabled { opacity: .55; cursor: not-allowed; }
+  select option { background: var(--panel); }
+  input[type=checkbox] { width: 16px; height: 16px; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+  input[type=range] { margin: 0; accent-color: var(--accent); cursor: pointer; }
+  label { display: inline-flex; gap: 10px; align-items: center; cursor: pointer; }
+  /* Toggle switch: <label class="switch"><input type="checkbox"> Text</label> */
+  .switch input { appearance: none; position: relative; width: 34px; height: 20px; border-radius: 999px; background: var(--line-strong); transition: background-color .15s; }
+  .switch input::before { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #e4e4e7; transition: transform .15s; }
+  .switch input:checked { background: var(--accent); }
+  .switch input:checked::before { transform: translateX(14px); background: #fff; }
+  .actions { display: flex; gap: 12px 16px; flex-wrap: wrap; align-items: center; margin: 16px 0 0; }
+  progress { appearance: none; display: block; width: 100%; height: 6px; border: 0; border-radius: 999px; overflow: hidden; background: var(--track); color: var(--accent); }
+  progress::-webkit-progress-bar { background: var(--track); border-radius: 999px; }
+  progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width .3s ease; }
+  progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+  details.more { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+  details summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; color: var(--muted); font-weight: 500; font-size: .88rem; user-select: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: ''; width: 6px; height: 6px; margin: 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
+  details[open] summary::before { transform: rotate(45deg); }
+  details summary:hover { color: var(--text); }
+  details summary small { font-size: .8rem; font-weight: 400; color: var(--faint); }
+  details[open] summary { margin-bottom: 10px; }
+
+  /* Notices */
+  .notice { margin: 14px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); font-size: .88rem; }
+  .notice.ok { background: var(--ok-soft); border-color: var(--ok-edge); color: var(--ok-text); }
+  .notice.warn { background: var(--warn-soft); border-color: var(--warn-edge); color: var(--warn-text); }
+  .notice.bad { background: var(--bad-soft); border-color: var(--bad-edge); color: var(--bad-text); }
+  .notice strong { display: block; color: inherit; font-weight: 600; }
+  .notice p { margin: 4px 0 0; }
+  .blockers { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 8px; }
+  .blockers li { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--warn-edge); border-radius: 8px;
+    background: var(--warn-soft); color: var(--warn-text); font-size: .88rem; font-weight: 500; }
+  .blockers .icon { width: 16px; height: 16px; margin-top: 3px; color: var(--warn); }
+  .blockers li span { display: block; color: var(--muted); font-size: .85rem; font-weight: 400; }
+
+  /* Step 1: record */
+  .facts { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; }
+  .facts li { padding: 10px 14px; min-width: 0; }
+  .facts li + li { border-left: 1px solid var(--line); }
+  .facts strong { display: block; font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .facts span { color: var(--muted); font-size: .8rem; }
+  @media (max-width: 560px) {
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .facts li:nth-child(3) { border-left: 0; } .facts li:nth-child(n+3) { border-top: 1px solid var(--line); }
+  }
+  .option-list { display: grid; margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; }
+  .option { display: flex; align-items: center; gap: 14px; padding: 12px 14px; }
+  .option + .option { border-top: 1px solid var(--line); }
+  .option > div { flex: 1; min-width: 0; }
+  .option strong { display: block; font-size: .9rem; font-weight: 600; }
+  .option span { display: block; color: var(--muted); font-size: .84rem; }
+  .prompt-panel { padding: 16px 18px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--raised); transition: border-color .2s; }
+  .prompt-panel:has(.phase.ready) { border-color: var(--warn-edge); }
+  .prompt-panel:has(.phase.recording) { border-color: var(--rec); }
+  .prompt-top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .86rem; font-weight: 500; }
+  .phase { display: inline-flex; align-items: center; gap: 8px; padding: 3px 10px; border-radius: 6px; font-size: .84rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .phase.ready { background: var(--warn-soft); color: var(--warn-text); }
+  .phase.recording { background: var(--rec-soft); color: var(--rec-text); }
+  .phase.recording::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--rec); animation: pulse 1.2s ease-in-out infinite; }
+  .phase.paused { background: var(--hover); color: var(--muted); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  @media (prefers-reduced-motion: reduce) { .phase.recording::before { animation: none; } }
+  #capture-progress { height: 3px; margin-top: 12px; }
+  .prompt-pose { margin: 18px 0 6px; font-size: 2rem; font-weight: 700; line-height: 1.15; letter-spacing: -.02em; }
+  .prompt-instruction { margin-bottom: 16px; font-size: 1.1rem; color: var(--muted); }
+  .pose-timer { position: relative; display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--track); }
+  .pose-timer-ready { background: rgba(217, 164, 65, .3); } .pose-timer-record { flex: 1; background: rgba(239, 68, 68, .3); }
+  .pose-timer-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, .55); }
+  .timer-legend { display: flex; justify-content: space-between; margin-top: 6px; font-size: .76rem; color: var(--faint); }
+  .follow-stage { display: grid; place-items: center; margin: 0 0 16px; }
+  #follow-pad { width: min(100%, 300px); height: auto; aspect-ratio: 1; background: none; }
+  .prompt-next { margin: 12px 0 0; color: var(--muted); font-size: .88rem; }
+
+  /* Step 2: train */
+  .recordings { display: flex; flex-direction: column; }
+  .recording { border: 1px solid var(--line); }
+  .recording + .recording { border-top: 0; }
+  .recording:first-child { border-radius: 10px 10px 0 0; } .recording:last-child { border-radius: 0 0 10px 10px; }
+  .recording:only-child { border-radius: 10px; }
+  .recording-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 10px 8px 10px 14px; }
+  .recording-pick { flex: 1 1 200px; min-width: 0; gap: 12px; }
+  .recording-title { display: block; font-size: .9rem; font-weight: 500; }
+  .recording-meta { display: block; color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+  .recording-actions { display: flex; gap: 2px; align-items: center; }
+  .recordings .empty { margin: 0; padding: 18px; border: 1px dashed var(--line-strong); border-radius: 10px; text-align: center; color: var(--muted); }
+  .tag { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: .74rem; font-weight: 600; white-space: nowrap; }
+  .tag.ok { background: var(--ok-soft); color: var(--ok-text); }
+  .tag.warn { background: var(--warn-soft); color: var(--warn-text); }
+  .tag.bad { background: var(--bad-soft); color: var(--bad-text); }
+  .pose-review { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 2px 14px 14px; }
+  .pose-tile { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+  .pose-tile label { font-size: .84rem; font-weight: 500; }
+  .pose-tile canvas { aspect-ratio: 2 / 1; border-radius: 4px; }
+  .pose-tile input[type=range] { width: 100%; }
+  .training-live { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+  .training-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  #training-message { margin: 0; font-size: .9rem; font-weight: 500; }
+  #training-percent { font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .model-row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .model-row > label { color: var(--muted); font-size: .88rem; font-weight: 500; }
+  .model-row select { flex: 1 1 240px; max-width: 380px; }
+  .options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .options-grid label { display: flex; flex-direction: column; align-items: stretch; gap: 6px; color: var(--muted); font-size: .84rem; font-weight: 500; }
+
+  /* Live tongue */
+  .live-tongue { display: grid; grid-template-columns: 160px 1fr; gap: 20px; align-items: center; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+  #tongue-pad { width: 160px; height: 160px; background: none; }
+  .tongue-state { font-size: 1.5rem; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; color: var(--faint); }
+  .tongue-state[data-state=out] { color: var(--text); } .tongue-state[data-state=in] { color: var(--muted); }
+  .meter { display: grid; grid-template-columns: max-content 1fr; gap: 10px; align-items: center; margin-top: 10px; font-size: .84rem; color: var(--muted); }
+  @media (max-width: 480px) { .live-tongue { grid-template-columns: 120px 1fr; gap: 14px; } #tongue-pad { width: 120px; height: 120px; } }
+
+  /* Eyes */
+  .callout { display: flex; gap: 14px 18px; align-items: center; flex-wrap: wrap; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+  .callout > div { flex: 1 1 280px; }
+  .callout strong { display: block; font-weight: 600; }
+  .callout .muted { font-size: .88rem; }
+  #eye-countdown { font-size: 1.3rem; font-weight: 700; color: var(--warn-text); font-variant-numeric: tabular-nums; }
+  #eye-countdown:empty { display: none; }
+  .eye-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 16px; }
+  .legend { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); font-size: .84rem; }
+  .legend span::before { content: ''; display: inline-block; width: 12px; height: 2px; margin-right: 8px; border-radius: 1px; vertical-align: 4px; }
+  .legend .left::before { background: var(--accent); } .legend .right::before { background: var(--warn); }
+
+  /* Settings and live values */
+  .field { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 8px 24px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .field > label { align-self: start; padding-top: 7px; font-weight: 500; }
+  .range-row { display: flex; align-items: center; gap: 14px; }
+  .range-row input { flex: 0 1 340px; min-width: 0; }
+  output { min-width: 44px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 6px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) { .field { grid-template-columns: minmax(0, 1fr); } .field > label { padding-top: 0; } .field select { width: 100%; } }
+  .values-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; margin: 10px 0 14px; }
+  .metrics:empty { display: none; }
+  .metric { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .metric span { color: var(--faint); font-size: .72rem; font-weight: 500; }
+  .metric strong { font-size: .92rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  #eye-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 14px 0 0; }
+  #eye-setup { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 16px 0 0; }
+  .rows { display: grid; gap: 8px; }
+  .row { display: grid; grid-template-columns: 130px minmax(80px, 1fr) 44px; gap: 10px; align-items: center; font-size: .84rem; }
+  .row > span:first-child { color: var(--muted); }
+  .number { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { position: relative; height: 6px; overflow: hidden; border-radius: 999px; background: var(--track); }
+  .bar.signed::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--faint); }
+  .fill { position: absolute; top: 0; bottom: 0; left: 0; width: 0; border-radius: 999px; background: var(--accent); }
+  .fill.negative { background: var(--warn); }
+
+  .app-foot { display: flex; align-items: center; gap: 8px; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--faint); font-size: .8rem; }
+  .app-foot .icon { width: 14px; height: 14px; }
+  @media (max-width: 520px) {
+    .card { padding: 16px; }
+    .row { grid-template-columns: 100px minmax(60px, 1fr) 40px; gap: 6px; }
+    .prompt-pose { font-size: 1.6rem; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-camera-off" viewBox="0 0 24 24"><path d="M2 2l20 20M7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16M9.5 4h5l2 3H20a2 2 0 0 1 2 2v8.3M14.1 14.1a3 3 0 1 1-4.2-4.2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+</svg>
+
+<header class="app-head">
+  <div>
+    <h1>Quest Pro face tracking</h1>
+    <p class="brand-sub">Tongue and eye tracking for VRFaceTracking</p>
+  </div>
+  <div class="chips" aria-label="Status">
+    <span id="chip-camera" class="chip">Mouth cameras</span>
+    <span id="chip-input" class="chip">Face tracking</span>
+    <span id="chip-model" class="chip">Tongue model</span>
+    <span id="chip-eyes" class="chip">Eyes</span>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button type="button" role="tab" data-tab="tongue" aria-controls="tab-tongue">Tongue</button>
+  <button type="button" role="tab" data-tab="eyes" aria-controls="tab-eyes">Eyes</button>
+  <button type="button" role="tab" data-tab="settings" aria-controls="tab-settings">Settings</button>
+</nav>
+
+<section id="tab-tongue" role="tabpanel">
+  <div class="tongue-layout">
+    <article class="card viewer">
+      <header class="card-head"><div class="card-title"><h2>Live view</h2><p>What the mouth cameras see, and what your avatar gets.</p></div></header>
+      <div class="screen">
+        <canvas id="feed" width="800" height="400" aria-label="Live mouth camera views"></canvas>
+        <span id="feed-live" class="live-badge" hidden>Live</span>
+        <div id="feed-overlay" class="screen-overlay">
+          <svg class="icon" aria-hidden="true"><use href="#i-camera-off"/></svg>
+          <strong id="feed-title">Connecting…</strong>
+          <span id="feed-state"></span>
+        </div>
+      </div>
+      <div class="live-tongue">
+        <canvas id="tongue-pad" width="300" height="300" aria-label="Tongue direction, as VRChat receives it"></canvas>
+        <div>
+          <div class="eyebrow">Your tongue</div>
+          <div id="tongue-state" class="tongue-state" role="status">—</div>
+          <div class="meter"><span>How far out</span><div class="bar"><div id="tongue-out-fill" class="fill"></div></div></div>
+          <p class="hint">To check a new model, stick your tongue out and move it around. The dot should follow.</p>
+        </div>
+      </div>
+    </article>
+
+    <div class="steps">
+      <article class="card" id="step-record">
+        <header class="card-head"><span class="step-num">1</span><div class="card-title"><h2>Record</h2><p>Put the headset on and keep this page in view.</p></div></header>
+        <div id="record-idle">
+          <ul class="facts">
+            <li><strong>14</strong><span>poses</span></li>
+            <li><strong>4 s</strong><span>to get ready</span></li>
+            <li><strong>4 s</strong><span>holding each</span></li>
+            <li><strong>~2 min</strong><span>in total</span></li>
+          </ul>
+          <p class="hint">Do what each prompt says, such as "half out", rather than going to the extreme. Keep your tongue where both cameras can see it.</p>
+          <ul id="record-blockers" class="blockers"></ul>
+          <div class="actions">
+            <button id="start-core" type="button" class="primary big">Start recording</button>
+            <label class="switch"><input id="voice" type="checkbox"> Read prompts aloud</label>
+          </div>
+          <p id="record-result" class="notice" role="status" hidden></p>
+          <details class="more">
+            <summary>Extra recordings <small>optional</small></summary>
+            <p class="hint">Use these if something still tracks badly after training. They add to your basic recording rather than replace it.</p>
+            <div class="option-list">
+              <div class="option"><div><strong>Follow the dot</strong><span>Follow a moving dot with the tip of your tongue, with short tongue-in rests between. It covers every direction, including the ones in between, so it's the best way to keep adding data. About 2½ min.</span></div><button id="start-follow" type="button" aria-label="Record follow the dot">Record</button></div>
+              <div class="option"><div><strong>Direction poses</strong><span>Halfway and diagonal directions. Use this if left–right or up–down jumps straight to the extremes. About 2 min.</span></div><button id="start-direction" type="button" aria-label="Record direction poses">Record</button></div>
+              <div class="option"><div><strong>Expression poses</strong><span>Smiles, vowels and puffed cheeks, mostly with your tongue in. Use this if the tongue shows when it shouldn't. About 2 min.</span></div><button id="start-negatives" type="button" aria-label="Record expression poses">Record</button></div>
+            </div>
+          </details>
+        </div>
+        <div id="record-active" class="prompt-panel" hidden>
+          <div class="prompt-top"><span id="prompt-count">Pose 1 of 14</span><span id="prompt-phase" class="phase ready">Get ready</span></div>
+          <progress id="capture-progress" max="14" value="0" aria-label="Recording progress"></progress>
+          <div id="prompt-pose" class="prompt-pose" aria-live="polite">—</div>
+          <div id="prompt-instruction" class="prompt-instruction"></div>
+          <div id="follow-stage" class="follow-stage" hidden>
+            <canvas id="follow-pad" width="400" height="400" aria-label="The dot to follow with your tongue"></canvas>
+          </div>
+          <div class="pose-timer" aria-hidden="true"><div id="pose-timer-ready" class="pose-timer-ready" style="flex-basis:50%"></div><div class="pose-timer-record"></div><div id="pose-timer-fill" class="pose-timer-fill"></div></div>
+          <div class="timer-legend"><span>Get ready</span><span>Recording</span></div>
+          <p id="prompt-next" class="prompt-next"></p>
+          <div class="actions">
+            <button id="pause-capture" type="button">Pause</button>
+            <button id="skip-pose" type="button">Skip this pose</button>
+            <button id="stop-capture" type="button" class="danger">Stop</button>
+          </div>
+          <p id="capture-hint" class="hint">Can't do a pose, or your tongue is out of view? Skip it. If you stop, everything recorded so far is kept.</p>
+        </div>
+        <p id="record-error" class="notice bad" role="alert" hidden></p>
+      </article>
+
+      <article class="card" id="step-train">
+        <header class="card-head"><span class="step-num">2</span><div class="card-title"><h2>Train</h2><p>Trains a tongue model on your recordings, here on this PC. It switches on as soon as it's ready.</p></div></header>
+        <div class="eyebrow">Recordings to train on</div>
+        <div id="recordings" class="recordings"></div>
+        <p id="recordings-message" class="notice bad" role="alert" hidden></p>
+        <p id="train-summary" class="notice" role="status"></p>
+        <div id="training-live" class="training-live" hidden>
+          <div class="training-head"><p id="training-message" role="status"></p><span id="training-percent">0%</span></div>
+          <progress id="training-progress" max="1" value="0" aria-label="Training progress"></progress>
+          <p class="hint">You can keep using VRFaceTracking meanwhile. Your current model stays on until the new one is ready.</p>
+        </div>
+        <div class="actions">
+          <button id="start-training" type="button" class="primary big" disabled>Train my model</button>
+          <button id="cancel-training" type="button" class="danger" hidden>Cancel training</button>
+        </div>
+        <div id="training-result" class="notice" role="status" hidden></div>
+        <div id="builtin" hidden>
+          <p id="builtin-message" class="notice" role="status"></p>
+          <div class="actions"><button id="install-builtin" type="button" class="primary">Download built-in model</button></div>
+        </div>
+        <div class="model-row">
+          <label for="saved-model">Model in use</label>
+          <select id="saved-model"></select>
+          <span id="model-message" class="hint" role="status"></span>
+        </div>
+        <details class="more">
+          <summary>Training options</summary>
+          <div class="options-grid">
+            <label>Name <input id="training-name" maxlength="100" placeholder="Date and time"></label>
+            <label>Run on <select id="training-device"><option value="auto">Automatic</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+            <label>Training passes <input id="training-epochs" type="number" min="1" max="60" value="12"></label>
+          </div>
+          <p class="hint">Automatic uses the GPU (NVIDIA, AMD or Intel) when one works, and the CPU if not. The CPU is much slower. More passes take longer.</p>
+        </details>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section id="tab-eyes" role="tabpanel" hidden>
+  <article class="card">
+    <header class="card-head"><div class="card-title"><h2>Eye tracking</h2><p id="eye-state">Waiting for the headset…</p></div><span id="eye-badge" class="tag">Off</span></header>
+    <div class="callout">
+      <button id="eye-recenter" type="button" class="primary big">Recenter</button>
+      <div>
+        <strong>Look straight ahead at something far away.</strong>
+        <span class="muted">You'll have 3 seconds after pressing Recenter to look away from this page.</span>
+      </div>
+      <div id="eye-countdown" aria-live="assertive"></div>
+    </div>
+    <div class="actions">
+      <label class="switch"><input id="eye-gaze" type="checkbox"> Track each eye separately, so your avatar's eyes can cross</label>
+      <button id="eye-recenter-clear" type="button" class="link">Undo recenter</button>
+    </div>
+    <p id="eye-message" class="hint" role="status"></p>
+    <div class="eye-layout">
+      <section class="panel">
+        <h3>Eye cameras</h3>
+        <div class="screen">
+          <canvas id="eye-feed" width="800" height="400" aria-label="Eye camera snapshots"></canvas>
+          <div id="eye-feed-overlay" class="screen-overlay">
+            <svg class="icon" aria-hidden="true"><use href="#i-camera-off"/></svg>
+            <strong>No eye camera images</strong>
+            <span>To see them here, set Eye-camera preview snapshots above 0 in the headset app.</span>
+          </div>
+        </div>
+        <p id="eye-feed-state" class="hint"></p>
+      </section>
+      <section class="panel">
+        <h3>Gaze, seen from above</h3>
+        <div class="screen"><canvas id="vergence" width="480" height="240" aria-label="Top-down view of both gaze rays"></canvas></div>
+        <div class="legend"><span class="left">Left eye</span><span class="right">Right eye</span></div>
+        <p class="hint">Each line shows where one eye is looking. Look at something close and the lines should cross in front of you.</p>
+        <div id="eye-metrics" class="metrics"></div>
+      </section>
+    </div>
+    <div id="eye-setup" class="metrics"></div>
+    <details class="more">
+      <summary>Avatar's eyes move the wrong way?</summary>
+      <p class="hint">Looking left should turn both avatar eyes left; looking at something close should turn both inward.</p>
+      <div class="actions">
+        <label class="switch"><input id="eye-swap" type="checkbox"> Swap left and right eyes</label>
+        <label class="switch"><input id="eye-invert" type="checkbox"> Mirror left and right</label>
+      </div>
+    </details>
+  </article>
+</section>
+
+<section id="tab-settings" role="tabpanel" hidden>
+  <article class="card">
+    <header class="card-head"><div class="card-title"><h2>Tongue settings</h2><p>Changes save straight away.</p></div></header>
+    <div class="field">
+      <label for="tongue-smoothing">Smoothing</label>
+      <div>
+        <div class="range-row"><input id="tongue-smoothing" type="range" min="0" max="100" step="1"><output id="tongue-smoothing-value" for="tongue-smoothing">—</output></div>
+        <p class="hint">Lower reacts faster but jitters; higher is smoother but lags. The default is 55.</p>
+      </div>
+    </div>
+    <div class="field">
+      <label for="tongue-visibility">When to show the tongue</label>
+      <div>
+        <select id="tongue-visibility">
+          <option value="weighted">Cameras and headset together (recommended)</option>
+          <option value="camera">Cameras only</option>
+          <option value="native">Headset only</option>
+          <option value="agreement">Only when both see it out</option>
+        </select>
+        <p class="hint">If the tongue pops out when it shouldn't, try "Only when both see it out". If it's hard to trigger, try "Cameras only". Direction always comes from the cameras.</p>
+      </div>
+    </div>
+    <p id="settings-message" class="hint" role="status"></p>
+  </article>
+  <article class="card">
+    <header class="card-head"><div class="card-title"><h2>Live values</h2><p id="status">Waiting for the mouth cameras…</p></div></header>
+    <div class="values-grid">
+      <section class="panel"><h3>Tongue model</h3><p id="model-state" class="hint">Waiting for the model.</p><div id="model-metrics" class="metrics"></div><div id="model-rows" class="rows"></div></section>
+      <section class="panel"><h3>Sent to VRChat</h3><p id="output-state" class="hint">Waiting for VRFaceTracking.</p><div id="output-metrics" class="metrics"></div><div id="output-rows" class="rows"></div></section>
+    </div>
+    <p class="hint">Model values are shown after smoothing. For values that can go negative, the centre line is zero.</p>
+  </article>
+</section>
+
+<footer class="app-foot"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>This page is only reachable from this PC (127.0.0.1). Camera images never leave it.</footer>
+
+<script>
+const byId = id => document.getElementById(id);
+// Per-browser preferences; storage can be unavailable, so never rely on it.
+const store = {
+  get(key, fallback) {
+    try { const value = localStorage.getItem(`vrft.${key}`); return value === null ? fallback : JSON.parse(value); }
+    catch { return fallback; }
+  },
+  set(key, value) { try { localStorage.setItem(`vrft.${key}`, JSON.stringify(value)); } catch { /* not saved */ } }
+};
+async function getJson(path) {
+  const response = await fetch(path, {cache: 'no-store'});
+  if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+  return response.json();
+}
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {}), cache: 'no-store'
+  });
+  if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+  return response.json();
+}
+function notice(id, text, tone) {
+  const element = byId(id);
+  element.hidden = !text; element.textContent = text || '';
+  element.className = `notice ${tone || ''}`;
+}
+function chip(id, tone, text, detail) {
+  const element = byId(id);
+  element.className = `chip ${tone}`; element.textContent = text; element.title = detail || text;
+}
+function icon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'icon'); svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', `#i-${name}`); svg.append(use);
+  return svg;
+}
+// Canvas drawings use the page's colour tokens.
+const theme = (() => {
+  const style = getComputedStyle(document.documentElement);
+  const token = name => style.getPropertyValue(name).trim();
+  return {screen: token('--screen'), line: token('--line-strong'), grid: token('--line'), faint: token('--faint'),
+    muted: token('--muted'), accent: token('--accent'), warn: token('--warn'), font: getComputedStyle(document.body).fontFamily};
+})();
+
+// Tabs
+const tabs = [...document.querySelectorAll('[role=tab]')];
+function showTab(name) {
+  if (!tabs.some(tab => tab.dataset.tab === name)) name = 'tongue';
+  for (const tab of tabs) {
+    const selected = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', String(selected));
+    byId(`tab-${tab.dataset.tab}`).hidden = !selected;
+  }
+  store.set('tab', name);
+}
+tabs.forEach(tab => { tab.onclick = () => showTab(tab.dataset.tab); });
+showTab(location.hash.slice(1) || store.get('tab', 'tongue'));
+
+// Spoken prompts
+const voice = byId('voice');
+// On unless turned off in this browser.
+voice.checked = store.get('voice', true) === true;
+function hush() { if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+function speak(text) {
+  if (!voice.checked || document.hidden || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05; speechSynthesis.speak(utterance);
+}
+let lastSpoken = null;
+voice.onchange = () => { store.set('voice', voice.checked); hush(); lastSpoken = null; };
+document.addEventListener('visibilitychange', () => { if (document.hidden) { hush(); lastSpoken = null; } });
+window.addEventListener('pagehide', hush);
+
+// Step 1: recording
+const MODE_NAMES = {core: 'Basic poses', direction: 'Direction poses', negatives: 'Expression poses', follow: 'Follow the dot'};
+let currentCapture = null;
+let trainingBusy = false;
+let recordReady = false;
+async function captureCommand(path, body) {
+  try { notice('record-error', ''); showCapture(await post(path, body)); }
+  catch (error) { notice('record-error', error.message, 'bad'); }
+}
+for (const mode of Object.keys(MODE_NAMES)) {
+  byId(`start-${mode}`).onclick = event => {
+    event.target.closest('details')?.removeAttribute('open');
+    captureCommand('/ext/quest-pro/capture/start', {mode});
+  };
+}
+byId('skip-pose').onclick = () => captureCommand('/ext/quest-pro/capture/skip');
+byId('pause-capture').onclick = () => captureCommand('/ext/quest-pro/capture/pause');
+byId('stop-capture').onclick = () => captureCommand('/ext/quest-pro/capture/stop');
+
+function showCapture(capture) {
+  const started = capture.active && !currentCapture?.active;
+  const finished = currentCapture?.active && !capture.active;
+  currentCapture = capture;
+  byId('record-idle').hidden = capture.active;
+  byId('record-active').hidden = !capture.active;
+  for (const mode of Object.keys(MODE_NAMES)) byId(`start-${mode}`).disabled = capture.active || trainingBusy || !recordReady;
+  if (started) showTab('tongue');
+  if (capture.active) {
+    const stepSeconds = capture.step_seconds, settle = capture.settle_seconds;
+    const elapsed = Math.max(0, stepSeconds - capture.seconds_remaining);
+    byId('prompt-count').textContent = `${MODE_NAMES[capture.mode] || 'Recording'} · ${capture.mode === 'follow' ? 'part' : 'pose'} ${capture.step} of ${capture.total_steps}`;
+    byId('prompt-pose').textContent = capture.pose;
+    byId('prompt-instruction').textContent = capture.instruction;
+    const pauseReasons = {face_tracking_lost: 'Paused: face tracking lost, waiting', cameras_stopped: 'Paused: the mouth cameras stopped, waiting'};
+    const [phase, tone] = capture.pause_reason ? [pauseReasons[capture.pause_reason] || 'Paused, waiting', 'paused'] : capture.paused ? ['Paused', 'paused'] : capture.skipped ? ['Skipped', 'paused'] :
+      capture.recording ? [`Recording · ${Math.ceil(capture.seconds_remaining)} s`, 'recording'] :
+      [`Get ready · ${Math.max(1, Math.ceil(settle - elapsed))} s`, 'ready'];
+    byId('prompt-phase').textContent = phase; byId('prompt-phase').className = `phase ${tone}`;
+    byId('pose-timer-ready').style.flexBasis = `${settle / stepSeconds * 100}%`;
+    byId('pose-timer-fill').style.width = `${Math.min(100, elapsed / stepSeconds * 100)}%`;
+    byId('prompt-next').textContent = capture.next_pose ? `Up next: ${capture.next_pose}` : capture.mode === 'follow' ? 'Last part' : 'Last pose';
+    byId('capture-progress').max = capture.total_steps;
+    byId('capture-progress').value = capture.step - 1 + elapsed / stepSeconds;
+    byId('pause-capture').textContent = capture.paused ? 'Resume' : 'Pause';
+    byId('skip-pose').textContent = capture.mode === 'follow' ? 'Skip this part' : 'Skip this pose';
+    byId('skip-pose').disabled = capture.skipped;
+    byId('capture-hint').textContent = capture.mode === 'follow' ?
+      'Lost the dot, or your tongue is out of view? Skip this part. If you stop, everything recorded so far is kept.' :
+      'Can\'t do a pose, or your tongue is out of view? Skip it. If you stop, everything recorded so far is kept.';
+  } else if (capture.message) {
+    const complete = capture.message.startsWith('Recording complete');
+    notice('record-result', complete && !trainingBusy ? `${capture.message} Now press Train my model.` : capture.message, complete ? 'ok' : 'warn');
+  }
+  trackFollow(capture);
+  const spoken = capture.active && !capture.paused ? `${capture.directory}:${capture.step}` : null;
+  // Follow-the-dot parts are short, so they get just their name.
+  if (spoken && spoken !== lastSpoken) speak(capture.mode === 'follow' ? capture.pose : capture.instruction);
+  else if (!spoken && lastSpoken) hush();
+  lastSpoken = spoken;
+  if (finished) {
+    speak(capture.message.startsWith('Recording complete') ? 'Recording complete' : 'Recording stopped');
+    if (window.refreshRecordings) window.refreshRecordings();
+  }
+}
+
+let shownBlockers = '';
+function showBlockers(cameraLive, capture) {
+  const blockers = [];
+  if (!cameraLive) blockers.push(['The mouth cameras aren\'t sending anything.', 'On the headset, open VRFT Quest Pro Camera and press Start camera stream, then put the headset on.']);
+  if (trainingBusy) blockers.push(['Training is running.', 'You can record again once it finishes.']);
+  recordReady = blockers.length === 0;
+  const key = JSON.stringify(blockers);
+  if (key === shownBlockers) return;
+  shownBlockers = key;
+  byId('record-blockers').replaceChildren(...blockers.map(([problem, fix]) => {
+    const item = document.createElement('li');
+    const text = document.createElement('div'); text.textContent = problem;
+    const detail = document.createElement('span'); detail.textContent = fix; text.append(detail);
+    item.append(icon('alert'), text);
+    return item;
+  }));
+}
+
+// Camera feeds
+const feedContext = byId('feed').getContext('2d', {alpha: false});
+const feedImage = feedContext.createImageData(800, 400);
+const eyeContext = byId('eye-feed').getContext('2d', {alpha: false});
+const eyeImage = eyeContext.createImageData(800, 400);
+let lastSequence = null, lastEyeSequence = null;
+async function drawGray(path, target, pixels) {
+  const response = await fetch(path, {cache: 'no-store'});
+  if (!response.ok) return null;
+  const gray = new Uint8Array(await response.arrayBuffer());
+  if (gray.length !== 320000) return null;
+  for (let i = 0, j = 0; i < gray.length; i++, j += 4) {
+    pixels.data[j] = gray[i]; pixels.data[j + 1] = gray[i]; pixels.data[j + 2] = gray[i]; pixels.data[j + 3] = 255;
+  }
+  target.putImageData(pixels, 0, 0);
+  return response.headers.get('x-frame-sequence');
+}
+async function drawFrame(sequence) {
+  if (sequence === lastSequence) return;
+  const drawn = await drawGray('/ext/quest-pro/frame', feedContext, feedImage);
+  if (drawn !== null) lastSequence = drawn;
+}
+async function drawEyeFrame(sequence) {
+  if (sequence === lastEyeSequence) return;
+  const drawn = await drawGray('/ext/quest-pro/eye-frame', eyeContext, eyeImage);
+  if (drawn !== null) lastEyeSequence = drawn;
+}
+function showFeed(live, title, detail) {
+  byId('feed-live').hidden = !live;
+  byId('feed-overlay').hidden = live;
+  byId('feed-title').textContent = title;
+  byId('feed-state').textContent = detail;
+}
+
+// Live tongue: what VRFaceTracking sends when it is running, else the model alone.
+const pad = byId('tongue-pad').getContext('2d');
+function showTongue(state) {
+  const model = state.model && state.model.fresh ? state.model : null;
+  const output = state.output;
+  let visible = null, out = 0, horizontal = 0, vertical = 0;
+  if (output) {
+    const v = output.values;
+    visible = output.visible === null ? v[0] > 0.05 : output.visible;
+    out = v[0]; horizontal = v[4] - v[3]; vertical = v[1] - v[2];
+  } else if (model) {
+    const [visibility, extension, h, v] = model.values;
+    visible = visibility >= model.threshold;
+    out = visible ? Math.max(visibility, extension) : 0; horizontal = h; vertical = v;
+  }
+  byId('tongue-state').textContent = visible === null ? 'Not tracked' : visible ? 'Out' : 'In';
+  byId('tongue-state').dataset.state = visible === null ? 'none' : visible ? 'out' : 'in';
+  byId('tongue-out-fill').style.width = `${Math.max(0, Math.min(1, out)) * 100}%`;
+  const place = drawPad(pad);
+  if (!visible) return;
+  const [x, y] = place(horizontal, vertical);
+  drawDot(pad, x, y, 12 + 10 * Math.max(0, Math.min(1, out)));
+}
+
+// A square canvas showing tongue directions as seen in a mirror: your right
+// is on the right. Returns a function from (horizontal, vertical) to pixels.
+function drawPad(context, guides = true) {
+  const size = context.canvas.width, middle = size / 2, radius = size * .467, unit = size / 300;
+  context.clearRect(0, 0, size, size);
+  context.fillStyle = theme.screen;
+  context.beginPath(); context.arc(middle, middle, radius + 8 * unit, 0, Math.PI * 2); context.fill();
+  context.strokeStyle = theme.line; context.lineWidth = 2 * unit;
+  context.beginPath(); context.arc(middle, middle, radius, 0, Math.PI * 2); context.stroke();
+  if (!guides) return null;
+  context.strokeStyle = theme.grid; context.setLineDash([4 * unit, 6 * unit]);
+  context.beginPath(); context.arc(middle, middle, radius / 2, 0, Math.PI * 2); context.stroke();
+  context.setLineDash([]);
+  context.beginPath(); context.moveTo(middle - radius, middle); context.lineTo(middle + radius, middle);
+  context.moveTo(middle, middle - radius + 50 * unit); context.lineTo(middle, middle + radius - 50 * unit); context.stroke();
+  context.fillStyle = theme.muted; context.font = `600 ${25 * unit}px ${theme.font}`;
+  context.textAlign = 'center'; context.textBaseline = 'middle';
+  context.fillText('up', middle, middle - radius + 28 * unit); context.fillText('down', middle, middle + radius - 28 * unit);
+  context.textBaseline = 'bottom';
+  context.textAlign = 'left'; context.fillText('left', middle - radius + 14 * unit, middle - 7 * unit);
+  context.textAlign = 'right'; context.fillText('right', middle + radius - 14 * unit, middle - 7 * unit);
+  const clamp = value => Math.max(-1, Math.min(1, value));
+  return (horizontal, vertical) => [middle + clamp(horizontal) * radius, middle - clamp(vertical) * radius];
+}
+function drawDot(context, x, y, radius) {
+  context.fillStyle = theme.accent;
+  context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill();
+}
+
+// Follow the dot: each status carries the round's keyframes and how far along
+// it is; between polls the page animates with the daemon's interpolation.
+const followPad = byId('follow-pad').getContext('2d');
+let follow = null, followFrame = null;
+function pathPosition(path, seconds) {
+  if (seconds <= path[0][0]) return [path[0][1], path[0][2]];
+  for (let i = 1; i < path.length; i++) {
+    const [t0, h0, v0] = path[i - 1], [t1, h1, v1] = path[i];
+    if (seconds <= t1) {
+      const blend = t1 > t0 ? (seconds - t0) / (t1 - t0) : 1;
+      return [h0 + (h1 - h0) * blend, v0 + (v1 - v0) * blend];
+    }
+  }
+  const last = path[path.length - 1];
+  return [last[1], last[2]];
+}
+function trackFollow(capture) {
+  const active = capture.active && capture.mode === 'follow';
+  byId('follow-stage').hidden = !active;
+  follow = active ? {path: capture.path, elapsed: capture.path_elapsed, at: performance.now(), paused: capture.paused} : null;
+  if (follow && followFrame === null) followFrame = requestAnimationFrame(drawFollow);
+}
+function drawFollow() {
+  followFrame = null;
+  if (!follow) return;
+  const size = followPad.canvas.width, unit = size / 300;
+  if (follow.path) {
+    const place = drawPad(followPad);
+    const seconds = follow.elapsed + (follow.paused ? 0 : (performance.now() - follow.at) / 1000);
+    const [x, y] = place(...pathPosition(follow.path, Math.max(0, seconds)));
+    // The route still ahead, with a ring at each stop, so the next move can be anticipated.
+    const ahead = follow.path.filter(([time]) => time > seconds).map(([, h, v]) => place(h, v));
+    followPad.strokeStyle = theme.accent; followPad.globalAlpha = .45; followPad.lineWidth = 3 * unit;
+    followPad.setLineDash([3 * unit, 7 * unit]); followPad.lineCap = 'round';
+    followPad.beginPath(); followPad.moveTo(x, y);
+    for (const point of ahead) followPad.lineTo(...point);
+    followPad.stroke();
+    followPad.setLineDash([]); followPad.lineWidth = 2 * unit;
+    for (const [px, py] of ahead) {
+      followPad.beginPath(); followPad.arc(px, py, 9 * unit, 0, Math.PI * 2); followPad.stroke();
+    }
+    followPad.globalAlpha = 1;
+    drawDot(followPad, x, y, 16 * unit);
+    if (seconds < 0) {
+      // Getting ready: a ring closes in on the centre as the dot is about to move.
+      followPad.strokeStyle = theme.accent; followPad.lineWidth = 2 * unit;
+      followPad.beginPath(); followPad.arc(x, y, (16 + Math.min(1.5, -seconds) * 30) * unit, 0, Math.PI * 2); followPad.stroke();
+    }
+  } else {
+    drawPad(followPad, false);
+    followPad.fillStyle = theme.muted; followPad.font = `700 ${30 * unit}px ${theme.font}`;
+    followPad.textAlign = 'center'; followPad.textBaseline = 'middle';
+    followPad.fillText('Tongue in', size / 2, size / 2);
+  }
+  followFrame = requestAnimationFrame(drawFollow);
+}
+
+// Eyes
+const degrees = value => `${value >= 0 ? '+' : ''}${value.toFixed(1)}°`;
+function metrics(id, entries) {
+  byId(id).replaceChildren(...entries.map(([name, value]) => {
+    const item = document.createElement('div'); item.className = 'metric';
+    const label = document.createElement('span'); label.textContent = name;
+    const strong = document.createElement('strong'); strong.textContent = value; strong.title = value;
+    item.append(label, strong);
+    return item;
+  }));
+}
+function drawVergence(output) {
+  const view = byId('vergence');
+  const draw = view.getContext('2d');
+  const width = view.width, height = view.height;
+  draw.fillStyle = theme.screen; draw.fillRect(0, 0, width, height);
+  // Viewed from above: the face at the bottom, looking up the screen, to scale
+  // with a typical 63 mm eye separation.
+  const scale = 300; // pixels per metre
+  const halfIpd = 0.0315;
+  const base = height - 16;
+  const eyes = [[width / 2 - halfIpd * scale, base], [width / 2 + halfIpd * scale, base]];
+  draw.strokeStyle = theme.grid; draw.lineWidth = 1; draw.fillStyle = theme.faint; draw.font = `12px ${theme.font}`;
+  for (const metres of [0.25, 0.5]) {
+    const y = base - metres * scale;
+    draw.beginPath(); draw.moveTo(0, y); draw.lineTo(width, y); draw.stroke();
+    draw.fillText(`${metres} m`, 8, y - 5);
+  }
+  draw.strokeStyle = theme.line; draw.setLineDash([4, 6]);
+  draw.beginPath(); draw.moveTo(width / 2, base); draw.lineTo(width / 2, 0); draw.stroke();
+  draw.setLineDash([]);
+  eyes.forEach(([x, y], index) => {
+    draw.fillStyle = index ? theme.warn : theme.accent;
+    draw.beginPath(); draw.arc(x, y, 5, 0, Math.PI * 2); draw.fill();
+    if (!output) return;
+    // Yaw is positive to the right, so a converging left eye turns right.
+    const yaw = output[index][0] * Math.PI / 180;
+    draw.strokeStyle = draw.fillStyle; draw.lineWidth = 2;
+    draw.beginPath(); draw.moveTo(x, y); draw.lineTo(x + Math.sin(yaw) * 600, y - Math.cos(yaw) * 600); draw.stroke();
+  });
+}
+function showEyes(state) {
+  const eyes = state.eyes;
+  const headsetEye = state.headset && state.headset.eye;
+  const output = state.eye_output_deg;
+  const running = output !== null && output !== undefined;
+  const failed = headsetEye && headsetEye.state === 'error';
+  byId('eye-badge').textContent = running ? 'Separate' : eyes.fresh ? 'Combined' : failed ? 'Error' : 'Off';
+  byId('eye-badge').className = `tag ${running ? 'ok' : failed ? 'bad' : eyes.fresh ? 'warn' : ''}`;
+  chip('chip-eyes', running ? 'ok' : failed ? 'bad' : eyes.fresh ? 'warn' : '', running ? 'Eyes: separate' : eyes.fresh ? 'Eyes: combined' : failed ? 'Eyes: error' : 'Eyes: off');
+  let message;
+  if (eyes.calibration_error) message = `Separate eye tracking isn't available: ${eyes.calibration_error}`;
+  else if (running) message = `Tracking each eye separately, ${eyes.rate_hz.toFixed(0)} times a second.` +
+    (eyes.sample && !eyes.sample.model_patched ? ' The headset is using its standard eye model, so both eyes move together and won\'t cross.' : '');
+  else if (eyes.fresh) message = 'The headset is sending each eye, but separate tracking is turned off below, so VRFaceTracking sends one combined gaze.';
+  else if (headsetEye && headsetEye.message) message = `Headset: ${headsetEye.message}`;
+  else message = state.source ? 'The headset is connected but isn\'t sending eye data. Turn on Independent eye gaze in the headset app, then restart the stream.' :
+    'Waiting for the headset. Until it connects, VRFaceTracking sends the standard combined gaze.';
+  byId('eye-state').textContent = message;
+  drawVergence(running ? output : null);
+  const gaze = [];
+  if (running) {
+    const vergence = output[0][0] - output[1][0];
+    gaze.push(['Left eye (yaw / pitch)', `${degrees(output[0][0])} / ${degrees(output[0][1])}`]);
+    gaze.push(['Right eye (yaw / pitch)', `${degrees(output[1][0])} / ${degrees(output[1][1])}`]);
+    const distance = vergence > 0.3 ? 0.063 / 2 / Math.tan(vergence * Math.PI / 360) : null;
+    gaze.push(['Eyes meet', `${distance !== null && distance < 5 ? `≈${distance.toFixed(2)} m` : vergence < -0.3 ? 'Diverging' : 'Far away'} (${degrees(vergence)})`]);
+  }
+  metrics('eye-metrics', gaze);
+  const setup = [];
+  if (eyes.sample) setup.push(['Engine profile', String(eyes.sample.engine_profile)], ['Per-eye model', eyes.sample.model_patched ? 'Active' : 'Not active']);
+  if (settings && settings.eye_offsets) setup.push(['Recentered', 'Yes']);
+  if (eyes.calibration) setup.push(['Calibration file', eyes.calibration.split(/[\\/]/).pop()]);
+  if (!eyes.convergence_calibrated && eyes.calibration) setup.push(['Depth accuracy', 'Not validated']);
+  metrics('eye-setup', setup);
+  const eyeAge = state.eye_frame_age_ms;
+  byId('eye-feed-overlay').hidden = eyeAge !== null;
+  byId('eye-feed-state').textContent = eyeAge === null ? '' : `Snapshot ${state.eye_frame_sequence} · ${eyeAge} ms old`;
+  if (eyeAge !== null && eyeAge < 3000) drawEyeFrame(String(state.eye_frame_sequence));
+}
+let recenterTimer = null;
+byId('eye-recenter').onclick = () => {
+  if (recenterTimer) return;
+  byId('eye-recenter').disabled = true;
+  speak('Look straight ahead');
+  let count = 3;
+  const tick = async () => {
+    if (count > 0) {
+      byId('eye-countdown').textContent = `Look ahead… ${count}`;
+      count -= 1; recenterTimer = setTimeout(tick, 1000); return;
+    }
+    recenterTimer = null;
+    byId('eye-countdown').textContent = '';
+    byId('eye-recenter').disabled = false;
+    await saveSettings('/ext/quest-pro/eye/recenter', {}, 'eye-message', 'Recentered. Your avatar now looks straight ahead when you do.');
+  };
+  tick();
+};
+byId('eye-recenter-clear').onclick = () => saveSettings('/ext/quest-pro/eye/recenter/clear', {}, 'eye-message', 'Recenter undone.');
+
+// Settings
+let settings = null;
+function showSettings(value) {
+  settings = value;
+  const smoothing = byId('tongue-smoothing');
+  if (document.activeElement !== smoothing) {
+    smoothing.value = String(Math.round(value.tongue_smoothing));
+    byId('tongue-smoothing-value').textContent = String(Math.round(value.tongue_smoothing));
+  }
+  if (document.activeElement !== byId('tongue-visibility')) byId('tongue-visibility').value = value.tongue_visibility;
+  byId('eye-gaze').checked = value.eye_gaze;
+  byId('eye-swap').checked = value.eye_swap_output;
+  byId('eye-invert').checked = value.eye_invert_yaw;
+  byId('eye-recenter-clear').hidden = !value.eye_offsets;
+}
+async function saveSettings(path, body, messageId, success) {
+  try {
+    showSettings(await post(path, body));
+    byId(messageId).textContent = success || 'Saved.';
+  } catch (error) { byId(messageId).textContent = `Couldn't save: ${error.message}`; }
+}
+byId('tongue-smoothing').oninput = event => { byId('tongue-smoothing-value').textContent = event.target.value; };
+byId('tongue-smoothing').onchange = event => saveSettings('/ext/quest-pro/settings', {tongue_smoothing: Number(event.target.value)}, 'settings-message');
+byId('tongue-visibility').onchange = event => saveSettings('/ext/quest-pro/settings', {tongue_visibility: event.target.value}, 'settings-message');
+byId('eye-gaze').onchange = event => saveSettings('/ext/quest-pro/settings', {eye_gaze: event.target.checked}, 'eye-message');
+byId('eye-swap').onchange = event => saveSettings('/ext/quest-pro/settings', {eye_swap_output: event.target.checked}, 'eye-message');
+byId('eye-invert').onchange = event => saveSettings('/ext/quest-pro/settings', {eye_invert_yaw: event.target.checked}, 'eye-message');
+// Live values
+const modelNames = ['Visibility', 'Extension', 'Horizontal', 'Vertical', 'Curl up', 'Bend down', 'Roll', 'Flat', 'Squish', 'Twist'];
+const outputNames = ['TongueOut', 'TongueUp', 'TongueDown', 'TongueLeft', 'TongueRight', 'TongueRoll', 'TongueBendDown', 'TongueCurlUp', 'TongueSquish', 'TongueFlat', 'TongueTwistLeft', 'TongueTwistRight'];
+function rows(id, names, signed) {
+  const container = byId(id);
+  return names.map((name, index) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const label = document.createElement('span'); label.textContent = name;
+    const bar = document.createElement('div'); bar.className = signed.has(index) ? 'bar signed' : 'bar';
+    const fill = document.createElement('div'); fill.className = 'fill'; bar.append(fill);
+    const number = document.createElement('span'); number.className = 'number'; number.textContent = '—';
+    row.append(label, bar, number); container.append(row);
+    return {fill, number, isSigned: signed.has(index)};
+  });
+}
+const modelRows = rows('model-rows', modelNames, new Set([2, 3, 9]));
+const outputRows = rows('output-rows', outputNames, new Set());
+function showValues(rowSet, values) {
+  rowSet.forEach((row, index) => {
+    const value = values && Number.isFinite(values[index]) ? values[index] : null;
+    row.number.textContent = value === null ? '—' : value.toFixed(2);
+    row.fill.classList.toggle('negative', value !== null && value < 0);
+    if (value === null) { row.fill.style.width = '0'; return; }
+    if (row.isSigned) {
+      const magnitude = Math.min(1, Math.abs(value));
+      row.fill.style.left = value < 0 ? `${50 - magnitude * 50}%` : '50%';
+      row.fill.style.width = `${magnitude * 50}%`;
+    } else {
+      row.fill.style.left = '0'; row.fill.style.width = `${Math.max(0, Math.min(1, value)) * 100}%`;
+    }
+  });
+}
+function showLiveValues(state) {
+  const model = state.model;
+  byId('model-state').textContent = !model ? (state.model_error ? `The tongue model isn't running: ${state.model_error}. VRFaceTracking is using the headset's own tongue tracking instead.` : 'Waiting for the first prediction.') :
+    model.fresh ? `Frame ${model.sequence}` : `No new prediction for ${model.age_ms} ms, so VRFaceTracking is using the headset's own tongue tracking.`;
+  showValues(modelRows, model && model.fresh ? model.values : null);
+  metrics('model-metrics', model ? [['Time per frame', `${model.inference_ms.toFixed(1)} ms`], ['Skipped frames', String(model.skipped_frames)], ['Raw visibility', model.raw_values[0].toFixed(2)], ['Camera weight', model.camera_weight.toFixed(2)], ['Threshold', model.threshold.toFixed(2)]] : []);
+  const output = state.output;
+  byId('output-state').textContent = output ?
+    `From ${output.source}${output.visible === null ? '' : output.visible ? ' · tongue out' : ' · tongue in'}` :
+    'Shown when VRFaceTracking runs normally, not with --camera-preview-only.';
+  showValues(outputRows, output ? output.values : null);
+  metrics('output-metrics', output ? [['Headset TongueOut', output.native_tongue_out === null ? '—' : output.native_tongue_out.toFixed(2)], ['Combined visibility', output.fused_visibility === null ? '—' : output.fused_visibility.toFixed(2)]] : []);
+}
+
+// Main poll
+async function refresh() {
+  try {
+    const [state, capture] = await Promise.all([getJson('/ext/quest-pro/status'), getJson('/ext/quest-pro/capture/status')]);
+    const live = state.frame_age_ms !== null && state.frame_age_ms <= 250;
+    chip('chip-camera', live ? 'ok' : 'warn', live ? 'Mouth cameras: live' : 'Mouth cameras: waiting', state.status);
+    chip('chip-input', capture.native_recent ? 'ok' : '', capture.native_recent ? 'Tracking module: live' : 'Tracking module: none',
+      'The active tracking module\'s own face tracking. Optional: the cameras work without it');
+    const modelName = window.activeModelName ? window.activeModelName() : 'Tongue model';
+    chip('chip-model', state.model && state.model.fresh ? 'ok' : state.model_error ? 'bad' : '',
+      state.model_error ? 'Tongue model: error' : modelName, state.model_error || '');
+    showFeed(live, 'Waiting for the mouth cameras', state.status);
+    byId('status').textContent = live ? `Live · frame ${state.sequence} · ${state.frame_age_ms} ms old` : state.status;
+    if (live) await drawFrame(String(state.sequence));
+    showSettings(state.settings);
+    showBlockers(live, capture);
+    showCapture(capture);
+    showTongue(state);
+    showEyes(state);
+    showLiveValues(state);
+  } catch (error) {
+    chip('chip-camera', 'bad', 'Can\'t reach VRFaceTracking', String(error));
+    showFeed(false, 'Can\'t reach VRFaceTracking on this PC', `Is VRFaceTracking running? (${error.message})`);
+  }
+  setTimeout(refresh, 120);
+}
+refresh();
+</script>
+<script src="/ext/quest-pro/training.js"></script>
+</body>
+</html>

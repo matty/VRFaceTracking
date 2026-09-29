@@ -2,30 +2,34 @@
 name = "vrft-gui"
 version.workspace = true
 edition.workspace = true
-description = "Desktop app for VRFT: dashboard, Quest Pro cameras and eyes, and headset setup over adb"
+repository.workspace = true
+description = "Desktop app for VRFT: dashboard, extensions such as Quest Pro support, and starting the daemon"
 
 [[bin]]
 name = "vrft_gui"
 path = "src/main.rs"
 
 [dependencies]
-# Cargo.lock is not committed, and GPUI's API changes between snapshots, so
-# pin the exact release this app was written against.
-gpui-kit = "=0.6.6"
+vrft-gui-core = { workspace = true }
+vrft-protocol = { workspace = true }
+# Optional extensions, each switched on by its feature. The daemon's config
+# decides whether a built-in one is shown.
+vrft-quest-pro-gui = { workspace = true, optional = true }
+gpui-kit = { workspace = true }
 anyhow = { workspace = true }
-# Local dates for recording and model names.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 log = { workspace = true }
 env_logger = "0.11"
-# GPUI images are built from `image` frames; this must match GPUI's version.
-image = { version = "0.25", default-features = false }
-serde = { workspace = true }
 serde_json = { workspace = true }
-ureq = { version = "3.1", features = ["json"] }
+rust-i18n = { workspace = true }
+sys-locale = { workspace = true }
+# Installs and updates the app. Keep it in step with the vpk version the
+# release workflow packs with.
+velopack = "=1.2.161"
 
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Threading",
-] }
+[features]
+default = ["quest-pro"]
+quest-pro = ["dep:vrft-quest-pro-gui"]
+
+[build-dependencies]
+# Embeds resources/app.ico as the executable's icon.
+embed-resource = "3"

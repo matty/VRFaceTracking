@@ -51,10 +51,44 @@ pub struct UnifiedSingleEyeData {
 pub struct UnifiedEyeData {
     pub left: UnifiedSingleEyeData,
     pub right: UnifiedSingleEyeData,
+    /// The pupil diameter range, in millimetres, that [`dilation`](Self::dilation)
+    /// maps to 0..1. Unset while `max_dilation` is not above `min_dilation`.
     pub max_dilation: f32,
     pub min_dilation: f32,
     pub left_diameter: f32,
     pub right_diameter: f32,
+}
+
+impl UnifiedEyeData {
+    /// How dilated both pupils are, 0 to 1 across the dilation range, as
+    /// VRChat's pupil dilation parameters take it; 0.5 without a range.
+    pub fn dilation(&self) -> f32 {
+        let (min, max) = (self.min_dilation, self.max_dilation);
+        if !(min.is_finite() && max.is_finite() && max > min) {
+            return 0.5;
+        }
+        let mean = (self.left.pupil_diameter_mm + self.right.pupil_diameter_mm) / 2.0;
+        ((mean - min) / (max - min)).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod dilation_tests {
+    use super::*;
+
+    #[test]
+    fn dilation_spans_the_range_and_is_neutral_without_one() {
+        let mut eye = UnifiedEyeData::default();
+        eye.left.pupil_diameter_mm = 4.0;
+        eye.right.pupil_diameter_mm = 6.0;
+        assert_eq!(eye.dilation(), 0.5, "no range");
+        (eye.min_dilation, eye.max_dilation) = (2.0, 8.0);
+        assert_eq!(eye.dilation(), 0.5);
+        eye.right.pupil_diameter_mm = 12.0;
+        assert_eq!(eye.dilation(), 1.0);
+        (eye.min_dilation, eye.max_dilation) = (999.0, 0.0);
+        assert_eq!(eye.dilation(), 0.5, "the .NET SDK's unset range");
+    }
 }
 
 #[repr(C)]

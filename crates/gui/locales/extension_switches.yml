@@ -1,0 +1,30 @@
+_version: 2
+extension_switches:
+  saved_next_start:
+    en: "Saved. It applies the next time tracking starts."
+  change_failed:
+    en: "Couldn't change it"
+  on:
+    en: "On"
+  off:
+    en: "Off"
+  not_built_in:
+    en: "Not in this version"
+  built_without:
+    en: "This version was built without it."
+  didnt_start:
+    en: "Didn't start"
+  running:
+    en: "Running"
+  add_on:
+    en: "%{name} add-on"
+  restart_to_apply:
+    en: "Tracking restarts to apply this, so it stops for a few seconds."
+  later:
+    en: "Later"
+  later_tooltip:
+    en: "Applies the next time tracking starts"
+  restart_now:
+    en: "Restart now"
+  switching_hint:
+    en: "Turning an add-on on or off restarts tracking, so it pauses for a few seconds. You're asked first."

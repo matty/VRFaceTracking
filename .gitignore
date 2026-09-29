@@ -24,7 +24,6 @@ obj/
 bin/
 
 .local/
-__pycache__/
 models/quest-pro/*.pt
 models/quest-pro/*.download
 plugins/**/*.dll

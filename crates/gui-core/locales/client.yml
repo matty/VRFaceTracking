@@ -1,0 +1,18 @@
+_version: 2
+client:
+  answered:
+    en: "Got an unexpected answer: %{status}"
+  bad_status:
+    en: "A status was sent that this app doesn't understand"
+  bad_reply:
+    en: "A reply was sent that this app doesn't understand"
+  cant_stop:
+    en: "This version can't be stopped from here. Update, or close the tracking window."
+  cant_switch_extensions:
+    en: "This version can't turn add-ons on or off here. Update to do so."
+  cant_change_settings:
+    en: "This version can't change settings here. Update, or edit config.json."
+  cant_install_modules:
+    en: "This version can't install modules here. Update to do so."
+  unreachable:
+    en: "Can't connect to %{address}"
