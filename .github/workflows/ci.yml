@@ -29,23 +29,9 @@ jobs:
         # Keep the cache even when the run fails.
         cache-on-failure: true
 
-    - name: Build
-      run: cargo build --verbose
-
-    - name: Validate Plugin Structure
-      shell: pwsh
-      run: |
-        # Build the plugin.
-        cargo build -p vrft-vd-module
-
-        # Check the plugins/ and runtime/ layout.
-        $test_dir = "test_structure"
-        New-Item -ItemType Directory -Force -Path "$test_dir/plugins"
-        New-Item -ItemType Directory -Force -Path "$test_dir/runtime"
-
-        if (-not (Test-Path "$test_dir/plugins")) { throw "Missing plugins/" }
-        if (-not (Test-Path "$test_dir/runtime")) { throw "Missing runtime/" }
-        Write-Host "✓ Plugin structure validated."
+    # cargo test builds everything else.
+    - name: Build plugin
+      run: cargo build -p vrft-vd-module
 
     - name: Run tests
       run: cargo test --verbose
