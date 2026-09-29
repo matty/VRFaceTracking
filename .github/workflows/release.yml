@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # The version is worked out from the release tags.
           fetch-depth: 0
@@ -65,17 +65,17 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
+      # One build, so the three share one dependency resolution.
       - name: Build Release
-        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-daemon -p vrft-gui
-
-      - name: Build Plugins
-        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-vd-module
+        run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-daemon -p vrft-gui -p vrft-vd-module
 
       - name: Build .NET Host
         run: |

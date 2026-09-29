@@ -8,14 +8,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI never debugs its builds: without debug info they compile and link
+  # faster, and the cache is smaller to save and restore.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
-    
+    - uses: actions/checkout@v5
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -23,13 +26,12 @@ jobs:
 
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
+      with:
+        # A cold build takes most of an hour, so keep what a failed run built.
+        cache-on-failure: true
 
     - name: Build
       run: cargo build --verbose
-
-    - name: Build without extensions
-      # The daemon and app must also build with every extension left out.
-      run: cargo build -p vrft-daemon -p vrft-gui --no-default-features
 
     - name: Validate Plugin Structure
       shell: pwsh
@@ -50,6 +52,8 @@ jobs:
       run: cargo test --verbose
 
     - name: Clippy
+      # The second run also checks that the daemon and app build with every
+      # extension left out, without a full build of its own.
       run: |
         cargo clippy -- -D warnings
         cargo clippy -p vrft-daemon -p vrft-gui --no-default-features -- -D warnings
