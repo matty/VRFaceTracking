@@ -287,6 +287,82 @@ final class Ui {
         }
     }
 
+    /**
+     * Children side by side while they fit, stacked when the window is too
+     * narrow for them, as on a tall Quest panel. In a row the flexible
+     * children share the width left over; stacked, every child spans it.
+     */
+    static final class Row extends LinearLayout {
+        private final float unit;
+        private final int gap;
+        private final java.util.ArrayList<View> flexible = new java.util.ArrayList<>();
+        private final java.util.ArrayList<Integer> minimums = new java.util.ArrayList<>();
+        private Boolean stacked;
+
+        /** {@code gapDp} separates the children either way. */
+        Row(Context context, float gapDp) {
+            super(context);
+            unit = context.getResources().getDisplayMetrics().density;
+            gap = Math.round(gapDp * unit);
+            setOrientation(HORIZONTAL);
+        }
+
+        /** A child that takes a share of the row and needs at least {@code minDp}. */
+        void addFlexible(View child, float minDp) {
+            flexible.add(child);
+            minimums.add(Math.round(minDp * unit));
+            addView(child);
+        }
+
+        /** A child that keeps its own width in the row. */
+        void addFixed(View child) {
+            addView(child);
+        }
+
+        @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            int width = MeasureSpec.getSize(widthSpec) - getPaddingLeft() - getPaddingRight();
+            int need = gap * Math.max(0, getChildCount() - 1);
+            int unspecified = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                int index = flexible.indexOf(child);
+                if (index >= 0) {
+                    need += minimums.get(index);
+                } else {
+                    child.measure(unspecified, unspecified);
+                    need += child.getMeasuredWidth();
+                }
+            }
+            boolean stack = MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED && need > width;
+            if (stacked == null || stacked != stack) arrange(stack);
+            super.onMeasure(widthSpec, heightSpec);
+        }
+
+        private void arrange(boolean stack) {
+            stacked = stack;
+            setOrientation(stack ? VERTICAL : HORIZONTAL);
+            setGravity(stack ? Gravity.START : Gravity.CENTER_VERTICAL);
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                boolean flex = flexible.contains(child);
+                LayoutParams params;
+                if (stack) {
+                    params = new LayoutParams(flex || child instanceof Segments
+                            ? LayoutParams.MATCH_PARENT : LayoutParams.WRAP_CONTENT,
+                            LayoutParams.WRAP_CONTENT);
+                    params.topMargin = i == 0 ? 0 : gap;
+                } else {
+                    params = flex
+                            ? new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1)
+                            : new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+                    params.leftMargin = i == 0 ? 0 : gap;
+                }
+                child.setLayoutParams(params);
+                if (child instanceof Segments) ((Segments) child).setStretched(stack);
+            }
+        }
+    }
+
     /** A row of choices in a sunken track; the chosen one is raised. */
     final class Segments extends LinearLayout {
         private final TextView[] options;
@@ -315,6 +391,15 @@ final class Ui {
                 options[i] = option;
             }
             select(initial);
+        }
+
+        /** Stretched, the choices share the track's full width equally. */
+        void setStretched(boolean stretch) {
+            for (TextView option : options) {
+                option.setLayoutParams(stretch
+                        ? new LayoutParams(0, dp(34), 1)
+                        : new LayoutParams(LayoutParams.WRAP_CONTENT, dp(34)));
+            }
         }
 
         private void select(int index) {

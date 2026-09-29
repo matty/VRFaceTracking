@@ -161,15 +161,15 @@ public final class MainActivity extends Activity {
 
         card.addView(ui.rule(Ui.LINE_SOFT));
 
-        LinearLayout stats = new LinearLayout(this);
-        stats.setOrientation(LinearLayout.HORIZONTAL);
+        // Wide enough for the longest value, "Not working", so a changing
+        // value never flips the row between side by side and stacked.
+        Ui.Row stats = new Ui.Row(this, 18);
         stats.setPadding(ui.dp(28), ui.dp(20), ui.dp(28), ui.dp(22));
         pcStat = new Stat("PC");
         cameraStat = new Stat("Cameras");
         eyeStat = new Stat("Eye gaze");
         for (Stat stat : new Stat[] {pcStat, cameraStat, eyeStat}) {
-            stats.addView(stat.view, new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            stats.addFlexible(stat.view, 120);
         }
         card.addView(stats);
 
@@ -215,20 +215,16 @@ public final class MainActivity extends Activity {
         return card;
     }
 
+    /** A setting's words beside its control, or above it on a narrow panel. */
     private View settingRow(String title, String description, View control) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        Ui.Row row = new Ui.Row(this, 16);
         row.setPadding(ui.dp(24), ui.dp(18), ui.dp(24), ui.dp(18));
         LinearLayout words = new LinearLayout(this);
         words.setOrientation(LinearLayout.VERTICAL);
         words.addView(ui.text(title, ui.medium, 15, Ui.TEXT));
         words.addView(ui.body(description, 13, Ui.TEXT_3), spaced(6));
-        LinearLayout.LayoutParams grow = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        grow.rightMargin = ui.dp(20);
-        row.addView(words, grow);
-        row.addView(control);
+        row.addFlexible(words, 200);
+        row.addFixed(control);
         return row;
     }
 
@@ -507,17 +503,26 @@ public final class MainActivity extends Activity {
         return 0;
     }
 
-    /** A column that stops growing at a width and stays centred beyond it. */
+    /**
+     * A column that stops growing at a width and stays centred beyond it, and
+     * keeps narrower side margins on a narrow panel.
+     */
     private static final class MaxWidthColumn extends LinearLayout {
         private final int maxWidth;
+        private final float unit;
 
         MaxWidthColumn(Context context, int maxWidth) {
             super(context);
             this.maxWidth = maxWidth;
+            unit = context.getResources().getDisplayMetrics().density;
         }
 
         @Override protected void onMeasure(int widthSpec, int heightSpec) {
             int width = MeasureSpec.getSize(widthSpec);
+            int side = Math.round((width < 480 * unit ? 16 : 32) * unit);
+            if (getPaddingLeft() != side) {
+                setPadding(side, getPaddingTop(), side, getPaddingBottom());
+            }
             if (width > maxWidth) {
                 widthSpec = MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.getMode(widthSpec));
             }
