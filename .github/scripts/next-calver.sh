@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# Prints the next CalVer version, YYYY.M.N, for a release tag prefix: `v` for
-# VRFT, `apk-v` for the headset app. N counts that prefix's releases this
-# month (UTC), from 0.
-#
-# With `dev`, prints a development build of that next release instead,
-# YYYY.M.N-dev.C, where C counts the commits since the last release with the
-# prefix. It sorts after every earlier dev build and before the release
-# itself, as the updater needs. build-support/version.rs does the same for
-# local builds.
+# Prints the next version, YYYY.M.N, for a tag prefix (`v` or `apk-v`).
+# With `dev`, prints YYYY.M.N-dev.C, where C is commits since the last release.
 #
 # Usage: next-calver.sh <tag-prefix> [dev]
 set -euo pipefail

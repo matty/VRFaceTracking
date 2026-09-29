@@ -1,17 +1,15 @@
 name: Release Headset App
 
-# Run by hand on main to publish the Quest Pro headset app as apk-vYYYY.M.N.
-# Every push to main that changes it republishes the rolling `apk-dev`
-# prerelease, a dev build versioned YYYY.M.N-dev.C and named "(Dev)" on the
-# headset. Both are signed with the public dev key in the repository, as local
-# builds are, so any of them installs over the others. VRFT itself is versioned and released
-# separately, by release.yml.
+# Headset app releases.
+# Run by hand on main: publish apk-vYYYY.M.N.
+# Push to main: rebuild the apk-dev prerelease.
+# Every build is signed with the repo's dev key, so each installs over the others.
 on:
   push:
     branches: [ "main" ]
     paths:
       - "android/questpro-camera/**"
-      # The panel bundles the desktop app's fonts.
+      # The app bundles the desktop app's fonts.
       - "crates/gui/resources/fonts/**"
       - ".github/workflows/release-apk.yml"
   workflow_dispatch:
@@ -32,7 +30,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # The version is worked out from the release tags.
+          # Versions come from the tags.
           fetch-depth: 0
 
       - name: Check prerequisites
@@ -48,7 +46,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # The runner image ships the Android SDK; add what AGP 8.5 builds against.
+      # Use the runner's Android SDK.
       - name: Setup Android SDK
         run: |
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -93,8 +91,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PROTOCOL: ${{ steps.protocol.outputs.protocol }}
         run: |
-          # A newer push publishes its own dev build. GitHub also refuses to
-          # tag this commit once main's workflow files differ from it.
+          # Skip if main has moved on; the newer run publishes.
           if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
             echo "::notice::main has moved on, so its own run publishes the dev build."
             exit 0
@@ -104,7 +101,7 @@ jobs:
             echo
             echo "Commit: $GITHUB_SHA"
           } > notes.md
-          # Recreated rather than edited, so the tag moves to this commit.
+          # Recreate it so the tag moves to this commit.
           gh release delete apk-dev --cleanup-tag --yes || true
           gh release create apk-dev --target "$GITHUB_SHA" --title "Headset app dev build ($VERSION)" \
             --notes-file notes.md --prerelease --latest=false \
@@ -122,7 +119,7 @@ jobs:
             echo
             bash .github/scripts/release-notes.sh apk-v android/questpro-camera
           } > notes.md
-          # The VRFT release stays the repository's latest.
+          # The VRFT release stays latest.
           gh release create "apk-v$VERSION" --target "$GITHUB_SHA" --title "Headset app $VERSION" \
             --notes-file notes.md --latest=false \
             vrft-questpro-camera.apk

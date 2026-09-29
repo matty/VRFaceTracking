@@ -1,11 +1,9 @@
 name: Release
 
-# Every push to main republishes the rolling `dev` prerelease, a dev build
-# versioned YYYY.M.N-dev.C. Running this workflow by hand on main publishes a
-# CalVer release, vYYYY.M.N. Each carries zips and a Velopack installer: the
-# installed app updates itself from the `stable` channel (releases) or the
-# `dev` channel (the dev prerelease). The headset app is versioned and
-# released separately, by release-apk.yml.
+# VRFT releases.
+# Run by hand on main: publish vYYYY.M.N (stable update channel).
+# Push to main: rebuild the dev prerelease (dev update channel).
+# The headset app is released by release-apk.yml.
 on:
   push:
     branches: [ "main" ]
@@ -13,7 +11,7 @@ on:
 
 permissions:
   contents: write
-  # To wait for the headset app's dev build.
+  # To wait for the apk-dev build.
   actions: read
 
 concurrency:
@@ -32,7 +30,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # The version is worked out from the release tags.
+          # Versions come from the tags.
           fetch-depth: 0
 
       - name: Choose version
@@ -52,7 +50,7 @@ jobs:
             channel=dev
             title="VRFaceTracking (Dev)"
           fi
-          # build-support/version.rs stamps this into vrft_d and vrft_gui.
+          # Stamped into vrft_d and vrft_gui.
           echo "VRFT_VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
@@ -73,7 +71,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # One build, so the three share one dependency resolution.
+      # One build for all three.
       - name: Build Release
         run: cargo build --release --target x86_64-pc-windows-msvc -p vrft-daemon -p vrft-gui -p vrft-vd-module
 
@@ -87,8 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A push that changes the headset app also rebuilds apk-dev
-          # (release-apk.yml). Bundle that build rather than the one before it.
+          # Wait for this push's apk-dev build, if there is one.
           for _ in $(seq 60); do
             status=$(gh run list --workflow release-apk.yml --commit "$GITHUB_SHA" --event push \
               --json status --jq '.[0].status // ""')
@@ -104,7 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The headset stream protocols this build reads, from the Quest Pro extension's camera.rs.
+          # The headset protocols this build reads.
           range=$(sed -n 's/^const PROTOCOLS: RangeInclusive<u32> = \([0-9]*\)\.\.=\([0-9]*\);$/\1 \2/p' extensions/quest-pro/daemon/src/camera.rs)
           read -r low high <<<"$range"
           if [ -z "$high" ]; then
@@ -114,20 +111,17 @@ jobs:
           protocols=$low
           [ "$low" = "$high" ] || protocols="$low to $high"
           tag= version=
-          # A dev build carries the headset app's dev build, when it speaks a
-          # protocol this build reads.
+          # Dev builds bundle apk-dev when its protocol fits.
           if [ "$GITHUB_EVENT_NAME" = push ] &&
             git fetch --force --quiet origin 'refs/tags/apk-dev:refs/tags/apk-dev' 2>/dev/null; then
             protocol=$(bash .github/scripts/headset-app.sh protocol apk-dev)
             if [ -n "$protocol" ] && ((protocol >= low && protocol <= high)); then
-              # The release title ends with the version: "Headset app dev build (2026.9.0-dev.76)".
+              # The title ends with the version, e.g. "(2026.9.0-dev.76)".
               version=$(gh release view apk-dev --json name --jq .name 2>/dev/null | sed -n 's/.*(\(.*\))$/\1/p' || true)
               [ -n "$version" ] && tag=apk-dev
             fi
           fi
-          # Otherwise the newest release that works with this build. The
-          # headset app is released less often than VRFT, so this is often a
-          # release from well before this one.
+          # Otherwise the newest compatible release.
           if [ -z "$tag" ]; then
             tag=$(bash .github/scripts/headset-app.sh newest "$low" "$high")
             version=${tag#apk-v}
@@ -152,7 +146,7 @@ jobs:
           TAG: ${{ steps.headset.outputs.tag }}
           VERSION: ${{ steps.headset.outputs.version }}
         run: |
-          # vrft_gui's Headset page installs this on the headset.
+          # The Headset page installs this.
           mkdir -p headset-app
           gh release download "$TAG" --pattern vrft-questpro-camera.apk --dir headset-app
           mv headset-app/vrft-questpro-camera.apk "headset-app/vrft-questpro-camera-$VERSION.apk"
@@ -165,20 +159,19 @@ jobs:
           function Make-Package($name, $active, $bundle_dotnet) {
             New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
-            # vrft_gui starts the vrft_d beside it.
+            # vrft_gui starts vrft_d.
             Copy-Item "$release_dir/vrft_d.exe", "$release_dir/vrft_gui.exe" "$name/"
             Copy-Item "docs/guide/tongue-training.md", "docs/guide/quest-pro-eye-tracking.md" "$name/"
             New-Item -ItemType Directory -Force -Path "$name/models/quest-pro" | Out-Null
             Copy-Item "models/quest-pro/qpro-independent-visual-axis-v2.json" "$name/models/quest-pro/"
             New-Item -ItemType Directory -Force -Path "$name/third_party" | Out-Null
             Copy-Item "third_party/Qpro-Enhanced-FT-LICENSE" "$name/third_party/"
-            # The headset app this build works with, named with its version.
+            # The bundled headset app.
             if (Test-Path "headset-app") {
               Copy-Item "headset-app" "$name/" -Recurse
             }
 
-            # Runtime (native vs .NET) is auto-detected from each plugin's PE header,
-            # so no `runtime` field is needed.
+            # Plugin runtime is detected from each DLL.
             $config = @{
               module = @{ active = $active }
               mutator = @{ enabled = $true; smoothness = 0.0 }
@@ -187,12 +180,12 @@ jobs:
             } | ConvertTo-Json -Depth 10
             [System.IO.File]::WriteAllText("$name/config.json", $config)
 
-            # All plugins live in a single recursively-scanned plugins/ folder.
+            # plugins/ is scanned recursively.
             New-Item -ItemType Directory -Force -Path "$name/plugins" | Out-Null
             Copy-Item "$release_dir/vd_module.dll" "$name/plugins/"
 
             if ($bundle_dotnet) {
-              # The .NET host lives in a dedicated runtime/ dir outside plugins/.
+              # The .NET host, kept outside plugins/.
               New-Item -ItemType Directory -Force -Path "$name/runtime" | Out-Null
               Copy-Item "dotnet/publish/VrcftRuntime.exe" "$name/runtime/"
             }
@@ -203,8 +196,7 @@ jobs:
           Make-Package "vrft_d-x86_64-windows-std"           "vd_module.dll"                   $false
           Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "VirtualDesktop.FaceTracking.dll" $true
 
-          # The installer holds the std package plus the .NET host, so VRCFT
-          # modules work too.
+          # Installer: the std package plus the .NET host.
           Copy-Item "vrft_d-x86_64-windows-std" "installer" -Recurse
           New-Item -ItemType Directory -Force -Path "installer/runtime" | Out-Null
           Copy-Item "dotnet/publish/VrcftRuntime.exe" "installer/runtime/"
@@ -238,10 +230,9 @@ jobs:
           CHANNEL: ${{ steps.version.outputs.channel }}
           TITLE: ${{ steps.version.outputs.title }}
         run: |
-          # Keep vpk in step with the velopack crate in crates/gui/Cargo.toml.
+          # Match the velopack crate version.
           dotnet tool install -g vpk --version 1.2.161
-          # Every update downloads the full package: the rolling dev release
-          # keeps only its newest build, so there's nothing to make deltas from.
+          # Full packages only: dev keeps just its newest build.
           vpk pack --packId VRFaceTracking --packVersion "$VERSION" --packDir installer \
             --mainExe vrft_gui.exe --packTitle "$TITLE" --packAuthors VRFaceTracking --runtime win-x64 \
             --icon crates/gui/resources/app.ico --channel "$CHANNEL" --delta None \
@@ -255,14 +246,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # A newer push publishes its own dev build. GitHub also refuses to
-          # tag this commit once main's workflow files differ from it.
+          # Skip if main has moved on; the newer run publishes.
           if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
             echo "::notice::main has moved on, so its own run publishes the dev build."
             exit 0
           fi
-          # Recreated rather than edited, so the tag moves to this commit and
-          # the last build's installer packages go with it.
+          # Recreate it so the tag and assets move to this commit.
           gh release delete dev --cleanup-tag --yes || true
           gh release create dev --target "$GITHUB_SHA" --title "Dev Build ($VERSION)" \
             --notes-file notes.md --prerelease --latest=false \

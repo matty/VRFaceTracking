@@ -8,8 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # CI never debugs its builds: without debug info they compile and link
-  # faster, and the cache is smaller to save and restore.
+  # No debug info: faster builds, smaller cache.
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
@@ -27,7 +26,7 @@ jobs:
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
       with:
-        # A cold build takes most of an hour, so keep what a failed run built.
+        # Keep the cache even when the run fails.
         cache-on-failure: true
 
     - name: Build
@@ -36,10 +35,10 @@ jobs:
     - name: Validate Plugin Structure
       shell: pwsh
       run: |
-        # Ensure the cdylib plugin builds
+        # Build the plugin.
         cargo build -p vrft-vd-module
 
-        # Verify the unified runtime layout: plugins/ (scanned) + runtime/ (host)
+        # Check the plugins/ and runtime/ layout.
         $test_dir = "test_structure"
         New-Item -ItemType Directory -Force -Path "$test_dir/plugins"
         New-Item -ItemType Directory -Force -Path "$test_dir/runtime"
@@ -52,8 +51,7 @@ jobs:
       run: cargo test --verbose
 
     - name: Clippy
-      # The second run also checks that the daemon and app build with every
-      # extension left out, without a full build of its own.
+      # The second run checks the build without extensions.
       run: |
         cargo clippy -- -D warnings
         cargo clippy -p vrft-daemon -p vrft-gui --no-default-features -- -D warnings

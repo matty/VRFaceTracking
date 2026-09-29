@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Prints Markdown release notes: the commits since the last release tag with
-# this prefix, limited to the given paths and grouped by conventional-commit
-# type.
+# Prints release notes: commits since the last tag with this prefix, grouped by type.
 #
 # Usage: release-notes.sh <tag-prefix> [pathspec...]
 set -euo pipefail
