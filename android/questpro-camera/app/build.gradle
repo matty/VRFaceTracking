@@ -53,10 +53,6 @@ def appVersionCode(String version) {
     return release - 100 + Math.min(calver.group(4) as int, 99)
 }
 
-// Release builds are signed only when a keystore is supplied, as the release
-// workflow does from repository secrets. Otherwise they come out unsigned.
-def releaseKeystore = System.getenv('VRFT_APK_KEYSTORE')
-
 android {
     namespace 'io.github.matty.vrft.questprocamera'
     compileSdk 34
@@ -76,21 +72,21 @@ android {
     // The desktop app's typefaces (Geist, with its licence), so the panel matches it.
     sourceSets { main { assets.srcDirs += '../../../crates/gui/resources/fonts' } }
 
+    // The app is always sideloaded, so every build, local or CI, debug or
+    // release, is signed with the public dev key in the repository. That keeps
+    // one signature, so any build installs over any other.
     signingConfigs {
-        if (releaseKeystore) {
-            release {
-                storeFile file(releaseKeystore)
-                storePassword System.getenv('VRFT_APK_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('VRFT_APK_KEY_ALIAS')
-                keyPassword System.getenv('VRFT_APK_KEY_PASSWORD')
-            }
+        dev {
+            storeFile rootProject.file('dev.keystore')
+            storePassword 'android'
+            keyAlias 'vrft-dev'
+            keyPassword 'android'
         }
     }
 
     buildTypes {
-        release {
-            if (releaseKeystore) signingConfig signingConfigs.release
-        }
+        debug { signingConfig signingConfigs.dev }
+        release { signingConfig signingConfigs.dev }
     }
 
     compileOptions {

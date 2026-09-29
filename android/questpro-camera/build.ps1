@@ -1,5 +1,5 @@
-# Builds the debug APK, or with -Release the release APK: unsigned unless the
-# VRFT_APK_KEYSTORE* variables name a signing key, as the release workflow sets.
+# Builds the debug APK, or with -Release the release APK. Both are signed with
+# the repository's dev.keystore, as the release workflow's builds are.
 param([switch]$Release)
 $ErrorActionPreference = 'Stop'
 # The toolchain from setup-toolchain.ps1 in <repo>/.local, else a sibling

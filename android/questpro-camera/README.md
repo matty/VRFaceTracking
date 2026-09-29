@@ -32,7 +32,7 @@ This project targets Android API 34 with Android Gradle Plugin 8.5.2, Gradle 8.7
 ..\..\..\android-tools\platform-tools\adb.exe shell am start -n io.github.matty.vrft.questprocamera/.MainActivity
 ```
 
-`.\build.ps1 -Release` builds the release APK instead. It is unsigned unless the release key is supplied; see [Versions and Releases](../../docs/internals/releasing.md#signing-the-headset-app).
+`.\build.ps1 -Release` builds the release APK instead. Both are signed with the repository's dev key, so either installs over the other and over the published builds; see [Versions and Releases](../../docs/internals/releasing.md#signing-the-headset-app).
 
 In the APK, press **Start streaming**. Grant **VRFT Quest Pro Camera** Superuser access in Magisk when prompted. Then open your streaming app (Virtual Desktop, Steam Link or another) and connect to the PC; an app using face tracking activates the face cameras while the foreground service runs behind it. VRFT doesn't need a tracking module for the cameras, eye gaze or tongue. Press **Stop streaming** in the APK to stop capture. The injected library stays loaded until the headset is rebooted, as with the reference implementation.
 

@@ -65,25 +65,10 @@ A VRFT release's notes, and the `dev` prerelease's description, also link the ne
 
 - The VRFT package also carries that headset app release's APK as `headset-app/vrft-questpro-camera-<version>.apk`, which the desktop app's Headset page installs. Without a compatible release, the package has no `headset-app/` folder.
 - The VRFT release is marked as the repository's latest, so `releases/latest/download/vrft_d-x86_64-windows-std.zip` always points to it. The headset app release is not marked latest.
-- Every push to `main` republishes the rolling `dev` prerelease with a dev build, `YYYY.M.N-dev.C`, and its installer. Every push to `main` that changes `android/questpro-camera/` does the same for the headset app's rolling `apk-dev` prerelease, signed with the release key. The VRFT dev build carries the newest compatible headset app **release**, not the `apk-dev` build.
+- Every push to `main` republishes the rolling `dev` prerelease with a dev build, `YYYY.M.N-dev.C`, and its installer. Every push to `main` that changes `android/questpro-camera/` does the same for the headset app's rolling `apk-dev` prerelease. The VRFT dev build carries the newest compatible headset app **release**, not the `apk-dev` build.
 
 ## Signing the headset app
 
-Android only installs an update signed with the same key as the installed app. The debug key in `../toolchain/android-user-home/debug.keystore` stays for local builds. Releases and `apk-dev` builds use a separate release key, so they install over each other, but moving between a local debug build and either of them means uninstalling the app first.
+The headset app is always sideloaded, never published to a store, so it has no private release key. Every build, whether local or from CI, debug or release, is signed with the public dev key committed at `android/questpro-camera/dev.keystore` (alias `vrft-dev`, password `android`). Android only installs an update signed with the same key as the installed app, so one key means any build installs over any other, and the workflow needs no secrets.
 
-Create the release key once and keep a backup outside the repository: a lost key means every user has to uninstall to take the next update.
-
-```powershell
-keytool -genkeypair -keystore vrft-release.jks -alias vrft -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=VRFT"
-```
-
-Then add four repository secrets, which `release-apk.yml` reads. `keytool` makes a PKCS12 keystore, where the key password is the keystore password, so enter the same value for both:
-
-```powershell
-gh secret set VRFT_APK_KEYSTORE_BASE64 --body ([Convert]::ToBase64String([IO.File]::ReadAllBytes("vrft-release.jks")))
-gh secret set VRFT_APK_KEYSTORE_PASSWORD
-gh secret set VRFT_APK_KEY_ALIAS --body vrft
-gh secret set VRFT_APK_KEY_PASSWORD
-```
-
-To build a signed release APK locally, set `VRFT_APK_KEYSTORE` (the `.jks` path), `VRFT_APK_KEYSTORE_PASSWORD`, `VRFT_APK_KEY_ALIAS` and `VRFT_APK_KEY_PASSWORD`, then run `android/questpro-camera/build.ps1 -Release`. Without them, `-Release` produces an unsigned APK.
+Anyone can sign an APK with this key, so it proves nothing about who built one. Install the app from this repository's releases or from your own build.

@@ -6,7 +6,7 @@ This file provides guidance to coding agents working in this repository.
 
 Scripts here resolve sibling folders by relative path, so the repo must sit in a workspace next to them:
 
-- `.local/toolchain/` (gitignored, created by `android/questpro-camera/setup-toolchain.ps1`): JDK 17, Android SDK (platform 34, build-tools 34.0.0, platform-tools, and NDK `26.1.10909125` with `-Ndk`), Gradle 8.7 via the wrapper. The build scripts fall back to a sibling `../toolchain/`. `android-user-home/debug.keystore` signs the debug APK; if it changes, `adb install -r` fails until the app is uninstalled.
+- `.local/toolchain/` (gitignored, created by `android/questpro-camera/setup-toolchain.ps1`): JDK 17, Android SDK (platform 34, build-tools 34.0.0, platform-tools, and NDK `26.1.10909125` with `-Ndk`), Gradle 8.7 via the wrapper. The build scripts fall back to a sibling `../toolchain/`. Every APK build is signed with the committed `android/questpro-camera/dev.keystore`, not the toolchain's debug keystore.
 - `.local/toolchain/android-sdk/platform-tools/adb.exe` (or `../android-tools/platform-tools/adb.exe`): adb is not on PATH, so call it by this path.
 - `../Qpro-Enhanced-FT/`: clone of the upstream n0tmast3r project that the Quest Pro code is ported from. **Read-only reference**: never edit, build or commit there.
 
@@ -63,7 +63,7 @@ CI does not run these, so run them yourself when you touch the area:
 
 ## Android app (`android/questpro-camera`)
 
-- Build with `build.ps1`, which sets JAVA_HOME, ANDROID_HOME and GRADLE_USER_HOME from `.local/toolchain` (else `../toolchain`). Don't call gradle directly. Output: `app/build/outputs/apk/debug/app-debug.apk`. `build.ps1 -Release` builds the release APK, unsigned without the release key. A release-signed APK won't install over the debug-signed one, or the reverse, without an uninstall.
+- Build with `build.ps1`, which sets JAVA_HOME, ANDROID_HOME and GRADLE_USER_HOME from `.local/toolchain` (else `../toolchain`). Don't call gradle directly. Output: `app/build/outputs/apk/debug/app-debug.apk`. `build.ps1 -Release` builds the release APK. Both, and the CI builds, share the dev key, so they install over each other; an app still signed with an older key needs one uninstall.
 - The arm64 helpers in `app/src/main/assets/native/` are prebuilt and committed. After you edit `native/*.c`, rebuild them with `build-native.ps1 -NdkRoot ..\..\.local\toolchain\android-sdk\ndk\26.1.10909125` (install the NDK with `setup-toolchain.ps1 -Ndk`). An injected helper stays loaded until the headset reboots.
 - Read `android/questpro-camera/README.md` before you change the eye pipeline. It covers engine profiles, the bind-mount model patch, and the restore sequence, including the emergency restore.
 

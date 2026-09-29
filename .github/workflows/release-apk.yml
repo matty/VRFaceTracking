@@ -3,8 +3,8 @@ name: Release Headset App
 # Run by hand on main to publish the Quest Pro headset app as apk-vYYYY.M.N.
 # Every push to main that changes it republishes the rolling `apk-dev`
 # prerelease, a dev build versioned YYYY.M.N-dev.C and named "(Dev)" on the
-# headset. Both are signed with the release key from the repository secrets,
-# so either installs over the other. VRFT itself is versioned and released
+# headset. Both are signed with the public dev key in the repository, as local
+# builds are, so any of them installs over the others. VRFT itself is versioned and released
 # separately, by release.yml.
 on:
   push:
@@ -36,15 +36,9 @@ jobs:
           fetch-depth: 0
 
       - name: Check prerequisites
-        env:
-          KEYSTORE: ${{ secrets.VRFT_APK_KEYSTORE_BASE64 }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
             echo "::error::Release from main."
-            exit 1
-          fi
-          if [ -z "$KEYSTORE" ]; then
-            echo "::error::The VRFT_APK_KEYSTORE_BASE64 secret is missing. See docs/internals/releasing.md."
             exit 1
           fi
 
@@ -68,18 +62,10 @@ jobs:
 
       - name: Build APK
         env:
-          KEYSTORE: ${{ secrets.VRFT_APK_KEYSTORE_BASE64 }}
-          VRFT_APK_KEYSTORE_PASSWORD: ${{ secrets.VRFT_APK_KEYSTORE_PASSWORD }}
-          VRFT_APK_KEY_ALIAS: ${{ secrets.VRFT_APK_KEY_ALIAS }}
-          VRFT_APK_KEY_PASSWORD: ${{ secrets.VRFT_APK_KEY_PASSWORD }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          export VRFT_APK_KEYSTORE="$RUNNER_TEMP/release.jks"
-          base64 --decode <<<"$KEYSTORE" > "$VRFT_APK_KEYSTORE"
           bash android/questpro-camera/gradlew -p android/questpro-camera \
             :app:assembleRelease "-PappVersion=$VERSION" --no-daemon
-          rm "$VRFT_APK_KEYSTORE"
-          # Only a signed build is named app-release.apk.
           cp android/questpro-camera/app/build/outputs/apk/release/app-release.apk vrft-questpro-camera.apk
 
       - name: Find protocol
