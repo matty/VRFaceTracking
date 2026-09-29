@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # The version is worked out from the release tags.
           fetch-depth: 0
@@ -43,13 +43,21 @@ jobs:
           fi
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      # The runner image ships the Android SDK; add what AGP 8.5 builds against.
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            echo "::error::No Android SDK at ANDROID_HOME ($ANDROID_HOME)"
+            exit 1
+          fi
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Choose version
         id: version
