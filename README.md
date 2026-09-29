@@ -57,3 +57,11 @@ cargo build
 ```
 
 **[Glossary →](docs/glossary.md)**
+
+---
+
+## Thanks
+
+- [VRCFaceTracking](https://github.com/benaclejames/VRCFaceTracking), the original app. VRFT follows its unified expressions, its parameters and its module ecosystem.
+- [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) by n0tmast3r, the original Quest Pro enhanced tongue tracking and independent eye gaze work that VRFT's Quest Pro support is ported from.
+- [Qpro-Enhanced-FT-Wireless](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless) by Fwooffy, the wireless fork.
