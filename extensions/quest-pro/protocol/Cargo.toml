@@ -1,0 +1,12 @@
+[package]
+name = "vrft-quest-pro-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Quest Pro's routes and wire types, shared by its daemon and desktop app halves"
+
+[lib]
+name = "vrft_quest_pro_protocol"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

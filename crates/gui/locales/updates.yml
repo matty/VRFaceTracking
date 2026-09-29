@@ -1,0 +1,36 @@
+_version: 2
+updates:
+  title:
+    en: Updates
+  description:
+    en: New versions download by themselves and install when the app restarts.
+  description_dev:
+    en: "Dev builds update with every change, before a release."
+  version:
+    en: "Version %{version}"
+  channel_dev:
+    en: Dev builds
+  channel_stable:
+    en: Releases
+  unavailable:
+    en: "This copy wasn't installed, so it can't update itself."
+  idle:
+    en: Not checked yet
+  checking:
+    en: "Checking for updates…"
+  up_to_date:
+    en: "You're up to date"
+  downloading:
+    en: "Downloading %{version}…"
+  ready:
+    en: "%{version} is ready to install"
+  failed:
+    en: "Couldn't update: %{error}"
+  check:
+    en: Check for updates
+  restart:
+    en: Restart to update
+  restart_tooltip:
+    en: Tracking stops while the app updates and reopens
+  sidebar_ready:
+    en: Update ready

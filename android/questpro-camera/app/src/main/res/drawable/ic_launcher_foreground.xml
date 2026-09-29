@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The mark at the size it has on the desktop app's icon tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+    <group
+        android:pivotX="128"
+        android:pivotY="128"
+        android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:translateY="-3">
+        <path
+            android:pathData="M62,102 V86 A24,24 0 0 1 86,62 H102 M154,62 H170 A24,24 0 0 1 194,86 V102 M194,154 V170 A24,24 0 0 1 170,194 H154 M102,194 H86 A24,24 0 0 1 62,170 V154"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="17"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M102,150 Q128,174 154,150"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="17"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M110,97 A9,9 0 0 1 119,106 V118 A9,9 0 0 1 101,118 V106 A9,9 0 0 1 110,97 Z M146,97 A9,9 0 0 1 155,106 V118 A9,9 0 0 1 137,118 V106 A9,9 0 0 1 146,97 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

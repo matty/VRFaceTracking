@@ -1,15 +1,35 @@
 {
+  "extensions": {
+    "quest-pro": {
+      "enabled": true
+    }
+  },
+  "max_fps": 60.0,
   "module": {
     "active": "vd_module.dll"
   },
   "mutator": {
-    "enabled": true,
-    "smoothness": 0.0
+    "enabled": false,
+    "smoothness": 0.0,
+    "filter": {
+      "d_cutoff": 0.1,
+      "head": true
+    },
+    "correctors": {
+      "enabled": true,
+      "mouth_closed_clamp": true,
+      "lip_suck_limiter": true,
+      "eyelid_blend": 0.0,
+      "eye_look_symmetrize": false
+    },
+    "adjustment": {
+      "enabled": false,
+      "ranges": {}
+    }
   },
   "osc": {
     "output_mode": "VRChat",
     "send_address": "127.0.0.1",
     "send_port": 9000
-  },
-  "max_fps": 60.0
+  }
 }

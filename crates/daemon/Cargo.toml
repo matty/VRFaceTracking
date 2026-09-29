@@ -14,19 +14,27 @@ path = "src/lib.rs"
 [dependencies]
 vrft-common = { workspace = true }
 vrft-api = { workspace = true }
+vrft-extension = { workspace = true }
+vrft-protocol = { workspace = true }
+# Optional extensions, each switched on by its feature and then enabled or
+# disabled at runtime in config.json.
+vrft-quest-pro-daemon = { workspace = true, optional = true }
 libloading = "0.9"
 rosc = "0.11"
-tokio = { version = "1.49", features = ["full"] }
+tokio = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = "0.11"
-ureq = { version = "3.1", features = ["json"] }
+ureq = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 mdns-sd = "0.17"
-axum = "0.8"
+axum = { workspace = true }
 ctrlc = "3.5"
 fancy-regex = "0.17"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [features]
+default = ["quest-pro"]
 xtralog = []
+quest-pro = ["dep:vrft-quest-pro-daemon"]

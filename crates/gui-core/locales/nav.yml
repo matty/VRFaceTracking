@@ -1,0 +1,10 @@
+_version: 2
+nav:
+  home:
+    en: Home
+  settings:
+    en: Settings
+  modules:
+    en: Modules
+  tracking:
+    en: Tracking Settings

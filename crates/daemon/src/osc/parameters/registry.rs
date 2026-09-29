@@ -60,7 +60,7 @@ impl ParameterRegistry {
 
         // Eye Pupils
         parameters.push(Box::new(EParam::simple("v2/PupilDilation", |d| {
-            (d.eye.left.pupil_diameter_mm + d.eye.right.pupil_diameter_mm) / 2.0
+            d.eye.dilation()
         })));
         parameters.push(Box::new(EParam::simple("v2/PupilDiameterLeft", |d| {
             d.eye.left.pupil_diameter_mm * 0.1
@@ -577,7 +577,7 @@ impl ParameterRegistry {
         &mut self,
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
-    ) {
+    ) -> usize {
         log::debug!(
             "registry.reset() starting: {} avatar params, {} param types",
             avatar_params.len(),
@@ -647,6 +647,8 @@ impl ParameterRegistry {
                 .count(),
             ft_params.len()
         );
+
+        relevant_count
     }
 
     /// Process all parameters and collect OSC messages

@@ -1,0 +1,90 @@
+_version: 2
+summary:
+  update_vrft:
+    en: "Update VRFaceTracking"
+  app_version_newer:
+    en: "Headset app %{version} is newer than this app supports"
+  app_newer:
+    en: "The headset app is newer than this app supports"
+  update_headset_app:
+    en: "Update headset app"
+  app_version_too_old:
+    en: "Headset app %{version} is too old for this app"
+  app_too_old:
+    en: "The headset app is too old for this app"
+  not_streaming:
+    en: "Not streaming"
+  over_usb:
+    en: "Over USB"
+  place_app_version:
+    en: "%{place} · app %{version}"
+  streaming:
+    en: "Streaming"
+  live:
+    en: "Live"
+  waiting:
+    en: "Waiting"
+  no_frames_from_headset:
+    en: "No frames from the headset"
+  off:
+    en: "Off"
+  headset_not_streaming:
+    en: "Headset not streaming"
+  running:
+    en: "Running"
+  ms_per_frame:
+    en: "%{ms} ms per frame"
+  not_running:
+    en: "Not running"
+  paused:
+    en: "Paused"
+  no_prediction_for:
+    en: "No prediction for %{ms} ms"
+  starting:
+    en: "Starting…"
+  waiting_first_prediction:
+    en: "Waiting for the first prediction…"
+  idle:
+    en: "Idle"
+  starts_with_mouth_cameras:
+    en: "Starts with the mouth cameras"
+  vrft_not_running:
+    en: "Tracking isn't running"
+  no_frames:
+    en: "No frames"
+  no_frames_detail:
+    en: "They run while an app on the headset uses face tracking"
+  per_eye:
+    en: "Per-eye"
+  hz:
+    en: "%{rate} Hz"
+  error:
+    en: "Error"
+  combined:
+    en: "Combined"
+  combined_detail:
+    en: "The headset sends one gaze for both eyes"
+  per_eye_off:
+    en: "Per-eye gaze is turned off here"
+  unavailable:
+    en: "Unavailable"
+  no_eye_data:
+    en: "No eye data from the headset"
+  straight_ahead:
+    en: "straight ahead"
+  degrees_right:
+    en: "%{degrees}° right"
+  degrees_left:
+    en: "%{degrees}° left"
+  about_metres:
+    en: "About %{metres} m"
+  far_away:
+    en: "Far away"
+  diverging:
+    en: "Not meeting"
+  eyes_meet:
+    en: "%{place} (%{angle})"
+  lost_connection:
+    en: "Lost connection"
+  cant_reach_headset:
+    en: "Can't reach headset"

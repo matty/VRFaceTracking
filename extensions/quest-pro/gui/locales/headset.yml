@@ -1,0 +1,326 @@
+_version: 2
+headset:
+  title:
+    en: "Headset"
+  headset:
+    en: "Headset"
+  wifi_not_allowed:
+    en: "Put on the headset and allow USB debugging, with Always allow ticked. It's asked again every few seconds until it's allowed."
+  busy_downloading:
+    en: "Downloading the connection tool…"
+  busy_connecting:
+    en: "Connecting to the headset…"
+  busy_disconnecting:
+    en: "Disconnecting…"
+  busy_installing:
+    en: "Installing the headset app (up to a minute)…"
+  busy_opening:
+    en: "Opening the app on the headset…"
+  busy_starting:
+    en: "Starting the stream…"
+  busy_stopping:
+    en: "Stopping the stream and putting Meta's eye model back…"
+  busy_restarting:
+    en: "Restarting the stream…"
+  busy_reading_log:
+    en: "Reading the headset app's log…"
+  address_placeholder:
+    en: "Headset IP address"
+  found_on_wifi:
+    en: "Found the headset on Wi-Fi at %{ip} and connected."
+  found_from_headset:
+    en: "Found from the headset"
+  found_from_stream:
+    en: "Found from the camera stream"
+  found_on_network:
+    en: "Found on the network"
+  found_ip_from_headset:
+    en: "Found %{ip} from the headset"
+  found_ip_from_stream:
+    en: "Found %{ip} from the camera stream"
+  found_ip_on_network:
+    en: "Found %{ip} on the network"
+  use_ip:
+    en: "Use %{ip}"
+  error_see_log:
+    en: "%{error}. See the log below."
+  downloaded_tool:
+    en: "Downloaded the connection tool."
+  connected_wifi_at:
+    en: "Connected over Wi-Fi at %{ip}."
+  enter_address:
+    en: "Enter the headset's IP address, such as 192.168.1.20."
+  connected_to:
+    en: "Connected to %{target}."
+  installed:
+    en: "Installed %{package}."
+  installed_replaced:
+    en: "Installed %{package}. Magisk will ask for root again."
+  installed_stream_stopped:
+    en: "Installed %{package}. The stream stopped for it."
+  install_prompt:
+    en: "Install"
+  choose_apk:
+    en: "Choose an .apk file."
+  starting_stream:
+    en: "Starting the stream. Allow root on the headset if Magisk asks."
+  stopped_message:
+    en: "Stopped."
+  eye_gaze_on_restarted:
+    en: "Per-eye gaze on; stream restarted. Go back to your streaming app on the headset."
+  eye_gaze_off_restarted:
+    en: "Per-eye gaze off; stream restarted. Go back to your streaming app on the headset."
+  eye_gaze_on_next:
+    en: "Per-eye gaze on from the next stream."
+  eye_gaze_off_next:
+    en: "Per-eye gaze off from the next stream."
+  looking_for_tool:
+    en: "Looking for the connection tool…"
+  download_tool_to_set_up:
+    en: "Download the connection tool to set up the headset."
+  tool_not_working:
+    en: "The connection tool isn't working."
+  streaming_not_reachable:
+    en: "Quest Pro streaming. Not reachable over USB or Wi-Fi right now."
+  not_reachable:
+    en: "Not reachable over USB or Wi-Fi."
+  wifi_linked:
+    en: "%{name} over Wi-Fi."
+  wifi_almost:
+    en: "%{name} over Wi-Fi. Almost there."
+  wifi_streaming:
+    en: "%{name} over Wi-Fi. Streaming to this PC."
+  usb_linked:
+    en: "%{name}, plugged in over USB."
+  usb_almost:
+    en: "%{name}, plugged in over USB. Almost there."
+  usb_streaming:
+    en: "%{name}, plugged in over USB. Streaming to this PC."
+  waiting_for_debugging:
+    en: "%{name}, waiting for you to allow USB debugging."
+  not_responding_replug:
+    en: "%{name} isn't responding. Unplug it and plug it back in."
+  device_state:
+    en: "%{name}: %{state}."
+  control:
+    en: "Link"
+  control_wifi:
+    en: "Link · Wi-Fi"
+  control_usb:
+    en: "Link · USB"
+  looking:
+    en: "Looking…"
+  tool_not_downloaded:
+    en: "Tool not downloaded"
+  not_working:
+    en: "Not working"
+  not_connected:
+    en: "Not connected"
+  installs_and_starts:
+    en: "Installs and starts the app"
+  allow_usb_debugging:
+    en: "Allow USB debugging"
+  not_responding:
+    en: "Not responding"
+  camera_stream:
+    en: "Camera stream"
+  over_usb:
+    en: "Over USB"
+  over_wifi:
+    en: "Over Wi-Fi"
+  starting:
+    en: "Starting…"
+  sent_not_received:
+    en: "Sent, not received yet"
+  not_started:
+    en: "Not started"
+  receiving:
+    en: "Receiving"
+  not_receiving:
+    en: "Not receiving"
+  connected:
+    en: "Connected"
+  streaming:
+    en: "Streaming"
+  stopped:
+    en: "Stopped"
+  this_pc:
+    en: "This PC"
+  vrft_version:
+    en: "VRFaceTracking %{version}"
+  link_only_for_control:
+    en: "Tracking keeps working without the USB or Wi-Fi link. It's only needed to install, start and stop the headset app."
+  set_up:
+    en: "Set up"
+  steps_done:
+    en: "%{done} of %{total}"
+  found:
+    en: "Found"
+  allowed:
+    en: "Allowed"
+  download:
+    en: "Download"
+  download_tooltip:
+    en: "Downloads Google's Platform-Tools to %{destination}."
+  from_file:
+    en: "From file…"
+  start_stream:
+    en: "Start stream"
+  stop_stream:
+    en: "Stop stream"
+  open_on_headset:
+    en: "Open on headset"
+  stream:
+    en: "Stream"
+  streaming_not_found:
+    en: "The headset is streaming, but this PC hasn't found it. Keep both on the same network."
+  stream_didnt_start:
+    en: "The stream didn't start. Allow root on the headset if Magisk asks, then press Start stream again."
+  install_version:
+    en: "Install %{version}"
+  update_to_version:
+    en: "Update to %{version}"
+  reinstall:
+    en: "Reinstall"
+  install_older_version:
+    en: "Install older %{version}"
+  reinstall_warning:
+    en: "Reinstalling resets the headset app's settings, and Magisk asks to allow root again the next time it starts."
+  uninstall_and_install:
+    en: "Uninstall and install %{package}"
+  not_installed:
+    en: "Not installed"
+  comes_with_vrft:
+    en: "Comes with VRFaceTracking"
+  local_build:
+    en: "Local build"
+  chosen_file:
+    en: "Chosen file"
+  available:
+    en: "Available"
+  none:
+    en: "None"
+  headset_app_newer:
+    en: "The headset's app is newer than this one. Keep it unless you need this version."
+  app_version_too_new:
+    en: "The headset app (%{version}) is newer than this app can read. Update VRFaceTracking from Releases."
+  app_too_new:
+    en: "The headset app is newer than this app can read. Update VRFaceTracking from Releases."
+  app_version_too_old_install:
+    en: "The headset app (%{version}) is too old for this app. Install the version below."
+  app_too_old_install:
+    en: "The headset app is too old for this app. Install the version below."
+  app_version_too_old_releases:
+    en: "The headset app (%{version}) is too old for this app. Get a newer one from Releases."
+  app_too_old_releases:
+    en: "The headset app is too old for this app. Get a newer one from Releases."
+  not_a_quest_pro:
+    en: "This device isn't a Quest Pro. The VRFaceTracking headset app only works on a Quest Pro."
+  couldnt_read_headset:
+    en: "Couldn't read the headset. Unplug and reconnect it."
+  headset_app:
+    en: "Headset app"
+  on_the_headset:
+    en: "On the headset"
+  battery:
+    en: "Battery"
+  battery_charging:
+    en: "%{percent}%, charging"
+  battery_charging_dotted:
+    en: "%{percent}% · charging"
+  details:
+    en: "Details"
+  firmware:
+    en: "Firmware"
+  releases:
+    en: "Releases"
+  per_eye_gaze:
+    en: "Per-eye gaze"
+  experimental:
+    en: "EXPERIMENTAL"
+  eye_gaze_description:
+    en: "Lets your avatar's eyes meet at what you look at. Swaps Meta's eye model while the stream runs."
+  eye_gaze_note:
+    en: "Changing it restarts the stream. Meta's model returns when the stream stops. Allow root if Magisk asks."
+  connect:
+    en: "Connect"
+  download_tool_first:
+    en: "Download the connection tool first."
+  connected_over_wifi:
+    en: "Connected over Wi-Fi"
+  use_wifi:
+    en: "Use Wi-Fi"
+  use_wifi_tooltip:
+    en: "Also connect over Wi-Fi, until the headset restarts"
+  connection_details:
+    en: "Connection details"
+  looking_for_adb:
+    en: "Looking for the connection tool…"
+  adb_not_downloaded:
+    en: "The connection tool isn't downloaded yet. It goes in %{destination}, and downloading it means accepting the Android SDK terms."
+  no_headset_found:
+    en: "No headset found over USB or Wi-Fi."
+  download_to_vrft_folder:
+    en: "Download to the VRFaceTracking folder"
+  download_to_vrft_folder_tooltip:
+    en: "Downloads Google's Platform-Tools, the connection tool, into %{destination} and uses that copy from now on. Downloading them means accepting the Android SDK terms."
+  the_vrft_folder:
+    en: "the VRFaceTracking folder"
+  waiting_for_permission:
+    en: "Waiting for permission…"
+  replug_headset:
+    en: "Unplug the headset and plug it back in"
+  use:
+    en: "Use"
+  disconnect:
+    en: "Disconnect"
+  headset_log:
+    en: "Headset log"
+  refresh:
+    en: "Refresh"
+  show_log:
+    en: "Show log"
+  copy:
+    en: "Copy"
+  log_empty:
+    en: "The headset app hasn't logged anything recently."
+  hide_log_tooltip:
+    en: "Hide the headset app's log"
+  show_log_tooltip:
+    en: "Show the headset app's log"
+  android_sdk_terms:
+    en: "Android SDK terms"
+  firmware_unknown:
+    en: "Firmware unknown until the headset is reachable"
+  firmware_tested:
+    en: "Tested on this headset's firmware"
+  firmware_untested:
+    en: "Untested on this firmware; it may not work well"
+  firmware_unsupported:
+    en: "Not supported on this firmware; the headset reports an error"
+  step_download:
+    en: "Download the connection tool"
+  step_download_hint:
+    en: "The connection tool is Google's Platform-Tools. Downloading it means accepting the Android SDK terms."
+  step_connect:
+    en: "Connect the headset"
+  step_connect_hint:
+    en: "Turn on Developer Mode for the headset in the Meta Horizon app, then plug it into this PC with a USB cable that carries data."
+  step_allow:
+    en: "Allow USB debugging"
+  step_allow_hint:
+    en: "Put the headset on and allow USB debugging for this computer. Tick Always allow so it doesn't ask again."
+  step_install:
+    en: "Install the VRFaceTracking headset app"
+  step_install_hint:
+    en: "It sends the headset's mouth and eye cameras to this PC."
+  step_start:
+    en: "Start the camera stream"
+  step_start_hint:
+    en: "The headset app starts sending its mouth and eye cameras. If Magisk asks on the headset, allow root."
+  step_receive:
+    en: "This PC receives the cameras"
+  step_receive_hint:
+    en: "Put the headset on, with the PC and headset on the same network."
+  streaming_not_found_details:
+    en: "If discovery is blocked, set VRFT_QUEST_PRO_ADDR to the headset's IP:27274 and restart tracking."

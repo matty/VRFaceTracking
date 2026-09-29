@@ -1,0 +1,428 @@
+_version: 2
+tongue:
+  page_title:
+    en: "Training"
+  page_description:
+    en: "Record your tongue, train on this PC, then switch to a model that knows you."
+  not_running:
+    en: "Tracking isn't running"
+  loading:
+    en: "Loading…"
+  recording:
+    en: "Recording"
+  mode_core:
+    en: "Basic poses"
+  mode_core_about:
+    en: "17 poses · about 2½ min"
+  mode_follow:
+    en: "Follow the dot"
+  mode_follow_about:
+    en: "Every direction · about 2½ min"
+  mode_direction:
+    en: "Direction poses"
+  mode_direction_about:
+    en: "Halfway and diagonal · about 2 min"
+  mode_negatives:
+    en: "Expression poses"
+  mode_negatives_about:
+    en: "Tongue in, other expressions · about 2 min"
+  extra_follow:
+    en: "Best for direction tracking, and each run takes a new route. Watch this window from the headset."
+  extra_direction:
+    en: "Try this if left and right, or up and down, jump between the extremes."
+  extra_negatives:
+    en: "Try this if your tongue shows when it shouldn't, such as while talking or smiling."
+  tip_aim:
+    en: "Aim for what the prompt asks, such as “tip only” or “half out”, rather than the extreme. The positions in between matter."
+  tip_cameras:
+    en: "Keep your tongue where both mouth cameras can see it."
+  tip_skip:
+    en: "Skip a pose you can't do or that went wrong. Stop keeps what's recorded so far."
+  tab_record:
+    en: "Record"
+  tab_train:
+    en: "Train"
+  tab_test:
+    en: "Test"
+  need_out:
+    en: "Out"
+  need_in:
+    en: "In"
+  need_left:
+    en: "Left"
+  need_right:
+    en: "Right"
+  need_up:
+    en: "Up"
+  need_down:
+    en: "Down"
+  position_out:
+    en: "tongue out"
+  position_in:
+    en: "tongue in"
+  position_left:
+    en: "tongue left"
+  position_right:
+    en: "tongue right"
+  position_up:
+    en: "tongue up"
+  position_down:
+    en: "tongue down"
+  list_and:
+    en: "%{rest} and %{last}"
+  list_separator:
+    en: ", "
+  device_automatic:
+    en: "Automatic"
+  device_cpu:
+    en: "CPU"
+  device_gpu:
+    en: "GPU"
+  name_placeholder:
+    en: "Leave empty to name it by date and time"
+  model_name:
+    en: "Model name"
+  couldnt_load_recordings:
+    en: "Couldn't load recordings"
+  say_recording_complete:
+    en: "Recording complete"
+  say_recording_stopped:
+    en: "Recording stopped"
+  say_training_failed:
+    en: "Training failed"
+  say_training_complete:
+    en: "Training complete"
+  say_stop_recording:
+    en: "Stop recording? Press Escape again to stop."
+  say_test_voice:
+    en: "Prompts will sound like this. Tongue straight out. Now."
+  trained_switched_on:
+    en: "Trained and switched on"
+  trained_not_switched_on:
+    en: "Trained, not switched on"
+  trained_saved:
+    en: "Trained and saved"
+  training_cancelled:
+    en: "Training cancelled."
+  try_again_on_cpu:
+    en: "Try again on the CPU"
+  try_again_on_cpu_tooltip:
+    en: "Slower, but doesn't depend on the graphics card"
+  open_log:
+    en: "Open log"
+  read_prompts_aloud:
+    en: "Read prompts aloud"
+  test_voice:
+    en: "Test voice"
+  cant_read_aloud:
+    en: "This PC can't read prompts aloud, so follow them on screen."
+  switched:
+    en: "Switched."
+  give_a_name:
+    en: "Give the model a name."
+  couldnt_rename:
+    en: "Couldn't rename it"
+  deleted:
+    en: "Deleted."
+  couldnt_delete_it:
+    en: "Couldn't delete it"
+  couldnt_start_download:
+    en: "Couldn't start the download"
+  downloading_builtin:
+    en: "Downloading the built-in model… %{percent}%"
+  download_failed:
+    en: "The download failed: %{error}"
+  builtin_not_downloaded:
+    en: "Built-in model not downloaded · 140 MB"
+  try_again:
+    en: "Try again"
+  download:
+    en: "Download"
+  download_tooltip:
+    en: "Checked before it's used."
+  passes_invalid:
+    en: "Training passes must be a whole number from 1 to 60."
+  couldnt_start_training:
+    en: "Couldn't start training"
+  couldnt_delete:
+    en: "Couldn't delete"
+  couldnt_show_frame:
+    en: "Couldn't show a recorded frame"
+  couldnt_save:
+    en: "Couldn't save"
+  training:
+    en: "Training"
+  builtin_model:
+    en: "Built-in model"
+  in_use:
+    en: "In use"
+  override_picks_model:
+    en: "VRFT_TONGUE_MODEL_DIR picks the model"
+  finish_first:
+    en: "Finish the recording or training first"
+  not_trained_on_you:
+    en: "Not trained on you"
+  save:
+    en: "Save"
+  cancel:
+    en: "Cancel"
+  rename:
+    en: "Rename"
+  delete:
+    en: "Delete"
+  switch_before_deleting:
+    en: "Switch to another model before deleting this one"
+  not_downloaded:
+    en: "Not downloaded"
+  use:
+    en: "Use"
+  model_in_use:
+    en: "Model in use"
+  model_in_use_about:
+    en: "Switch at any time. Choose the built-in model to undo a personal one."
+  set_by_override:
+    en: "Set by VRFT_TONGUE_MODEL_DIR."
+  still_unreliable:
+    en: "Still unreliable? Refit the headset, then record and train again."
+  record_again:
+    en: "Record again"
+  try_hint:
+    en: "Stick your tongue out and move it around. The dot shows what your avatar receives."
+  mouth_cameras:
+    en: "Mouth cameras"
+  record_basic_again:
+    en: "Record basic poses again"
+  start_recording:
+    en: "Start recording"
+  record_heading:
+    en: "Record your tongue poses"
+  record_lead:
+    en: "Put the headset on and follow the prompts: 17 poses, about two and a half minutes. One full recording is enough to train."
+  download_while_recording:
+    en: "Training starts from the built-in model. Download it now and it finishes while you record."
+  before_you_start:
+    en: "Before you start"
+  tips:
+    en: "Tips"
+  training_running:
+    en: "Training is running. You can record again once it finishes."
+  recordings_enough:
+    en: "Your recordings cover everything training needs."
+  continue_to_training:
+    en: "Continue to training"
+  your_recordings:
+    en: "Your recordings"
+  recordings_appear_here:
+    en: "Recordings you make appear here."
+  record:
+    en: "Record"
+  extra_recordings:
+    en: "Extra recordings"
+  extra_recordings_about:
+    en: "Optional. Each sharpens one kind of movement."
+  live:
+    en: "Live"
+  no_camera_image:
+    en: "No camera image"
+  cameras_stopped_sending:
+    en: "The mouth cameras have stopped sending."
+  part_of:
+    en: "Part %{step} of %{total}"
+  pose_of:
+    en: "Pose %{step} of %{total}"
+  tongue_in:
+    en: "Tongue in"
+  said:
+    en: "Said"
+  up_next:
+    en: "Up next"
+  last_part:
+    en: "Last part"
+  last_pose:
+    en: "Last pose"
+  resume:
+    en: "Resume"
+  pause:
+    en: "Pause"
+  skip_part:
+    en: "Skip this part"
+  skip_pose:
+    en: "Skip this pose"
+  stop_now:
+    en: "Stop now"
+  stop:
+    en: "Stop"
+  keep_recording:
+    en: "Keep recording"
+  stop_confirm:
+    en: "Stop this recording? What's recorded so far is kept, but you can't resume it."
+  record_just_those:
+    en: "Record just those (about %{seconds} s)"
+  builtin_first:
+    en: "First, the built-in model"
+  positions_covered:
+    en: "Tongue positions covered"
+  no_cheek_puffs:
+    en: "Cheek puffs won't be learned from these recordings."
+  record_cheek_poses:
+    en: "Record the cheek poses (about %{seconds} s)"
+  test_it:
+    en: "Test it"
+  ready:
+    en: "Ready: %{recordings}, %{frames}"
+  train:
+    en: "Train"
+  record_basic_first:
+    en: "Record the basic poses first."
+  all_left_out:
+    en: "Every recording is left out. Tick some under Your recordings."
+  needs_more_frames:
+    en: "Needs more frames of %{positions}."
+  record_more:
+    en: "Record more"
+  go_to_recording:
+    en: "Go to recording"
+  starting:
+    en: "Starting…"
+  cancel_training_question:
+    en: "Cancel training?"
+  cancel_training:
+    en: "Cancel training"
+  keep_training:
+    en: "Keep training"
+  training_on:
+    en: "Training on the %{device}"
+  no_gpu_found:
+    en: "No working graphics card was found, so this runs on the CPU and takes several times longer."
+  you_can_leave:
+    en: "You can leave this page; your current model stays in use until this finishes."
+  advanced_options:
+    en: "Advanced options"
+  advanced_options_about:
+    en: "Model name, device, training passes"
+  device:
+    en: "Device"
+  device_about:
+    en: "Automatic uses the GPU when one works, and the CPU otherwise. Choosing GPU won't fall back to the CPU."
+  training_passes:
+    en: "Training passes"
+  training_passes_about:
+    en: "12 unless set, up to 60. More passes fit your recordings more closely, but take longer."
+  train_heading:
+    en: "Train your model"
+  train_lead:
+    en: "Fine-tunes the built-in model on your recordings, here on this PC. Your current model stays in use until it's done."
+  tag_unreadable:
+    en: "unreadable"
+  tag_left_out:
+    en: "left out of training"
+  tag_complete:
+    en: "complete"
+  tag_incomplete:
+    en: "incomplete"
+  tag_extra:
+    en: "extra"
+  delete_recording_detail:
+    en: "Deletes its camera frames from this PC."
+  suspect_one:
+    en: "%{count} pose may need a look"
+  suspect_other:
+    en: "%{count} poses may need a look"
+  frames_tag:
+    en: "%{frames} · %{tag}"
+  keep:
+    en: "Keep"
+  hide:
+    en: "Hide"
+  review:
+    en: "Review"
+  review_tooltip:
+    en: "Look through each pose and leave out any that went wrong"
+  review_lead:
+    en: "Look through each pose and leave out any that went wrong."
+  delete_recording:
+    en: "Delete recording"
+  use_for_training:
+    en: "Use for training"
+  done:
+    en: "Done"
+  pose_skipped:
+    en: "%{name} (skipped)"
+  pose_check:
+    en: "%{name} (check this one)"
+  frame_start:
+    en: "Start"
+  frame_middle:
+    en: "Middle"
+  frame_end:
+    en: "End"
+  under_a_minute_left:
+    en: "Under a minute left"
+  minutes_left:
+    en: "About %{minutes} min left"
+  estimate_cpu:
+    en: "On the CPU, which takes several times longer than a graphics card"
+  estimate_gpu:
+    en: "About ten minutes on a recent graphics card; the CPU takes several times longer"
+  get_ready:
+    en: "Get ready · %{seconds} s"
+  get_ready_left:
+    en: "Get ready · %{seconds} s left"
+  recording_for:
+    en: "Recording · %{seconds} s"
+  recording_left:
+    en: "Recording · %{seconds} s left"
+  pad_up:
+    en: "UP"
+  pad_down:
+    en: "DOWN"
+  phase_waiting:
+    en: "%{reason}, waiting"
+  phase_paused:
+    en: "Paused"
+  phase_skipped:
+    en: "Skipped"
+  trained_model:
+    en: "Trained model"
+  trained_when:
+    en: "Trained %{when}"
+  trained_on_this_pc:
+    en: "Trained on this PC"
+  today:
+    en: "Today %{time}"
+  today_lower:
+    en: "today %{time}"
+  yesterday:
+    en: "Yesterday %{time}"
+  yesterday_lower:
+    en: "yesterday %{time}"
+  on_date:
+    en: "%{date} %{time}"
+  about_left:
+    en: " · about %{duration} left"
+  setting_up_gpu:
+    en: " · setting up the GPU and working out the time left"
+  under_a_minute:
+    en: "under a minute"
+  minutes:
+    en: "%{minutes} min"
+  hours_minutes:
+    en: "%{hours} h %{minutes} min"
+  frame_one:
+    en: "%{count} frame"
+  frame_other:
+    en: "%{count} frames"
+  recording_one:
+    en: "%{count} recording"
+  recording_other:
+    en: "%{count} recordings"
+  failure_unstable:
+    en: "Training became unstable. Try again, perhaps with fewer passes."
+  failure_gpu:
+    en: "The graphics card stopped the training. Try again on the CPU."
+  failure_no_recordings:
+    en: "Tick at least one recording to train on."
+  failure_builtin:
+    en: "The built-in model, which training starts from, isn't ready. Download it and try again."
+  failure:
+    en: "Training failed: %{error}"

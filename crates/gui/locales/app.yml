@@ -1,0 +1,6 @@
+_version: 2
+app:
+  title:
+    en: VRFaceTracking
+  title_dev:
+    en: VRFaceTracking (Dev)

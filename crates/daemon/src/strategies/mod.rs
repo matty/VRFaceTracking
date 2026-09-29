@@ -2,6 +2,7 @@ pub mod generic_udp;
 pub mod resonite;
 pub mod vrchat;
 
+use crate::osc::query::target::VrchatTarget;
 use anyhow::Result;
 use axum::Router;
 use generic_udp::GenericUdpStrategy;
@@ -12,6 +13,8 @@ use vrft_common::{IntegrationAdapter, MutationConfig, OutputMode, UnifiedTrackin
 
 pub struct OscContext {
     pub tracking_data: Arc<RwLock<UnifiedTrackingData>>,
+    /// Where VRChat tracking goes, updated as OSCQuery finds VRChat.
+    pub vrchat: VrchatTarget,
 }
 
 pub enum PlatformBackend {
@@ -72,7 +75,7 @@ pub fn create_strategy(
         ),
         OutputMode::VRChat => {
             let (strategy, router, change_rx) = VRChatOscStrategy::new(
-                &format!("{}:{}", config.osc.send_address, config.osc.send_port),
+                context.vrchat.clone(),
                 receive_port_for(config.osc.send_port),
                 context,
             );

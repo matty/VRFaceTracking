@@ -1,0 +1,24 @@
+_version: 2
+lib:
+  page_headset:
+    en: "Headset"
+  page_mouth:
+    en: "Mouth"
+  page_eyes:
+    en: "Eyes"
+  page_training:
+    en: "Training"
+  description:
+    en: "Tongue tracking and better eye tracking for the Quest Pro."
+  tile_headset:
+    en: "Headset"
+  tile_mouth:
+    en: "Mouth"
+  tile_eyes:
+    en: "Eyes"
+  tile_training:
+    en: "Training"
+  add_on:
+    en: "%{name} add-on"
+  tongue_out:
+    en: "out %{percent}%"

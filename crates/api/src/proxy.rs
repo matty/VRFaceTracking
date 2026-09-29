@@ -22,6 +22,9 @@ pub struct ProxyModule {
     module_dll: Option<std::path::PathBuf>,
     last_runtime_heartbeat: u64,
     last_runtime_update: std::time::Instant,
+    /// The smallest and largest pupil diameters seen, as VRCFaceTracking
+    /// learns them: its modules never set a dilation range themselves.
+    dilation_range: Option<(f32, f32)>,
 }
 
 // SAFETY: The shared memory pointer is only accessed from a single thread.
@@ -66,6 +69,7 @@ impl ProxyModule {
             module_dll: None,
             last_runtime_heartbeat: 0,
             last_runtime_update: std::time::Instant::now(),
+            dilation_range: None,
         }
     }
 
@@ -113,6 +117,17 @@ impl ProxyModule {
             match Self::open_shared_memory() {
                 Ok(result) => break result,
                 Err(e) => {
+                    // A host that couldn't load the module exits without
+                    // creating the shared memory; don't wait out the retries.
+                    if let Some(status) = self
+                        .child
+                        .as_mut()
+                        .and_then(|child| child.try_wait().ok().flatten())
+                    {
+                        anyhow::bail!(
+                            "VrcftRuntime exited ({status}) before it was ready. Its log says why."
+                        );
+                    }
                     if retry >= max_retries {
                         return Err(e).context(format!(
                             "Failed to open shared memory '{}' after {} retries",
@@ -164,6 +179,27 @@ impl ProxyModule {
     }
 }
 
+impl ProxyModule {
+    /// Widens the learned dilation range to take in this frame's pupils,
+    /// and gives the frame that range.
+    fn learn_dilation(&mut self, data: &mut UnifiedTrackingData) {
+        for diameter in [
+            data.eye.left.pupil_diameter_mm,
+            data.eye.right.pupil_diameter_mm,
+        ] {
+            if diameter.is_finite() && diameter > 0.0 {
+                let (min, max) = self.dilation_range.get_or_insert((diameter, diameter));
+                *min = min.min(diameter);
+                *max = max.max(diameter);
+            }
+        }
+        if let Some((min, max)) = self.dilation_range {
+            data.eye.min_dilation = min;
+            data.eye.max_dilation = max;
+        }
+    }
+}
+
 impl Default for ProxyModule {
     fn default() -> Self {
         Self::new()
@@ -206,6 +242,9 @@ impl TrackingModule for ProxyModule {
 
                 data.eye.max_dilation = m_data.eye_max_dilation;
                 data.eye.min_dilation = m_data.eye_min_dilation;
+                if data.eye.max_dilation <= data.eye.min_dilation {
+                    self.learn_dilation(data);
+                }
                 data.eye.left_diameter = m_data.eye_left_diameter;
                 data.eye.right_diameter = m_data.eye_right_diameter;
 
@@ -230,7 +269,10 @@ impl TrackingModule for ProxyModule {
                     true
                 }
                 Ok(None) => {
-                    // Still running, check heartbeat
+                    // Still running, check heartbeat. The host beats from its
+                    // own loop, apart from the module's Update(), so a module
+                    // that blocks while it waits for its device doesn't stop
+                    // it; a lost heartbeat means the host itself is stuck.
                     if self.last_runtime_update.elapsed() > std::time::Duration::from_secs(5) {
                         log::warn!("VrcftRuntime heartbeat lost. Restarting...");
                         let _ = self.child.as_mut().unwrap().kill();
@@ -280,6 +322,10 @@ impl TrackingModule for ProxyModule {
 
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            // Wait for it to go, so the shared memory it holds goes too and
+            // the next host (after a restart or a module switch) can't find
+            // the old one.
+            let _ = child.wait();
         }
     }
 }

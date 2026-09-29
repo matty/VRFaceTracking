@@ -113,7 +113,9 @@ members = [
 ]
 ```
 
-Build in release mode and copy the DLL into the `plugins/` directory (scanned recursively; the daemon auto-detects it as a native module from its PE header):
+While developing, `cargo build` is enough: a development build of `vrft_d` copies the modules under `modules/` from its build folder into the repository's `plugins/` each time it starts, replacing any that were rebuilt.
+
+To use it with a release of VRFT, build in release mode and copy the DLL into that install's `plugins/` directory (scanned recursively; the daemon auto-detects it as a native module from its PE header):
 
 ```bash
 cargo build --release -p my_module

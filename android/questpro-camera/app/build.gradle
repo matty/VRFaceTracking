@@ -1,0 +1,100 @@
+plugins { id 'com.android.application' }
+
+// The version comes from the headset app's apk-v release tags, as CalVer
+// YYYY.M.N. The release workflow passes -PappVersion=2026.9.0, and the dev
+// workflow -PappVersion=2026.9.1-dev.14: a development build of the next
+// release, C commits after the last one. Other builds work out the same from
+// git, as .github/scripts/next-calver.sh does.
+def appVersion = providers.gradleProperty('appVersion').orNull ?: devAppVersion()
+def devBuild = appVersion.contains('-dev')
+
+def git(String... args) {
+    def result = project.providers.exec {
+        commandLine(['git'] + args.toList())
+        ignoreExitValue = true
+    }
+    if (result.result.get().exitValue != 0) return null
+    def text = result.standardOutput.asText.get().trim()
+    return text ?: null
+}
+
+def devAppVersion() {
+    try {
+        def month = new Date().format('yyyy.M', TimeZone.getTimeZone('UTC'))
+        def last = (git('tag', '--list', "apk-v${month}.*") ?: '').readLines()
+            .collect { it.substring("apk-v${month}.".length()) }
+            .findAll { it.isInteger() }
+            .collect { it as int }
+            .max()
+        def next = last == null ? 0 : last + 1
+        def previous = git('describe', '--tags', '--match', 'apk-v[0-9]*', '--abbrev=0')
+        def commits = git('rev-list', '--count', previous ? "${previous}..HEAD" : 'HEAD') ?: '0'
+        return "${month}.${next}-dev.${commits}"
+    } catch (Exception ignored) {
+        // Git isn't available.
+        return '0.0.0-dev'
+    }
+}
+
+// YYYY.M.N becomes YYYYMMNN00, so each release installs over the one before.
+// A dev build of YYYY.M.N sits in the 100 codes just below it, one for each
+// commit up to 99 since the last release: above that release and every
+// earlier dev build, and below the release it leads to. A build without git
+// keeps 2, the last code before CalVer.
+def appVersionCode(String version) {
+    def calver = version =~ /^(\d{4})\.(\d{1,2})\.(\d+)(?:-dev\.(\d+))?$/
+    if (!calver.find()) return 2
+    int year = calver.group(1) as int
+    int month = calver.group(2) as int
+    int count = calver.group(3) as int
+    if (count > 99) throw new GradleException("$version: versionCode fits at most 100 releases a month")
+    int release = (year * 10000 + month * 100 + count) * 100
+    if (calver.group(4) == null) return release
+    return release - 100 + Math.min(calver.group(4) as int, 99)
+}
+
+// Release builds are signed only when a keystore is supplied, as the release
+// workflow does from repository secrets. Otherwise they come out unsigned.
+def releaseKeystore = System.getenv('VRFT_APK_KEYSTORE')
+
+android {
+    namespace 'io.github.matty.vrft.questprocamera'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.github.matty.vrft.questprocamera'
+        minSdk 29
+        targetSdk 34
+        versionCode appVersionCode(appVersion)
+        versionName appVersion
+        // A dev build says so in its name, on the headset and in its settings.
+        resValue 'string', 'app_name', devBuild ? 'VRFT Quest Pro Camera (Dev)' : 'VRFT Quest Pro Camera'
+    }
+
+    buildFeatures { buildConfig true }
+
+    // The desktop app's typefaces (Geist, with its licence), so the panel matches it.
+    sourceSets { main { assets.srcDirs += '../../../crates/gui/resources/fonts' } }
+
+    signingConfigs {
+        if (releaseKeystore) {
+            release {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv('VRFT_APK_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('VRFT_APK_KEY_ALIAS')
+                keyPassword System.getenv('VRFT_APK_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseKeystore) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,26 @@
+_version: 2
+launcher:
+  couldnt_end:
+    en: "Couldn't force tracking to stop: %{error}"
+  no_executable:
+    en: "Can't find vrft_d.exe beside this app. Start vrft_d.exe yourself and this window connects."
+  couldnt_start:
+    en: "Couldn't start tracking: %{error}"
+  exited_with:
+    en: It exited with %{status}.
+  stopped_straight_away:
+    en: "Tracking stopped straight away. %{reason}"
+  not_answering_log:
+    en: "Tracking started but isn't answering. The log is at %{log}."
+  not_answering:
+    en: "Tracking is running but isn't answering."
+  didnt_stop:
+    en: "Tracking didn't stop when asked."
+  starting:
+    en: "Starting tracking…"
+  start:
+    en: "Start tracking"
+  end_and_start:
+    en: "Force stop and start again"
+  open_log:
+    en: Open log

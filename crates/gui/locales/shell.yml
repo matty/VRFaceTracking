@@ -1,0 +1,10 @@
+_version: 2
+shell:
+  show_navigation:
+    en: Show the navigation
+  show_only_icons:
+    en: Show only icons
+  extension_failed:
+    en: Didn't start
+  version:
+    en: VRFaceTracking %{version}

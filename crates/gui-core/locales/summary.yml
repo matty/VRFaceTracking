@@ -1,0 +1,100 @@
+_version: 2
+summary:
+  unavailable:
+    en: "Shows once tracking is running"
+  open_page:
+    en: Open %{page}
+  open_config:
+    en: Open config.json
+  runtime_native:
+    en: Native
+  runtime_module:
+    en: Module
+  fps:
+    en: "%{fps} fps"
+  restarting:
+    en: "Restarting tracking…"
+  applying_change:
+    en: "Applying your change…"
+  stopping:
+    en: "Stopping tracking…"
+  starting:
+    en: "Starting tracking…"
+  couldnt_start:
+    en: "Tracking couldn't start"
+  didnt_stop:
+    en: "Tracking didn't stop"
+  connecting:
+    en: "Connecting…"
+  stopped:
+    en: "Tracking is stopped"
+  stopped_detail:
+    en: Start it to track again.
+  not_running:
+    en: "Tracking isn't running"
+  not_running_detail:
+    en: It stopped, or was closed outside this app.
+  connected:
+    en: "Connected"
+  connected_old_daemon:
+    en: "Update to see more here."
+  extensions_only:
+    en: "Add-ons only"
+  extensions_only_detail:
+    en: "Running add-ons without a tracking module."
+  starting_up:
+    en: "Starting up…"
+  loading_module:
+    en: "Loading the tracking module…"
+  loading_named:
+    en: "Loading %{module}…"
+  starting_module:
+    en: "Starting the tracking module…"
+  module_didnt_load:
+    en: "%{module} didn't load"
+  waiting_for_tracking:
+    en: "Waiting for face tracking…"
+  no_face_data:
+    en: No face data from %{module} yet. Put the headset on and stream to this PC with face tracking on.
+  live:
+    en: Tracking is live
+  config_error:
+    en: "config.json couldn't be read, so the defaults are in use: %{error}"
+  engine_not_running:
+    en: Not running
+  engine_start_hint:
+    en: Start it to track
+  engine_running:
+    en: Running
+  engine_extensions_only_detail:
+    en: "No tracking module"
+  version:
+    en: Version %{version}
+  unknown:
+    en: Unknown
+  update_to_see:
+    en: "Update to see it"
+  not_loaded:
+    en: Not loaded
+  extensions_only_mode:
+    en: "Add-ons only"
+  loading:
+    en: "Loading…"
+  runtime_loading:
+    en: "%{runtime} · loading"
+  runtime_rate:
+    en: "%{runtime} · %{rate}"
+  runtime_no_data:
+    en: "%{runtime} · no data yet"
+  state_in_use:
+    en: In use
+  state_didnt_load:
+    en: Didn't load
+  state_chosen:
+    en: Chosen
+  it_didnt_load:
+    en: It didn't load.
+  "off":
+    en: "Off"
+  output_up_to:
+    en: "%{address} · up to %{rate}"

@@ -1,0 +1,16 @@
+_version: 2
+prompts:
+  watch_screen:
+    en: "%{pose}. Watch the screen from the headset for this one."
+  paused:
+    en: "Paused"
+  paused_cameras_stopped:
+    en: "Paused: the mouth cameras stopped"
+  resuming:
+    en: "Resuming"
+  resuming_pose:
+    en: "Resuming. %{pose}"
+  skipped_pose:
+    en: "Skipped. %{pose}"
+  now:
+    en: "Now"

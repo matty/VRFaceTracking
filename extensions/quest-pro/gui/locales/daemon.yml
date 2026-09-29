@@ -1,0 +1,6 @@
+_version: 2
+daemon:
+  missing:
+    en: "Quest Pro support is turned off, or this version is too old to record or train tongue models."
+  answered:
+    en: "Got an unexpected answer: %{status}"

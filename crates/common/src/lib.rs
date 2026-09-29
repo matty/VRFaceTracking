@@ -11,6 +11,6 @@ pub mod mutations;
 
 pub use euro_filter::EuroFilter;
 pub use mutator::{
-    IntegrationAdapter, ModuleConfig, ModuleRuntime, MutationConfig, MutatorConfig, OscConfig,
-    OutputMode, UnifiedTrackingMutator,
+    AdjustmentConfig, CorrectorsConfig, FilterConfig, IntegrationAdapter, ModuleConfig,
+    ModuleRuntime, MutationConfig, MutatorConfig, OscConfig, OutputMode, UnifiedTrackingMutator,
 };
