@@ -65,7 +65,7 @@ A VRFT release's notes, and the `dev` prerelease's description, also link the ne
 
 - The VRFT package also carries that headset app release's APK as `headset-app/vrft-questpro-camera-<version>.apk`, which the desktop app's Headset page installs. Without a compatible release, the package has no `headset-app/` folder.
 - The VRFT release is marked as the repository's latest, so `releases/latest/download/vrft_d-x86_64-windows-std.zip` always points to it. The headset app release is not marked latest.
-- Every push to `main` republishes the rolling `dev` prerelease with a dev build, `YYYY.M.N-dev.C`, and its installer. Every push to `main` that changes `android/questpro-camera/` does the same for the headset app's rolling `apk-dev` prerelease. The VRFT dev build carries the newest compatible headset app **release**, not the `apk-dev` build.
+- Every push to `main` republishes the rolling `dev` prerelease with a dev build, `YYYY.M.N-dev.C`, and its installer. Every push to `main` that changes `android/questpro-camera/` does the same for the headset app's rolling `apk-dev` prerelease. The VRFT dev build carries the `apk-dev` build instead of a release, when its protocol is one that build reads, and otherwise falls back to the newest compatible release. When one push changes both, the VRFT dev build waits for that push's `apk-dev` build, so it carries the headset app from the same commit.
 
 ## Signing the headset app
 

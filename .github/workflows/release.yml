@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: write
+  # To wait for the headset app's dev build.
+  actions: read
 
 concurrency:
   group: release-${{ github.event_name }}
@@ -56,42 +58,6 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "title=$title" >> "$GITHUB_OUTPUT"
 
-      - name: Find headset app
-        id: headset
-        shell: bash
-        run: |
-          # The headset stream protocols this build reads, from the Quest Pro extension's camera.rs.
-          range=$(sed -n 's/^const PROTOCOLS: RangeInclusive<u32> = \([0-9]*\)\.\.=\([0-9]*\);$/\1 \2/p' extensions/quest-pro/daemon/src/camera.rs)
-          read -r low high <<<"$range"
-          if [ -z "$high" ]; then
-            echo "::error::Couldn't find PROTOCOLS in extensions/quest-pro/daemon/src/camera.rs"
-            exit 1
-          fi
-          protocols=$low
-          [ "$low" = "$high" ] || protocols="$low to $high"
-          # The headset app is released less often than VRFT, so this is often
-          # a release from well before this one.
-          tag=$(bash .github/scripts/headset-app.sh newest "$low" "$high")
-          if [ -n "$tag" ]; then
-            line="Headset app: [${tag#apk-v}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag) is the newest release that works with this build (stream protocol $protocols)."
-          else
-            line="No headset app release works with this build yet: it reads stream protocol $protocols."
-          fi
-          echo "line=$line" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch headset app
-        if: steps.headset.outputs.tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.headset.outputs.tag }}
-        run: |
-          # vrft_gui's Headset page installs this on the headset.
-          mkdir -p headset-app
-          gh release download "$TAG" --pattern vrft-questpro-camera.apk --dir headset-app
-          mv headset-app/vrft-questpro-camera.apk "headset-app/vrft-questpro-camera-${TAG#apk-v}.apk"
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -114,6 +80,82 @@ jobs:
       - name: Build .NET Host
         run: |
           dotnet publish dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o dotnet/publish
+
+      - name: Wait for headset app dev build
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A push that changes the headset app also rebuilds apk-dev
+          # (release-apk.yml). Bundle that build rather than the one before it.
+          for _ in $(seq 60); do
+            status=$(gh run list --workflow release-apk.yml --commit "$GITHUB_SHA" --event push \
+              --json status --jq '.[0].status // ""')
+            if [ -z "$status" ] || [ "$status" = completed ]; then
+              break
+            fi
+            sleep 20
+          done
+
+      - name: Find headset app
+        id: headset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The headset stream protocols this build reads, from the Quest Pro extension's camera.rs.
+          range=$(sed -n 's/^const PROTOCOLS: RangeInclusive<u32> = \([0-9]*\)\.\.=\([0-9]*\);$/\1 \2/p' extensions/quest-pro/daemon/src/camera.rs)
+          read -r low high <<<"$range"
+          if [ -z "$high" ]; then
+            echo "::error::Couldn't find PROTOCOLS in extensions/quest-pro/daemon/src/camera.rs"
+            exit 1
+          fi
+          protocols=$low
+          [ "$low" = "$high" ] || protocols="$low to $high"
+          tag= version=
+          # A dev build carries the headset app's dev build, when it speaks a
+          # protocol this build reads.
+          if [ "$GITHUB_EVENT_NAME" = push ] &&
+            git fetch --force --quiet origin 'refs/tags/apk-dev:refs/tags/apk-dev' 2>/dev/null; then
+            protocol=$(bash .github/scripts/headset-app.sh protocol apk-dev)
+            if [ -n "$protocol" ] && ((protocol >= low && protocol <= high)); then
+              # The release title ends with the version: "Headset app dev build (2026.9.0-dev.76)".
+              version=$(gh release view apk-dev --json name --jq .name 2>/dev/null | sed -n 's/.*(\(.*\))$/\1/p' || true)
+              [ -n "$version" ] && tag=apk-dev
+            fi
+          fi
+          # Otherwise the newest release that works with this build. The
+          # headset app is released less often than VRFT, so this is often a
+          # release from well before this one.
+          if [ -z "$tag" ]; then
+            tag=$(bash .github/scripts/headset-app.sh newest "$low" "$high")
+            version=${tag#apk-v}
+          fi
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag"
+          if [ "$tag" = apk-dev ]; then
+            line="Headset app: the [dev build $version]($url) comes with this build (stream protocol $protocols)."
+          elif [ -n "$tag" ]; then
+            line="Headset app: [$version]($url) is the newest release that works with this build (stream protocol $protocols)."
+          else
+            line="No headset app release works with this build yet: it reads stream protocol $protocols."
+          fi
+          echo "line=$line" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch headset app
+        if: steps.headset.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.headset.outputs.tag }}
+          VERSION: ${{ steps.headset.outputs.version }}
+        run: |
+          # vrft_gui's Headset page installs this on the headset.
+          mkdir -p headset-app
+          gh release download "$TAG" --pattern vrft-questpro-camera.apk --dir headset-app
+          mv headset-app/vrft-questpro-camera.apk "headset-app/vrft-questpro-camera-$VERSION.apk"
 
       - name: Prepare Packages
         shell: pwsh
