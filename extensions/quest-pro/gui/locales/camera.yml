@@ -1,21 +1,27 @@
 _version: 2
 camera:
   visibility_weighted:
-    en: "Cameras and headset together"
+    en: "Cameras and headset"
   visibility_weighted_about:
-    en: "Recommended"
+    en: "Mixes in the headset's own tongue tracking."
   visibility_camera:
-    en: "Cameras only"
+    en: "Cameras"
   visibility_camera_about:
-    en: "If your tongue rarely shows"
+    en: "The mouth cameras decide. Default."
   visibility_native:
-    en: "Headset only"
+    en: "Headset"
   visibility_native_about:
-    en: "The headset's own reading"
+    en: "The headset decides; the cameras still aim it."
   visibility_agreement:
-    en: "Only when both see it out"
+    en: "Cameras and headset agree"
   visibility_agreement_about:
-    en: "If it shows when it shouldn't"
+    en: "Out only when both see it. Fewer false shows, more misses."
+  mouth_model:
+    en: "Camera tracking"
+  mouth_model_tooltip:
+    en: "Tracks your tongue and cheek puffs with the mouth cameras."
+  mouth_model_off:
+    en: "Off, so the headset's own tongue and cheek tracking is sent."
   smoothing_note:
     en: "Lower reacts faster but jitters; higher is smoother but lags. The default is 55."
   sent_out:
@@ -50,8 +56,10 @@ camera:
     en: "Tongue settings"
   smoothing:
     en: "Smoothing"
+  experimental:
+    en: "Experimental"
   when_to_show:
-    en: "When to show the tongue"
+    en: "Deciding when your tongue is out"
   tongue_model:
     en: "Tongue model: %{state}."
   tongue_model_detail:

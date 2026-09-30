@@ -48,6 +48,8 @@ summary:
     en: "Idle"
   starts_with_mouth_cameras:
     en: "Starts with the mouth cameras"
+  headset_tracks_mouth:
+    en: "The headset's own tongue and cheek tracking is sent"
   vrft_not_running:
     en: "Tracking isn't running"
   no_frames:

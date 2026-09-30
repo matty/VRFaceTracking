@@ -296,13 +296,20 @@ impl QuestProOverlay {
         let settings = self.settings.get();
         self.pupils.apply(data, &settings);
         let current = self.latest.read().unwrap().clone();
-        let fresh =
-            current.filter(|prediction| prediction.received_at.elapsed() <= TONGUE_FRESH_FOR);
+        // With the mouth model off, the headset's own tongue and cheeks go
+        // out untouched.
+        let fresh = current
+            .filter(|prediction| prediction.received_at.elapsed() <= TONGUE_FRESH_FOR)
+            .filter(|_| settings.mouth_model);
         let cheek_source = apply_cheeks(data, fresh.as_ref(), &settings);
         let cheek_puffs = CHEEK_SHAPES.map(|shape| data.shapes[shape as usize].weight);
         let Some(prediction) = fresh else {
             if self.active {
-                info!("Quest Pro tongue: camera or inference stale; using tracking module tongue values");
+                if settings.mouth_model {
+                    info!("Quest Pro tongue: camera or inference stale; using tracking module tongue values");
+                } else {
+                    info!("Quest Pro tongue: mouth model turned off; using tracking module tongue values");
+                }
                 self.active = false;
                 self.visible_latched = false;
             }
@@ -1174,6 +1181,13 @@ fn inference_loop(
     running: Arc<AtomicBool>,
 ) {
     while running.load(Ordering::SeqCst) {
+        // Turned off, the model isn't loaded, so it takes no GPU or CPU.
+        if !settings.get().mouth_model {
+            *latest.write().unwrap() = None;
+            feed.write().unwrap().model_error = None;
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         let has_fresh_frame = feed
             .read()
             .unwrap()
@@ -1248,6 +1262,11 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
                 return Ok(());
             }
             last_selection_check = Instant::now();
+        }
+        // Turned off: return, which unloads the model.
+        if !settings.get().mouth_model {
+            info!("Quest Pro tongue: mouth model turned off; unloading it");
+            return Ok(());
         }
         let frame = feed.read().unwrap().latest.clone();
         let Some(frame) = frame else {
@@ -1464,7 +1483,13 @@ mod tests {
     #[test]
     fn fresh_prediction_overrides_all_tongue_shapes() {
         let mut data = UnifiedTrackingData::default();
-        let mut overlay = overlay(Some(prediction(Instant::now())));
+        let mut overlay = overlay_with(
+            Some(prediction(Instant::now())),
+            QuestProSettings {
+                tongue_visibility: VisibilityMode::Weighted,
+                ..QuestProSettings::default()
+            },
+        );
         // A tracking module frame with TongueOut 0.
         overlay.before_mutation(&data);
         overlay.apply(&mut data);
@@ -1480,6 +1505,33 @@ mod tests {
         let snapshot = output.as_ref().unwrap();
         assert_eq!(snapshot.source, TongueSource::EnhancedModel);
         assert_eq!(snapshot.values, tongue_values(&data));
+    }
+
+    #[test]
+    fn with_the_mouth_model_off_the_headsets_tongue_and_cheeks_go_out() {
+        let mut data = UnifiedTrackingData::default();
+        data.shapes[UnifiedExpressions::TongueOut as usize].weight = 0.3;
+        data.shapes[UnifiedExpressions::CheekPuffLeft as usize].weight = 0.2;
+        let before = data.shapes.clone();
+        let mut overlay = overlay_with(
+            Some(prediction(Instant::now())),
+            QuestProSettings {
+                mouth_model: false,
+                ..QuestProSettings::default()
+            },
+        );
+        overlay.before_mutation(&data);
+        overlay.apply(&mut data);
+        for shape in TONGUE_SHAPES.into_iter().chain(CHEEK_SHAPES) {
+            assert_eq!(
+                data.shapes[shape as usize].weight,
+                before[shape as usize].weight
+            );
+        }
+        let output = overlay.output.read().unwrap();
+        let snapshot = output.as_ref().unwrap();
+        assert_eq!(snapshot.source, TongueSource::TrackingModule);
+        assert_eq!(snapshot.cheek_source, TongueSource::TrackingModule);
     }
 
     #[test]

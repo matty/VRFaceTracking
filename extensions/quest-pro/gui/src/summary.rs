@@ -117,6 +117,13 @@ pub fn tongue_model(status: Option<&Status>) -> Reading {
     let Some(status) = status else {
         return Reading::unavailable();
     };
+    if !status.settings.mouth_model {
+        return Reading::new(
+            Tone::Off,
+            t!("summary.off"),
+            t!("summary.headset_tracks_mouth"),
+        );
+    }
     match (&status.model, &status.model_error) {
         (Some(model), _) if model.fresh => Reading::new(
             Tone::Good,

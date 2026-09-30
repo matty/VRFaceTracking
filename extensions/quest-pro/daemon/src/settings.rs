@@ -28,6 +28,20 @@ fn validated(mut settings: QuestProSettings) -> Result<QuestProSettings, String>
     Ok(settings)
 }
 
+/// Settings saved before `mouth_model` existed (every save writes every
+/// field) have `weighted` because it was the default then, not because it
+/// was chosen; the cameras deciding is the default now.
+fn from_before_mouth_model(mut saved: Value) -> Value {
+    if let Value::Object(fields) = &mut saved {
+        if !fields.contains_key("mouth_model")
+            && fields.get("tongue_visibility") == Some(&Value::from("weighted"))
+        {
+            fields.insert("tongue_visibility".into(), Value::from("camera"));
+        }
+    }
+    saved
+}
+
 #[derive(Clone)]
 pub struct SettingsStore {
     path: PathBuf,
@@ -38,7 +52,9 @@ impl SettingsStore {
     pub fn load(root: &Path) -> Self {
         let path = root.join(FILE);
         let settings = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<QuestProSettings>(&bytes)
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes)
+                .map(from_before_mouth_model)
+                .and_then(serde_json::from_value::<QuestProSettings>)
                 .map_err(|error| error.to_string())
                 .and_then(validated)
             {
@@ -163,6 +179,29 @@ mod tests {
                 .unwrap()
                 .tongue_smoothing,
             100.0
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_old_default_moves_to_the_cameras_but_a_choice_stays() {
+        let root = temporary_root();
+        fs::create_dir_all(root.join(".local")).unwrap();
+        fs::write(
+            root.join(FILE),
+            br#"{"tongue_smoothing": 47, "tongue_visibility": "weighted"}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(&root);
+        assert_eq!(store.get().tongue_visibility, VisibilityMode::Camera);
+        assert_eq!(store.get().tongue_smoothing, 47.0);
+        // Saved now, with mouth_model, a choice of weighted stays.
+        store
+            .merge(&json!({"tongue_visibility": "weighted"}))
+            .unwrap();
+        assert_eq!(
+            SettingsStore::load(&root).get().tongue_visibility,
+            VisibilityMode::Weighted
         );
         fs::remove_dir_all(root).unwrap();
     }

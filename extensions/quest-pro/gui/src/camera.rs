@@ -43,14 +43,14 @@ const OPTION_GRID_WIDTH: f32 = 520.;
 fn visibility() -> [(VisibilityMode, Cow<'static, str>, Cow<'static, str>); 4] {
     [
         (
-            VisibilityMode::Weighted,
-            t!("camera.visibility_weighted"),
-            t!("camera.visibility_weighted_about"),
-        ),
-        (
             VisibilityMode::Camera,
             t!("camera.visibility_camera"),
             t!("camera.visibility_camera_about"),
+        ),
+        (
+            VisibilityMode::Weighted,
+            t!("camera.visibility_weighted"),
+            t!("camera.visibility_weighted_about"),
         ),
         (
             VisibilityMode::Native,
@@ -101,6 +101,8 @@ pub struct MouthPage {
     message: Option<Notice>,
     /// Whether "What VRChat receives" shows every value.
     show_sent: bool,
+    /// Whether the experimental tongue settings are open.
+    show_experimental: bool,
     _save: Option<Task<()>>,
     /// Asking the daemon to try the headset again, while it does.
     retrying: Option<Task<()>>,
@@ -149,6 +151,7 @@ impl MouthPage {
             shown_smoothing: None,
             message: None,
             show_sent: false,
+            show_experimental: false,
             _save: None,
             retrying: None,
             _subscriptions: subscriptions,
@@ -203,6 +206,9 @@ impl MouthPage {
         }
         if let Some(cheeks) = patch.cheek_puffs {
             settings.cheek_puffs = cheeks;
+        }
+        if let Some(on) = patch.mouth_model {
+            settings.mouth_model = on;
         }
         self.daemon
             .update(cx, |daemon, cx| daemon.show_settings(settings, cx));
@@ -261,7 +267,11 @@ impl MouthPage {
         // The slider's own value, so the number moves while it's dragged.
         let smoothing = self.smoothing.read(cx).value().start();
         let mode = settings.map(|settings| settings.tongue_visibility);
-        let disabled = status.is_none();
+        // With the mouth model off, none of these are used.
+        let model_off = settings.is_some_and(|settings| !settings.mouth_model);
+        let disabled = status.is_none() || model_off;
+        let experimental =
+            self.show_experimental || mode.is_some_and(|mode| mode != VisibilityMode::default());
         let options =
             visibility()
                 .into_iter()
@@ -323,6 +333,14 @@ impl MouthPage {
             .pt_4()
             .pb(px(18.))
             .child(card_title(t!("camera.tongue_settings")))
+            .when(model_off, |card| {
+                card.child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(palette::text_3())
+                        .child(t!("camera.mouth_model_off")),
+                )
+            })
             .child(
                 h_flex()
                     .gap(px(14.))
@@ -360,27 +378,52 @@ impl MouthPage {
                             .text_color(soft_text()),
                     ),
             )
+            // Other ways to decide the tongue is out, tucked away; open
+            // while one of them is picked, so it can be seen and undone.
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(soft_text())
-                            .child(t!("camera.when_to_show")),
-                    )
-                    .child(
-                        div()
-                            .grid()
-                            .grid_cols(if column_width >= OPTION_GRID_WIDTH {
-                                2
+                h_flex().child(
+                    Button::new("toggle-experimental")
+                        .ghost()
+                        .small()
+                        .ml(px(-8.))
+                        .label(t!("camera.experimental"))
+                        .child(
+                            Icon::new(if experimental {
+                                IconName::ChevronUp
                             } else {
-                                1
+                                IconName::ChevronDown
                             })
-                            .gap_2()
-                            .children(options),
-                    ),
+                            .size(px(13.)),
+                        )
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.show_experimental = !experimental;
+                            cx.notify();
+                        })),
+                ),
             )
+            .when(experimental, |card| {
+                card.child(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(soft_text())
+                                .child(t!("camera.when_to_show")),
+                        )
+                        .child(
+                            div()
+                                .grid()
+                                .grid_cols(if column_width >= OPTION_GRID_WIDTH {
+                                    2
+                                } else {
+                                    1
+                                })
+                                .gap_2()
+                                .children(options),
+                        ),
+                )
+            })
             .children(self.message.clone())
             .into_any_element()
     }
@@ -527,7 +570,11 @@ impl MouthPage {
                             Switch::new("cheek-puffs")
                                 .accessibility_label(t!("camera.cheek_puffs"))
                                 .checked(checked)
-                                .disabled(status.is_none())
+                                .disabled(
+                                    status.is_none()
+                                        || !status
+                                            .is_some_and(|status| status.settings.mouth_model),
+                                )
                                 .on_change(cx.listener(|page, checked: &bool, _, cx| {
                                     page.save(
                                         SettingsPatch {
@@ -697,6 +744,40 @@ impl Render for MouthPage {
             Screen::Live { fps } => Some(live_pill(*fps)),
             _ => None,
         };
+        // Whether the cameras track the tongue and cheeks, or the headset
+        // does, beside the header.
+        let model_on = status.is_none_or(|status| status.settings.mouth_model);
+        let model_switch = h_flex()
+            .id("mouth-model")
+            .flex_none()
+            .gap_2()
+            .items_center()
+            .text_size(px(13.))
+            .text_color(soft_text())
+            .child(t!("camera.mouth_model"))
+            .child(
+                Switch::new("mouth-model-switch")
+                    .checked(model_on)
+                    .disabled(status.is_none())
+                    .accessibility_label(t!("camera.mouth_model"))
+                    .on_change(cx.listener(|page, checked: &bool, _, cx| {
+                        page.save(
+                            SettingsPatch {
+                                mouth_model: Some(*checked),
+                                ..SettingsPatch::default()
+                            },
+                            cx,
+                        )
+                    })),
+            )
+            .tooltip(|window, cx| {
+                Tooltip::new(SharedString::from(t!("camera.mouth_model_tooltip"))).build(window, cx)
+            });
+        let trailing = h_flex()
+            .gap_4()
+            .items_center()
+            .child(model_switch)
+            .children(pill);
         let content = vrft_gui_core::content_width(window);
         let wide = content >= SIDE_BY_SIDE_WIDTH;
         let column = if wide {
@@ -719,7 +800,7 @@ impl Render for MouthPage {
             .child(
                 PageHeader::new(t!("camera.page_title"))
                     .description(t!("camera.page_description"))
-                    .when_some(pill, |header, pill| header.trailing(pill)),
+                    .trailing(trailing),
             )
             .child(
                 div()

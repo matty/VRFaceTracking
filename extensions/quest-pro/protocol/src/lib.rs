@@ -283,6 +283,9 @@ pub struct EyeSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Track the tongue and cheek puffs with the mouth cameras' model. Off,
+    /// the model doesn't run and the headset's own values are sent.
+    pub mouth_model: bool,
     /// 0 is most responsive, 100 smoothest. Matches the reference hub slider.
     pub tongue_smoothing: f32,
     pub tongue_visibility: VisibilityMode,
@@ -303,8 +306,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            mouth_model: true,
             tongue_smoothing: 55.0,
-            tongue_visibility: VisibilityMode::Weighted,
+            tongue_visibility: VisibilityMode::Camera,
             eye_gaze: true,
             eye_swap_output: true,
             eye_invert_yaw: false,
@@ -320,6 +324,8 @@ impl Default for Settings {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouth_model: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tongue_smoothing: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,11 +348,13 @@ pub struct SettingsPatch {
 #[serde(rename_all = "snake_case")]
 pub enum VisibilityMode {
     /// `w * camera + (1 - w) * native`, with `w` from the gate checkpoint.
-    #[default]
     Weighted,
-    /// Camera confidence only; ignores native TongueOut.
+    /// Camera confidence only; ignores native TongueOut. The default: the
+    /// others are experimental.
+    #[default]
     Camera,
-    /// Native TongueOut only. Direction still comes from the cameras.
+    /// Native TongueOut only. Direction still comes from the cameras; the
+    /// `mouth_model` setting turns the cameras off altogether.
     Native,
     /// `min(camera, native)`: shown only when both see the tongue out, so
     /// fewer false positives but more misses. It decides out or in only;
