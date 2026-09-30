@@ -393,6 +393,40 @@ pub fn add_missing_heads(weights: &mut Weights) -> Result<bool> {
     Ok(true)
 }
 
+/// Which layers fine-tuning may change; the rest keep the base model's
+/// weights.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Trainable {
+    #[default]
+    All,
+    /// The fully connected head: the convolutional layers that see the
+    /// images stay as they are.
+    Head,
+    /// Only the last layer, which maps features to outputs.
+    Output,
+}
+
+impl Trainable {
+    pub fn name(self) -> &'static str {
+        match self {
+            Trainable::All => "all",
+            Trainable::Head => "head",
+            Trainable::Output => "output",
+        }
+    }
+}
+
+impl std::str::FromStr for Trainable {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        [Trainable::All, Trainable::Head, Trainable::Output]
+            .into_iter()
+            .find(|layers| layers.name() == name)
+            .ok_or_else(|| format!("unknown layers {name}; use all, head or output"))
+    }
+}
+
 #[derive(Module, Debug)]
 pub struct TongueNet<B: Backend> {
     encoder: Vec<Stage<B>>,
@@ -473,6 +507,33 @@ impl<B: Backend> TongueNet<B> {
         Self {
             encoder: self.encoder.into_iter().map(Stage::fold).collect(),
             fusion: self.fusion.into_iter().map(Stage::fold).collect(),
+            ..self
+        }
+    }
+
+    /// The same network with gradients switched off outside `trainable`, so
+    /// an optimizer leaves those layers alone.
+    pub fn freeze(self, trainable: Trainable) -> Self {
+        let frozen_head = match trainable {
+            Trainable::All => return self,
+            Trainable::Head => 0,
+            Trainable::Output => HEAD.len() - 1,
+        };
+        Self {
+            encoder: self.encoder.no_grad(),
+            fusion: self.fusion.no_grad(),
+            head: self
+                .head
+                .into_iter()
+                .enumerate()
+                .map(|(index, linear)| {
+                    if index < frozen_head {
+                        linear.no_grad()
+                    } else {
+                        linear
+                    }
+                })
+                .collect(),
             ..self
         }
     }

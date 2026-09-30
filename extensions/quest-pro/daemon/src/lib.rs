@@ -44,8 +44,9 @@ impl DaemonExtension for QuestPro {
     }
 }
 
-/// `vrft_d train-tongue --request <file> --output <new folder> [--epochs N]`:
-/// one personal tongue training run. The daemon starts this as a child
+/// `vrft_d train-tongue --request <file> --output <new folder> [--epochs N]
+/// [--learning-rate R] [--layers all|head|output]`: one personal tongue
+/// training run. The daemon starts this as a child
 /// process and follows its `progress.json`.
 fn train_tongue(arguments: &[String]) -> anyhow::Result<()> {
     let value = |flag: &str| {
@@ -59,6 +60,12 @@ fn train_tongue(arguments: &[String]) -> anyhow::Result<()> {
     let mut options = vrft_tongue::train::Options::default();
     if let Some(epochs) = value("--epochs") {
         options.epochs = epochs.parse().context("--epochs must be a whole number")?;
+    }
+    if let Some(rate) = value("--learning-rate") {
+        options.learning_rate = rate.parse().context("--learning-rate must be a number")?;
+    }
+    if let Some(layers) = value("--layers") {
+        options.trainable = layers.parse().map_err(anyhow::Error::msg)?;
     }
     vrft_tongue::train::run(request.as_ref(), output.as_ref(), &options)
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use vrft_tongue::backend::Cpu;
 use vrft_tongue::checkpoint::{Metadata, VisibilityGate};
-use vrft_tongue::model::{TongueNet, ARCHITECTURE};
+use vrft_tongue::model::{TongueNet, Trainable, Weights, ARCHITECTURE};
 use vrft_tongue::preprocess::FRAME_BYTES;
 use vrft_tongue::train::{run, Options};
 use vrft_tongue::{Accelerator, Checkpoint, Role, TongueModel, TARGETS, TONGUE_TARGETS};
@@ -235,6 +235,36 @@ fn cheek_puffs_train_on_hidden_tongue_frames() {
         .disabled_targets
         .iter()
         .any(|name| name.starts_with("cheek")));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn locked_layers_keep_the_base_weights() {
+    let root = temp("locked");
+    let base = root.join("base");
+    base_models(&base);
+    let dir = root.join("recording");
+    graded(&dir, 1);
+    let output = root.join("output");
+    let options = Options {
+        trainable: Trainable::Output,
+        ..one_pass()
+    };
+    run(&write_request(&root, &base, &[dir]), &output, &options).unwrap();
+
+    let values = |weights: &Weights, name: &str| weights[name].clone().to_vec::<f32>().unwrap();
+    for role in [Role::Gate, Role::Direction] {
+        let before = Checkpoint::load(&role.safetensors(&base)).unwrap().weights;
+        let after = Checkpoint::load(&role.safetensors(&output)).unwrap();
+        assert_eq!(
+            after.metadata.personal_training.unwrap()["layers"],
+            "output"
+        );
+        for name in before.keys() {
+            let changed = values(&before, name) != values(&after.weights, name);
+            assert_eq!(changed, name.starts_with("head.6."), "{role:?} {name}");
+        }
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 

@@ -32,7 +32,7 @@ use crate::checkpoint::{Checkpoint, Metadata, Role, VisibilityGate};
 use crate::dataset::Record;
 use crate::dataset::{augment, Frames, ACTIVE};
 use crate::infer::guarded;
-use crate::model::{TongueNet, Weights, FEATURES, OUTPUT_BIAS, OUTPUT_WEIGHT};
+use crate::model::{TongueNet, Trainable, Weights, FEATURES, OUTPUT_BIAS, OUTPUT_WEIGHT};
 use crate::recordings::Recording;
 use crate::{CHEEK_COLUMNS, TARGETS};
 use vrft_quest_pro_protocol::{ReportCalibration, TrainingProgress, TrainingReport, TrainingStage};
@@ -101,6 +101,7 @@ pub struct Options {
     pub epochs: usize,
     pub batch_size: usize,
     pub learning_rate: f64,
+    pub trainable: Trainable,
 }
 
 impl Default for Options {
@@ -109,6 +110,7 @@ impl Default for Options {
             epochs: 12,
             batch_size: 12,
             learning_rate: 1e-4,
+            trainable: Trainable::All,
         }
     }
 }
@@ -402,7 +404,8 @@ impl Job<'_> {
             let features = features(&base, &frames, batch_size, device)?;
             self.fit_cheeks(&features, &frames, &mut weights)?;
         }
-        let mut model = TongueNet::<B>::from_weights(weights, device)?;
+        let mut model =
+            TongueNet::<B>::from_weights(weights, device)?.freeze(self.options.trainable);
         let mut optimizer = AdamWConfig::new()
             .with_weight_decay(1e-4)
             .with_epsilon(1e-8)
@@ -491,6 +494,7 @@ impl Job<'_> {
             personal_training: Some(json!({
                 "focus": focus.name(),
                 "epochs": self.options.epochs,
+                "layers": self.options.trainable.name(),
                 "frames": frames.len(),
                 "recordings": self.recordings.iter().map(|r| r.dir.display().to_string()).collect::<Vec<_>>(),
                 "parentCheckpoint": source.display().to_string(),
