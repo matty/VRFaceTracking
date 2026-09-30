@@ -1,3 +1,4 @@
+pub mod job;
 mod proxy;
 pub use proxy::ProxyModule;
 

@@ -88,23 +88,21 @@ impl HomePage {
         let stuck = launcher.is_stuck();
         let busy = launcher.is_busy();
         let stopping = *launcher.state() == LaunchState::Stopping;
-        if stuck {
-            // It didn't stop when asked.
+        let shown = engine_buttons(running, stuck, with_restart, self.confirm_stop);
+        // It didn't stop when asked.
+        let end = shown.end.then(|| {
             let launcher = self.launcher.clone();
-            return Some(
-                Button::new("end-vrft")
-                    .danger()
-                    .outline()
-                    .regular()
-                    .label(t!("home.end_vrft"))
-                    .on_click(move |_, _, cx| {
-                        launcher.update(cx, |launcher, cx| launcher.end_stuck(false, cx))
-                    })
-                    .into_any_element(),
-            );
-        }
-        if !running {
-            return None;
+            Button::new("end-vrft")
+                .danger()
+                .outline()
+                .regular()
+                .label(t!("home.end_vrft"))
+                .on_click(move |_, _, cx| {
+                    launcher.update(cx, |launcher, cx| launcher.end_stuck(false, cx))
+                })
+        });
+        if !shown.stop {
+            return end.map(IntoElement::into_any_element);
         }
         let restart = {
             let launcher = self.launcher.clone();
@@ -162,8 +160,9 @@ impl HomePage {
         Some(
             h_flex()
                 .gap_2()
-                .when(with_restart && !self.confirm_stop, |row| row.child(restart))
+                .when(shown.restart, |row| row.child(restart))
                 .child(stop)
+                .children(end)
                 .into_any_element(),
         )
     }
@@ -660,6 +659,30 @@ fn output_label(mode: &str) -> String {
     }
 }
 
+/// Which of Restart, Stop and End the status band shows.
+#[derive(Debug, PartialEq)]
+struct EngineButtons {
+    restart: bool,
+    stop: bool,
+    end: bool,
+}
+
+/// Restart and Stop while VRFT runs, Restart only when asked for and not
+/// while a stop waits to be confirmed. End once stopping has failed: beside
+/// Stop, to try again, while VRFT still answers, and alone once it doesn't.
+fn engine_buttons(
+    running: bool,
+    stuck: bool,
+    with_restart: bool,
+    confirm_stop: bool,
+) -> EngineButtons {
+    EngineButtons {
+        restart: running && with_restart && !confirm_stop,
+        stop: running,
+        end: stuck,
+    }
+}
+
 /// How things stand, at the status band's end: a green dot while tracking
 /// is on, a hollow ring while it's stopped, and the usual marks otherwise.
 fn state_mark(tone: Tone) -> AnyElement {
@@ -967,6 +990,37 @@ mod tests {
         let (text, done) = where_tracking_goes(&vrchat("127.0.0.1", None));
         assert!(text.contains("127.0.0.1:9000"));
         assert!(done);
+    }
+
+    #[test]
+    fn stop_comes_back_while_vrft_answers_after_stopping_failed() {
+        let buttons = |restart, stop, end| EngineButtons { restart, stop, end };
+        assert_eq!(
+            engine_buttons(true, false, true, false),
+            buttons(true, true, false)
+        );
+        assert_eq!(
+            engine_buttons(true, true, true, false),
+            buttons(true, true, true),
+            "still answering, so Stop and Restart stay beside End"
+        );
+        assert_eq!(
+            engine_buttons(false, true, true, false),
+            buttons(false, false, true)
+        );
+        assert_eq!(
+            engine_buttons(true, false, false, false),
+            buttons(false, true, false),
+            "beside a problem's fix"
+        );
+        assert_eq!(
+            engine_buttons(true, false, true, true),
+            buttons(false, true, false)
+        );
+        assert_eq!(
+            engine_buttons(false, false, true, false),
+            buttons(false, false, false)
+        );
     }
 
     #[test]

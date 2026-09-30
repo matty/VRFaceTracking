@@ -8,7 +8,7 @@ use vrft_common::{MutationConfig, MutatorConfig};
 use vrft_daemon::plugin_loader::{self, PluginKind};
 use vrft_protocol::{
     module_name as friendly_name, AdjustmentGroup, AdjustmentTuning, Config, ConfigPatch,
-    CorrectorsTuning, FilterTuning, Plugin, Tuning,
+    CorrectorsTuning, FilterTuning, Plugin, Tuning, CONFIG_LOCK,
 };
 
 /// The output modes the desktop app offers, as `config.json` names them.
@@ -30,6 +30,58 @@ fn read_json(config: &Path) -> Result<Value, String> {
 /// back the file as it was before the other.
 static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// How long a change waits for one being saved elsewhere.
+#[cfg(windows)]
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Holds [`CONFIG_LOCK`] while it lives, so a change the desktop app writes
+/// itself, while it doesn't reach VRFT, and one VRFT writes can't each
+/// write back the file as it was before the other.
+struct ConfigLock {
+    #[cfg(windows)]
+    mutex: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Threading::ReleaseMutex;
+        // SAFETY: the handle is open, and this thread holds the mutex.
+        let _ = unsafe { ReleaseMutex(HANDLE(self.mutex.as_raw_handle())) };
+    }
+}
+
+/// Takes [`CONFIG_LOCK`], waiting while the app or another thread holds it.
+#[cfg(windows)]
+fn lock_config() -> Result<ConfigLock, String> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+    let wide: Vec<u16> = CONFIG_LOCK.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: the name is NUL-terminated and outlives the call, and the
+    // handle is owned, and closed, from here on.
+    let mutex = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }
+        .map(|handle| unsafe { OwnedHandle::from_raw_handle(handle.0) })
+        .map_err(|error| format!("Can't save the change: {error}"))?;
+    let wait = LOCK_WAIT.as_millis() as u32;
+    // SAFETY: the handle is open for the wait.
+    let event = unsafe { WaitForSingleObject(HANDLE(mutex.as_raw_handle()), wait) };
+    // Abandoned, it's taken all the same: whoever held it ended.
+    if event == WAIT_OBJECT_0 || event == WAIT_ABANDONED {
+        Ok(ConfigLock { mutex })
+    } else {
+        Err("Another change is still being saved. Try again.".into())
+    }
+}
+
+#[cfg(not(windows))]
+fn lock_config() -> Result<ConfigLock, String> {
+    Ok(ConfigLock {})
+}
+
 /// Applies `change` to the file's JSON, checks VRFT can still read it, and
 /// saves it.
 fn edit(
@@ -39,6 +91,7 @@ fn edit(
     let _editing = EDITING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _locked = lock_config()?;
     let mut root = read_json(config)?;
     let Some(object) = root.as_object_mut() else {
         return Err(format!("{} isn't a JSON object", config.display()));
@@ -405,6 +458,35 @@ mod tests {
                 "no change was written over"
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_change_waits_for_one_saved_elsewhere() {
+        let dir = temp_dir("elsewhere");
+        let config = dir.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            // As the app writes the file while it doesn't reach VRFT,
+            // holding the lock but not this process's EDITING.
+            scope.spawn(|| {
+                let locked = lock_config().unwrap();
+                let mut value: Value =
+                    serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                vrft_protocol::set_extension_enabled(&mut value, "app", true).unwrap();
+                std::fs::write(&config, value.to_string()).unwrap();
+                drop(locked);
+            });
+            locked_rx.recv().unwrap();
+            write_enabled(&config, "daemon", true).unwrap();
+        });
+        let written: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(written["extensions"]["app"]["enabled"], true);
+        assert_eq!(written["extensions"]["daemon"]["enabled"], true);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

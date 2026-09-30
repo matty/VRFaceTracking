@@ -15,8 +15,12 @@ use rust_i18n::t;
 use vrft_gui_core::launcher::Launcher;
 use vrft_gui_core::live::DaemonState;
 use vrft_gui_core::palette;
+use vrft_gui_core::processes::HeldMutex;
 use vrft_gui_core::summary::{Connection, Tone};
 use vrft_gui_core::widgets::{card, hint, Notice, StatusDot};
+
+/// How long writing `config.json` waits for a change VRFT is saving.
+const CONFIG_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct ExtensionSwitches {
     daemon: Entity<DaemonState>,
@@ -307,13 +311,18 @@ impl Render for ExtensionSwitches {
 fn write_extension_enabled(id: &str, enabled: bool) -> anyhow::Result<()> {
     let path = vrft_gui_core::paths::config_file()
         .ok_or_else(|| anyhow::anyhow!("Can't find config.json"))?;
+    // VRFT may be running without answering, and save a change of its own.
+    let _locked = HeldMutex::take(vrft_protocol::CONFIG_LOCK, CONFIG_LOCK_WAIT)
+        .ok_or_else(|| anyhow::anyhow!("Another change is still being saved. Try again."))?;
     let mut config: serde_json::Value = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(error) => return Err(error.into()),
     };
     vrft_protocol::set_extension_enabled(&mut config, id, enabled).map_err(anyhow::Error::msg)?;
-    let pending = path.with_extension("json.pending");
+    // Not VRFT's own `config.json.pending`, which an older VRFT writes
+    // without the lock.
+    let pending = path.with_extension("json.app-pending");
     std::fs::write(&pending, serde_json::to_string_pretty(&config)?)?;
     std::fs::rename(&pending, &path)?;
     Ok(())

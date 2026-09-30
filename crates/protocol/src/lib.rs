@@ -22,6 +22,15 @@ pub const OWNER_PID_ARG: &str = "--owner-pid";
 /// daemon refuses to start while it exists, as both would send to VRChat.
 pub const DAEMON_INSTANCE: &str = "Local\\VRFaceTracking.vrft_d";
 
+/// Shared memory holding the running daemon's process id, a `u32`, while it
+/// runs, so the desktop app can end one that has never answered, and no
+/// other `vrft_d.exe`.
+pub const DAEMON_PID: &str = "Local\\VRFaceTracking.vrft_d.pid";
+
+/// A named mutex held while `config.json` is read, changed and written: by
+/// the daemon, and by the desktop app while the daemon doesn't run to do it.
+pub const CONFIG_LOCK: &str = "Local\\VRFaceTracking.config";
+
 /// The daemon's own routes.
 pub mod routes {
     /// GET: [`Status`](super::Status).

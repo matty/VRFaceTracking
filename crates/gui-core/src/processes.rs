@@ -1,6 +1,7 @@
 //! Other programs on this PC: starting console tools without a window,
-//! finding running programs by the name of their executable, and holding on
-//! to one program so it can be waited for or ended.
+//! finding running programs by the name of their executable, holding on to
+//! one program so it can be waited for or ended, and the named mutexes and
+//! shared memory the app and the daemon share.
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 use std::time::Duration;
@@ -64,23 +65,125 @@ pub fn find(_exe: &str) -> Vec<u32> {
     Vec::new()
 }
 
-/// Whether a program holds the named mutex `name`, such as the one each
-/// running daemon holds.
+/// `name` as a NUL-terminated wide string.
 #[cfg(windows)]
-pub fn named_mutex_exists(name: &str) -> bool {
+fn wide(name: &str) -> Vec<u16> {
+    name.encode_utf16().chain(Some(0)).collect()
+}
+
+/// Whether a program holds the named mutex `name`, such as the one each
+/// running daemon holds. Having it open isn't holding it. One this app may
+/// not open, such as a daemon's running as administrator, is held.
+#[cfg(windows)]
+pub fn named_mutex_held(name: &str) -> bool {
     use windows::core::PCWSTR;
-    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
-    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows::Win32::System::Threading::{
+        OpenMutexW, ReleaseMutex, WaitForSingleObject, MUTEX_MODIFY_STATE,
+        SYNCHRONIZATION_SYNCHRONIZE,
+    };
+    let wide = wide(name);
+    let access = SYNCHRONIZATION_SYNCHRONIZE | MUTEX_MODIFY_STATE;
     // SAFETY: the name is NUL-terminated and outlives the call, and the
-    // handle is closed straight away.
-    unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(wide.as_ptr())) }
-        .map(|handle| drop(unsafe { OwnedHandle::from_raw_handle(handle.0) }))
-        .is_ok()
+    // handle is owned, and closed, from here on.
+    let mutex = match unsafe { OpenMutexW(access, false, PCWSTR(wide.as_ptr())) } {
+        Ok(handle) => unsafe { OwnedHandle::from_raw_handle(handle.0) },
+        Err(error) => return error.code() == ERROR_ACCESS_DENIED.to_hresult(),
+    };
+    let handle = HANDLE(mutex.as_raw_handle());
+    // SAFETY: the handle is open, with the rights to wait and to let go.
+    let event = unsafe { WaitForSingleObject(handle, 0) };
+    if event == WAIT_OBJECT_0 || event == WAIT_ABANDONED {
+        // Nobody held it, so this took it: give it straight back. A daemon
+        // starting meanwhile waits for it.
+        let _ = unsafe { ReleaseMutex(handle) };
+    }
+    event == WAIT_TIMEOUT
 }
 
 #[cfg(not(windows))]
-pub fn named_mutex_exists(_name: &str) -> bool {
+pub fn named_mutex_held(_name: &str) -> bool {
     false
+}
+
+/// A named mutex this thread holds until it's dropped, such as
+/// [`vrft_protocol::CONFIG_LOCK`] while `config.json` is written.
+pub struct HeldMutex {
+    #[cfg(windows)]
+    mutex: OwnedHandle,
+}
+
+impl HeldMutex {
+    /// Takes the named mutex `name`, waiting up to `timeout` while another
+    /// program or thread holds it. `None` if it's still held then, or can't
+    /// be opened.
+    #[cfg(windows)]
+    pub fn take(name: &str, timeout: Duration) -> Option<Self> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let wide = wide(name);
+        // SAFETY: the name is NUL-terminated and outlives the call, and the
+        // handle is owned, and closed, from here on.
+        let mutex = unsafe {
+            OwnedHandle::from_raw_handle(CreateMutexW(None, false, PCWSTR(wide.as_ptr())).ok()?.0)
+        };
+        let millis = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+        // SAFETY: the handle is open for the wait.
+        let event = unsafe { WaitForSingleObject(HANDLE(mutex.as_raw_handle()), millis) };
+        // Abandoned, it's taken all the same: whoever held it ended.
+        (event == WAIT_OBJECT_0 || event == WAIT_ABANDONED).then_some(Self { mutex })
+    }
+
+    #[cfg(not(windows))]
+    pub fn take(_name: &str, _timeout: Duration) -> Option<Self> {
+        Some(Self {})
+    }
+}
+
+#[cfg(windows)]
+impl Drop for HeldMutex {
+    fn drop(&mut self) {
+        use windows::Win32::System::Threading::ReleaseMutex;
+        // SAFETY: the handle is open, and this thread holds the mutex.
+        let _ = unsafe { ReleaseMutex(HANDLE(self.mutex.as_raw_handle())) };
+    }
+}
+
+/// The process id a program keeps in the shared memory `name`, as a
+/// running daemon does its own under [`vrft_protocol::DAEMON_PID`].
+#[cfg(windows)]
+pub fn published_pid(name: &str) -> Option<u32> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Memory::{
+        MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
+    };
+    let wide = wide(name);
+    let size = std::mem::size_of::<u32>();
+    // SAFETY: the name is NUL-terminated and outlives the call, the mapping
+    // is owned from here on, and only the view's `size` bytes are read
+    // before it's unmapped.
+    unsafe {
+        let mapping = OwnedHandle::from_raw_handle(
+            OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(wide.as_ptr()))
+                .ok()?
+                .0,
+        );
+        let view = MapViewOfFile(HANDLE(mapping.as_raw_handle()), FILE_MAP_READ, 0, 0, size);
+        if view.Value.is_null() {
+            return None;
+        }
+        let pid = view.Value.cast::<u32>().read_unaligned();
+        let _ = UnmapViewOfFile(view);
+        (pid != 0).then_some(pid)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn published_pid(_name: &str) -> Option<u32> {
+    None
 }
 
 /// Where a running program's executable is, when Windows lets this app ask.
@@ -303,20 +406,104 @@ mod tests {
         assert_eq!(process.exit_status().unwrap().code(), Some(3));
     }
 
+    fn test_name(tag: &str) -> String {
+        format!(
+            "Local\\VRFaceTracking.test.gui.{tag}.{}",
+            std::process::id()
+        )
+    }
+
+    /// Holds the mutex `name` on another thread, as another program would,
+    /// until the returned sender is dropped.
+    fn hold_elsewhere(name: &str) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let name = name.to_string();
+        let holder = std::thread::spawn(move || {
+            let held = HeldMutex::take(&name, Duration::ZERO).unwrap();
+            held_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            drop(held);
+        });
+        held_rx.recv().unwrap();
+        (release_tx, holder)
+    }
+
+    /// Whether another thread can take the mutex `name` straight away.
+    fn free_elsewhere(name: &str) -> bool {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| HeldMutex::take(name, Duration::ZERO).is_some())
+                .join()
+                .unwrap()
+        })
+    }
+
     #[test]
     fn sees_a_named_mutex_only_while_it_is_held() {
         use windows::core::PCWSTR;
         use windows::Win32::System::Threading::CreateMutexW;
-        let name = format!("Local\\VRFaceTracking.test.gui.{}", std::process::id());
-        assert!(!named_mutex_exists(&name));
-        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-        let held = unsafe {
+        let name = test_name("held");
+        assert!(!named_mutex_held(&name));
+        let (release, holder) = hold_elsewhere(&name);
+        assert!(named_mutex_held(&name));
+        drop(release);
+        holder.join().unwrap();
+        assert!(!named_mutex_held(&name));
+
+        // Open, as by a daemon on its way out, it isn't held, and checking
+        // leaves it free.
+        let wide = wide(&name);
+        let open = unsafe {
             OwnedHandle::from_raw_handle(
                 CreateMutexW(None, false, PCWSTR(wide.as_ptr())).unwrap().0,
             )
         };
-        assert!(named_mutex_exists(&name));
-        drop(held);
-        assert!(!named_mutex_exists(&name));
+        assert!(!named_mutex_held(&name));
+        assert!(free_elsewhere(&name));
+        drop(open);
+    }
+
+    #[test]
+    fn a_held_mutex_keeps_others_out_until_it_is_let_go() {
+        let name = test_name("take");
+        let (release, holder) = hold_elsewhere(&name);
+        assert!(HeldMutex::take(&name, Duration::from_millis(50)).is_none());
+        drop(release);
+        holder.join().unwrap();
+        assert!(HeldMutex::take(&name, Duration::from_millis(50)).is_some());
+    }
+
+    #[test]
+    fn reads_a_published_process_id() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows::Win32::System::Memory::{
+            CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_WRITE, PAGE_READWRITE,
+        };
+        let name = test_name("pid");
+        assert_eq!(published_pid(&name), None);
+        let wide = wide(&name);
+        let mapping = unsafe {
+            let mapping = OwnedHandle::from_raw_handle(
+                CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    4,
+                    PCWSTR(wide.as_ptr()),
+                )
+                .unwrap()
+                .0,
+            );
+            let view = MapViewOfFile(HANDLE(mapping.as_raw_handle()), FILE_MAP_WRITE, 0, 0, 4);
+            view.Value.cast::<u32>().write_unaligned(4242);
+            UnmapViewOfFile(view).unwrap();
+            mapping
+        };
+        assert_eq!(published_pid(&name), Some(4242));
+        drop(mapping);
+        assert_eq!(published_pid(&name), None);
     }
 }

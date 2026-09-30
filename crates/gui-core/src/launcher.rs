@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vrft_protocol::{DAEMON_INSTANCE, OWNER_PID_ARG};
+use vrft_protocol::{DAEMON_INSTANCE, DAEMON_PID, OWNER_PID_ARG};
 
 const DAEMON_EXE: &str = "vrft_d.exe";
 const LOG_FILE: &str = "vrft_d.log";
@@ -157,7 +157,7 @@ impl Launcher {
         if self.is_busy() {
             return;
         }
-        let Some(process) = self.running_process() else {
+        let Some(process) = self.find_running() else {
             if self.process.is_some() {
                 // It has just stopped by itself.
                 self.ended(restart, cx);
@@ -236,6 +236,8 @@ impl Launcher {
         };
         self.state = LaunchState::Starting;
         self.stopped_by_user = false;
+        // A daemon that has since exited is no longer this app's.
+        self.forget_exited();
         cx.notify();
         let client = self.client.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -262,7 +264,7 @@ impl Launcher {
                     return;
                 }
             };
-            let spawned = child.is_some();
+            let spawned = child.as_ref().map(Child::id);
             if let Some(child) = child {
                 this.update(cx, |launcher, _| {
                     launcher.process = Some(DaemonProcess {
@@ -282,10 +284,13 @@ impl Launcher {
                     this.update(cx, |launcher, cx| launcher.finish(cx)).ok();
                     return;
                 }
-                let exited = this
-                    .update(cx, |launcher, _| launcher.started_exit())
-                    .ok()
-                    .flatten();
+                // Only the daemon this start spawned: another's exit isn't
+                // this start failing.
+                let exited = spawned.and_then(|pid| {
+                    this.update(cx, |launcher, _| launcher.started_exit(pid))
+                        .ok()
+                        .flatten()
+                });
                 if let Some(status) = exited {
                     let reason = fs::read_to_string(&log)
                         .ok()
@@ -299,14 +304,14 @@ impl Launcher {
                     return;
                 }
                 if began.elapsed() > START_TIMEOUT {
-                    let message = if spawned {
+                    let message = if spawned.is_some() {
                         t!("launcher.not_answering_log", log = log.display())
                     } else {
                         t!("launcher.not_answering")
                     };
                     this.update(cx, |launcher, cx| {
                         launcher.fail_start(message, cx);
-                        launcher.stuck = launcher.running_process().is_some();
+                        launcher.stuck = launcher.find_running().is_some();
                     })
                     .ok();
                     return;
@@ -346,7 +351,7 @@ impl Launcher {
                 this.update(cx, |launcher, cx| {
                     launcher.fail(error.to_string(), cx);
                     // Too busy to answer, perhaps: ending it is the way out.
-                    launcher.stuck = launcher.running_process().is_some();
+                    launcher.stuck = launcher.find_running().is_some();
                 })
                 .ok();
                 return;
@@ -387,7 +392,7 @@ impl Launcher {
                 if began.elapsed() > STOP_TIMEOUT {
                     this.update(cx, |launcher, cx| {
                         launcher.fail(t!("launcher.didnt_stop"), cx);
-                        launcher.stuck = launcher.running_process().is_some();
+                        launcher.stuck = launcher.find_running().is_some();
                     })
                     .ok();
                     return;
@@ -481,11 +486,26 @@ impl Launcher {
         }
     }
 
-    /// How the daemon this app started exited, if it has. It's then no longer
-    /// this app's to stop.
-    fn started_exit(&mut self) -> Option<ExitStatus> {
-        let daemon = self.process.as_ref().filter(|daemon| daemon.started_here)?;
-        let status = daemon.process.exit_status()?;
+    /// The daemon process the app uses, while it runs: the one it holds, or
+    /// else the running daemon by the process id it publishes, such as one
+    /// that has never answered. Never another `vrft_d.exe`.
+    fn find_running(&mut self) -> Option<Arc<Process>> {
+        if let Some(process) = self.running_process() {
+            return Some(process);
+        }
+        let pid = crate::processes::published_pid(DAEMON_PID)?;
+        let process = Arc::new(open_daemon(pid)?);
+        self.process = Some(DaemonProcess {
+            process: process.clone(),
+            started_here: false,
+        });
+        Some(process)
+    }
+
+    /// How the daemon this app started as process `pid` exited, if it has.
+    /// It's then no longer this app's to stop.
+    fn started_exit(&mut self, pid: u32) -> Option<ExitStatus> {
+        let status = exit_of_started(self.process.as_ref(), pid)?;
         self.process = None;
         Some(status)
     }
@@ -522,6 +542,14 @@ impl Drop for Launcher {
     fn drop(&mut self) {
         self.stop_started();
     }
+}
+
+/// How `held` exited, if it's the daemon this app started as process `pid`
+/// and it has.
+fn exit_of_started(held: Option<&DaemonProcess>, pid: u32) -> Option<ExitStatus> {
+    held.filter(|daemon| daemon.started_here && daemon.process.pid() == pid)?
+        .process
+        .exit_status()
 }
 
 /// Process `pid`, if it's a `vrft_d.exe` this app can end.
@@ -583,7 +611,7 @@ fn spawn_daemon(executable: &Path, log: &Path) -> std::io::Result<Child> {
 /// holds the daemon's mutex, or one answers, if it's too old to hold it.
 /// Another `vrft_d.exe`, such as a tongue training run, isn't a daemon.
 fn daemon_running(client: &DaemonClient) -> bool {
-    crate::processes::named_mutex_exists(DAEMON_INSTANCE) || client.status().is_ok()
+    crate::processes::named_mutex_held(DAEMON_INSTANCE) || client.status().is_ok()
 }
 
 /// The last error the daemon logged, or else its last line, without the
@@ -730,5 +758,28 @@ mod tests {
             Some("thread 'main' panicked")
         );
         assert_eq!(reason_from_log(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_the_daemon_a_start_spawned_fails_it() {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "exit 3"]);
+        let child = crate::processes::hidden(&mut command).spawn().unwrap();
+        let pid = child.id();
+        let process = Arc::new(Process::from_child(child));
+        assert!(process.wait(Duration::from_secs(5)));
+        let held = |started_here| DaemonProcess {
+            process: process.clone(),
+            started_here,
+        };
+        assert_eq!(
+            exit_of_started(Some(&held(true)), pid).and_then(|status| status.code()),
+            Some(3)
+        );
+        // An earlier daemon's exit, or one this app didn't start.
+        assert!(exit_of_started(Some(&held(true)), pid + 4).is_none());
+        assert!(exit_of_started(Some(&held(false)), pid).is_none());
+        assert!(exit_of_started(None, pid).is_none());
     }
 }

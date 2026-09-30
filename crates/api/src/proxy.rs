@@ -103,6 +103,8 @@ impl ProxyModule {
             .arg(log_level)
             .spawn()
             .context("Failed to spawn VrcftRuntime")?;
+        // It keeps the tracking device, so it mustn't outlive the daemon.
+        crate::job::end_with_daemon(&child);
 
         self.child = Some(child);
         Ok(())
@@ -336,6 +338,9 @@ impl TrackingModule for ProxyModule {
                 let _ = CloseHandle(handle);
             }
         }
+        // The next host's heartbeat counts from 1 again, and 0 is shared
+        // memory it hasn't written yet, which mustn't read as a frame.
+        self.last_runtime_heartbeat = 0;
 
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
@@ -379,5 +384,36 @@ mod tests {
 
         proxy.shmem_ptr = None;
         drop(unsafe { Box::from_raw(shared) });
+    }
+
+    #[test]
+    fn a_restarted_host_has_no_frame_until_it_writes_one() {
+        // SAFETY: as above, for both allocations.
+        let old: *mut MarshaledTrackingData =
+            Box::into_raw(Box::new(unsafe { std::mem::zeroed() }));
+        let new: *mut MarshaledTrackingData =
+            Box::into_raw(Box::new(unsafe { std::mem::zeroed() }));
+        let mut proxy = ProxyModule::new();
+        let mut data = UnifiedTrackingData::default();
+        proxy.shmem_ptr = Some(old.cast());
+        unsafe { (*old).runtime_heartbeat = 500 };
+        assert!(proxy.read_frame(&mut data));
+
+        // Unloaded with nothing mapped or running, only its state resets.
+        proxy.shmem_ptr = None;
+        proxy.unload();
+        proxy.shmem_ptr = Some(new.cast());
+        unsafe { (*new).left_eye_openness = 0.75 };
+        assert!(
+            !proxy.read_frame(&mut data),
+            "the new host hasn't written yet"
+        );
+        unsafe { (*new).runtime_heartbeat = 1 };
+        assert!(proxy.read_frame(&mut data));
+        assert_eq!(data.eye.left.openness, 0.75);
+
+        proxy.shmem_ptr = None;
+        drop(unsafe { Box::from_raw(old) });
+        drop(unsafe { Box::from_raw(new) });
     }
 }

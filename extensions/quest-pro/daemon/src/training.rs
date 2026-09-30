@@ -480,7 +480,10 @@ async fn start(
     if job.child.is_some() {
         return Err(bad("A training job is already running"));
     }
-    job.child = Some(command.spawn().map_err(bad)?);
+    let child = command.spawn().map_err(bad)?;
+    // Left running, it would keep the CPU after the daemon stops.
+    vrft_api::job::end_with_daemon(&child);
+    job.child = Some(child);
     job.id = Some(id.clone());
     job.terminal = None;
     job.below_normal = false;
