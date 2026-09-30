@@ -39,6 +39,7 @@ import addon_utils
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
+from mathutils.kdtree import KDTree
 
 SIZE = 400
 TARGETS = [
@@ -55,6 +56,12 @@ SAMPLES = 16
 # Tongue: rings along the centreline, points around each ring.
 T_ALONG, T_AROUND = 44, 28
 JAW_MAX_DEGREES = 22.0
+# How far a shown tongue's part past the lips may sink under the skin: lips
+# wrapping it press in a few millimetres. Deeper, it's passing through a
+# cheek, a lip or the chin, and the frame's pose is drawn again, up to
+# TONGUE_ATTEMPTS times before settling for a tongue-in pose.
+TONGUE_DEPTH = 0.004
+TONGUE_ATTEMPTS = 8
 # Headset frame from MPFB's frame, before the head's own rotation.
 MPFB_TO_HEADSET = Matrix(((1, 0, 0), (0, 0, 1), (0, -1, 0)))
 # How close the face may come to a camera's centre: the lens and its housing.
@@ -680,9 +687,12 @@ class Tongue:
         self.root_z = lip_top + 0.009 + 0.064 * math.tan(0.12)
         self.jaw = jaw
         faces = grid_faces(T_ALONG, T_AROUND, True)
-        self.obj = mesh_object("Tongue", self.positions(0, 0, 0, 0, 0), faces, mat, parent)
+        self.points = self.positions(0, 0, 0, 0, 0)
+        self.obj = mesh_object("Tongue", self.points, faces, mat, parent)
 
     def positions(self, ext, h, v, curl, jaw, hidden=True):
+        """The tongue's vertices in MPFB's frame. Also sets `outside`: which
+        of them belong to the part that should be past the lips."""
         i = self.id
         root = np.array([0.0, 0.052, self.root_z])
         if hidden:
@@ -698,6 +708,8 @@ class Tongue:
         s = np.linspace(0.0, 1.0, T_ALONG)
         # Where the centreline passes the lips' front.
         inside = 0.065 / length
+        past = np.zeros(T_ALONG, bool) if hidden else s > inside + 0.003 / length
+        self.outside = np.repeat(past, T_AROUND)
         # Horizontal +1 is toward the person's right, -X. Sideways, the whole
         # tongue swings toward that corner from just inside the lips; up, it
         # curls up in front of the upper lip once it is out; down, it tips
@@ -749,9 +761,9 @@ class Tongue:
         return (points - pivot) @ turn.T + pivot
 
     def update(self, frame):
-        p = self.positions(frame["ext"], frame["h"], frame["v"], frame["curl"], frame["jaw"],
-                           hidden=frame["kind"] != "visible")
-        self.obj.data.vertices.foreach_set("co", p.astype(np.float32).ravel())
+        self.points = self.positions(frame["ext"], frame["h"], frame["v"], frame["curl"], frame["jaw"],
+                                     hidden=frame["kind"] != "visible")
+        self.obj.data.vertices.foreach_set("co", self.points.astype(np.float32).ravel())
         self.obj.data.update()
 
 
@@ -831,6 +843,7 @@ class Head:
 
         # Reference points in MPFB's frame, before anything is posed.
         to_world = np.array(human.matrix_world)
+        self.to_world = to_world
         co, normals = self.evaluated(to_world)
         self.jaw_bone = rig.pose.bones["jaw"]
         self.jaw_bone.rotation_mode = "XYZ"
@@ -977,6 +990,26 @@ class Head:
             eyes[2] -= CLEARANCE - gap + 0.0005
         identity["eyes"] = eyes
 
+    def tongue_depth(self):
+        """How far the posed tongue's part past the lips sinks under the skin
+        (metres), by each point's nearest skin vertex and its normal: 0 while
+        it stays outside the face."""
+        points = self.tongue.points[self.tongue.outside]
+        if not len(points):
+            return 0.0
+        co, normals = self.evaluated(self.to_world)
+        near = np.linalg.norm(co - self.mouth, axis=1) < 0.09
+        co, normals = co[near], normals[near]
+        tree = KDTree(len(co))
+        for index, point in enumerate(co):
+            tree.insert(point, index)
+        tree.balance()
+        depth = 0.0
+        for point in points:
+            _, index, _ = tree.find(point)
+            depth = max(depth, -float((point - co[index]) @ normals[index]))
+        return depth
+
     def pose(self, frame):
         for unit, key in self.units.items():
             key.value = frame["units"].get(unit, 0.0)
@@ -1120,7 +1153,7 @@ def main():
         "format": "vrft-tongue-capture-v1", "mode": "synthetic", "width": 800, "height": 400,
         "bytesPerFrame": 800 * 400, "targets": TARGETS,
         "synthetic": {
-            "generator": "tools/tongue-synth/render_tongue.py", "version": 4,
+            "generator": "tools/tongue-synth/render_tongue.py", "version": 5,
             "seed": args.seed, "identities": people, "blender": bpy.app.version_string,
             "faces": "MPFB", "calibration": calibration, "pinhole": PINHOLE, "samples": SAMPLES,
         },
@@ -1130,6 +1163,8 @@ def main():
     scratch = Path(tempfile.mkdtemp(prefix="vrft-synth-"))
     started = time.time()
     index = 0
+    # Tongue poses drawn again because they went through the face, by pose.
+    rejected = {}
     with open(directory / "frames.gray8", "wb") as frames, \
             open(directory / "samples.jsonl", "w") as labels:
         while index < args.count:
@@ -1139,12 +1174,21 @@ def main():
             scene, head, views = build_scene(identity, sensor, lenses, mpfb, targets_dir)
             gain = None
             for _ in range(min(per_person, args.count - index)):
-                frame = sample_frame(rng)
+                # A pose that sends the tongue through the face is drawn again.
+                attempts = 0
+                while True:
+                    frame = sample_frame(rng)
+                    attempts += 1
+                    if attempts > TONGUE_ATTEMPTS and frame["kind"] == "visible":
+                        continue
+                    head.pose(frame)
+                    if frame["kind"] != "visible" or head.tongue_depth() <= TONGUE_DEPTH:
+                        break
+                    rejected[frame["pose"]] = rejected.get(frame["pose"], 0) + 1
                 # The headset shifts a little on the face while it's worn.
                 head.place(identity["pitch"] + rng.normal(0, 1.0), identity["yaw"] + rng.normal(0, 0.7),
                            identity["roll"] + rng.normal(0, 0.7),
                            list(np.add(identity["eyes"], rng.normal(0, 0.001, 3))))
-                head.pose(frame)
                 radiance = [render_view(scene, cam, warp, str(scratch / f"{n}.exr"))
                             for n, (cam, warp) in enumerate(views)]
                 # Auto-exposure: part way from the last frame's gain toward
@@ -1170,6 +1214,9 @@ def main():
                     rate = index / (time.time() - started)
                     print(f"tongue-synth: {index}/{args.count} frames ({rate:.1f}/s)", flush=True)
     shutil.rmtree(scratch, ignore_errors=True)
+    metadata["synthetic"]["rejected_poses"] = rejected
+    (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    print(f"tongue-synth: drew {sum(rejected.values())} tongue poses again: {rejected}", flush=True)
     print(f"tongue-synth: wrote {directory}", flush=True)
 
 

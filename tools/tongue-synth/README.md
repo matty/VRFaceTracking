@@ -55,7 +55,10 @@ expression behind each frame.
   lies against the upper lip, down it hangs and narrows. Its surface has
   papillae-like bumps under patches of saliva that break highlights into
   glints. The teeth are two arcs behind the lips, only a little brighter
-  than the lips, as enamel is in near infrared.
+  than the lips, as enamel is in near infrared. A tongue pose whose part
+  past the lips sinks more than 4 mm under the skin, through a cheek, a lip
+  or the chin, is drawn again; `metadata.json` counts those by pose
+  (`rejected_poses`).
 - **Cameras**: the headset's own mouth cameras. Their lens model (Meta's
   Fisheye62) and pose in the headset come from its factory calibration.
   Each view is rendered as a 106 degree pinhole image and resampled
