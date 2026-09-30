@@ -4,7 +4,9 @@
 use crate::shell::Extensions;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{h_flex, v_flex, Disableable as _, Icon, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     canvas, div, point, px, AnyElement, App, Bounds, ClipboardItem, Context, Entity, Hsla,
@@ -75,17 +77,9 @@ impl HomePage {
         }
     }
 
-    /// Restart and Stop while VRFT runs, top right of the card; Start in the
-    /// same place while it doesn't.
-    fn engine_controls(&self, offer_start: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if offer_start {
-            return Some(
-                StartVrft::new(self.launcher.clone())
-                    .prominent()
-                    .corner()
-                    .into_any_element(),
-            );
-        }
+    /// Restart and Stop while VRFT runs, at the start of the status band.
+    /// Restart is left out beside a problem's fix.
+    fn engine_controls(&self, with_restart: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.daemon.read(cx);
         let online = *state.connection() == Connection::Online;
         let running = online && state.status().is_some_and(|status| status.daemon.is_some());
@@ -126,16 +120,6 @@ impl HomePage {
             h_flex()
                 .gap_2()
                 .child(
-                    Button::new("keep-tracking")
-                        .ghost()
-                        .regular()
-                        .label(t!("home.keep_tracking"))
-                        .on_click(cx.listener(|home, _, _, cx| {
-                            home.confirm_stop = false;
-                            cx.notify();
-                        })),
-                )
-                .child(
                     Button::new("stop-vrft")
                         .danger()
                         .outline()
@@ -145,6 +129,16 @@ impl HomePage {
                         .on_click(cx.listener(|home, _, _, cx| {
                             home.confirm_stop = false;
                             home.launcher.update(cx, |launcher, cx| launcher.stop(cx));
+                        })),
+                )
+                .child(
+                    Button::new("keep-tracking")
+                        .ghost()
+                        .regular()
+                        .label(t!("home.keep_tracking"))
+                        .on_click(cx.listener(|home, _, _, cx| {
+                            home.confirm_stop = false;
+                            cx.notify();
                         })),
                 )
                 .into_any_element()
@@ -168,7 +162,7 @@ impl HomePage {
         Some(
             h_flex()
                 .gap_2()
-                .when(!self.confirm_stop, |row| row.child(restart))
+                .when(with_restart && !self.confirm_stop, |row| row.child(restart))
                 .child(stop)
                 .into_any_element(),
         )
@@ -455,8 +449,14 @@ impl Render for HomePage {
                     .is_some_and(|daemon| daemon.output.is_some()),
             );
 
-        let actions: Option<AnyElement> = if offer_start {
-            start_failure.map(|notice| notice.into_any_element())
+        // The band's buttons: Start while VRFT isn't running, a problem's
+        // fix beside Stop, or Restart and Stop.
+        let controls: Option<AnyElement> = if offer_start {
+            Some(
+                StartVrft::new(self.launcher.clone())
+                    .buttons_only()
+                    .into_any_element(),
+            )
         } else if let Some(fix) = headline.fix {
             let button = match fix {
                 Fix::Open(page) if page == PageId::MODULES => Button::new("fix-headline")
@@ -467,29 +467,22 @@ impl Render for HomePage {
             Some(
                 h_flex()
                     .gap_2()
-                    .w_full()
-                    .child(button.primary().prominent())
+                    .child(button.primary().regular())
                     .when_some(log.clone(), |row, log| {
                         row.child(
                             Button::new("open-log")
                                 .ghost()
-                                .prominent()
+                                .regular()
                                 .icon(IconName::FileText)
                                 .label(t!("home.open_log"))
                                 .on_click(move |_, _, cx| cx.open_with_system(&log)),
                         )
                     })
-                    .when_some(
-                        technical.filter(|detail| !detail.is_empty()),
-                        |row, detail| {
-                            row.child(div().w(px(8.)))
-                                .child(self.details_row(detail, cx))
-                        },
-                    )
+                    .children(self.engine_controls(false, cx))
                     .into_any_element(),
             )
         } else {
-            None
+            self.engine_controls(true, cx)
         };
         let config_error = status
             .as_ref()
@@ -504,7 +497,46 @@ impl Render for HomePage {
             });
 
         let problem = headline.tone == Tone::Problem;
-        let title: AnyElement = if first_run {
+        // On or stopped, the band says it all; otherwise a line under it
+        // says what's happening or what to do.
+        let detail = (headline.tone != Tone::Off && !headline.detail.is_empty())
+            .then(|| headline.detail.clone());
+        let (band_bg, band_line) = match headline.tone {
+            Tone::Good => (palette::good_bg(), palette::good_line()),
+            Tone::Problem => (palette::signal_bg(), palette::signal_line()),
+            Tone::Waiting | Tone::Off => (palette::rail(), palette::line_soft()),
+        };
+        let band = h_flex()
+            .h(px(56.))
+            .pl(px(12.))
+            .pr(px(20.))
+            .gap_4()
+            .rounded_t(cx.theme().radius_lg - px(1.))
+            .bg(band_bg)
+            .border_b_1()
+            .border_color(band_line)
+            .children(controls)
+            .child(
+                h_flex()
+                    .ml_auto()
+                    .min_w_0()
+                    .gap(px(10.))
+                    .child(state_mark(headline.tone))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(14.))
+                            .font_medium()
+                            .text_color(match headline.tone {
+                                Tone::Problem => palette::signal_text(),
+                                Tone::Off => palette::text_2(),
+                                Tone::Good | Tone::Waiting => palette::text(),
+                            })
+                            .child(headline.value.clone()),
+                    ),
+            );
+        let setup = first_run.then(|| {
             v_flex()
                 .gap_3()
                 .child(
@@ -531,82 +563,48 @@ impl Render for HomePage {
                 )
                 .child(
                     div()
-                        .text_size(px(36.))
-                        .line_height(px(42.))
+                        .text_size(px(26.))
+                        .line_height(px(32.))
                         .font_semibold()
                         .child(t!("home.getting_started")),
                 )
-                .into_any_element()
-        } else {
-            v_flex()
-                .gap(px(14.))
-                .min_w_0()
-                .child(
-                    h_flex()
-                        .gap_2p5()
-                        .child(StatusDot::new(headline.tone))
-                        .child(
-                            div()
-                                .font_family(MONO_FONT)
-                                .text_size(px(11.))
-                                .font_medium()
-                                .text_color(if problem {
-                                    palette::signal()
-                                } else {
-                                    palette::text_2()
-                                })
-                                .child(state_label(headline.tone)),
-                        ),
-                )
-                .child(
+                .child(self.checklist(status.as_ref()))
+        });
+        let body = v_flex()
+            .px(px(HERO_PADDING))
+            .pt(px(22.))
+            .pb(px(28.))
+            .gap(px(18.))
+            .children(detail.map(|detail| {
+                div()
+                    .text_size(px(13.5))
+                    .text_color(palette::text_2())
+                    .child(detail)
+            }))
+            .children(start_failure)
+            .children(
+                technical
+                    .filter(|detail| !detail.is_empty())
+                    .map(|detail| h_flex().child(self.details_row(detail, cx))),
+            )
+            .children(setup.map(|setup| {
+                v_flex().gap(px(22.)).child(setup).child(
                     div()
-                        .text_size(px(44.))
-                        .line_height(px(50.))
-                        .font_semibold()
-                        .child(headline.value.clone()),
+                        .mx(px(-HERO_PADDING))
+                        .h(px(1.))
+                        .bg(palette::line_soft()),
                 )
-                .when(!headline.detail.is_empty(), |title| {
-                    title.child(
-                        div()
-                            .text_size(px(15.))
-                            .line_height(px(23.))
-                            .text_color(palette::text_2())
-                            .child(headline.detail.clone()),
-                    )
-                })
-                .into_any_element()
-        };
+            }))
+            .child(self.signal_path(status.as_ref(), &rates, cx));
 
         let available = vrft_gui_core::content_width(window);
         let sections = self.extension_sections(available, cx);
-        let engine = self.engine_controls(offer_start, cx);
         let hero = card(cx)
             .when(problem, |card| card.border_color(palette::signal_line()))
-            .px(px(HERO_PADDING))
-            .pt(px(30.))
-            .pb(px(32.))
             .flex()
             .flex_col()
-            .gap(px(28.))
-            .child(
-                h_flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_6()
-                    .child(title)
-                    .children(engine),
-            )
-            .when(first_run, |hero| {
-                hero.child(self.checklist(status.as_ref()))
-            })
-            .children(actions.map(|actions| div().mt(px(-8.)).child(actions)))
-            .child(
-                div()
-                    .mx(px(-HERO_PADDING))
-                    .h(px(1.))
-                    .bg(palette::line_soft()),
-            )
-            .child(self.signal_path(status.as_ref(), &rates, cx));
+            .child(band)
+            .child(body);
 
         v_flex()
             .gap_6()
@@ -662,15 +660,29 @@ fn output_label(mode: &str) -> String {
     }
 }
 
-/// The word over the headline for how things stand.
-fn state_label(tone: Tone) -> SharedString {
+/// How things stand, at the status band's end: a green dot while tracking
+/// is on, a hollow ring while it's stopped, and the usual marks otherwise.
+fn state_mark(tone: Tone) -> AnyElement {
     match tone {
-        Tone::Good => t!("home.state_live"),
-        Tone::Waiting => t!("home.state_working"),
-        Tone::Problem => t!("home.state_needs_you"),
-        Tone::Off => t!("home.state_stopped"),
+        Tone::Good => div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(18.))
+            .rounded_full()
+            .bg(palette::good().opacity(0.16))
+            .child(div().size(px(10.)).rounded_full().bg(palette::good()))
+            .into_any_element(),
+        Tone::Off => div()
+            .flex_none()
+            .size(px(10.))
+            .rounded_full()
+            .border_2()
+            .border_color(palette::line_focus())
+            .into_any_element(),
+        tone => StatusDot::new(tone).into_any_element(),
     }
-    .into()
 }
 
 /// A checklist step's mark: a white disc with a tick when done, a ring

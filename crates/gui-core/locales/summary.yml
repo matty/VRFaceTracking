@@ -29,7 +29,7 @@ summary:
   stopped:
     en: "Tracking is stopped"
   stopped_detail:
-    en: Start it to track again.
+    en: Start to enable tracking.
   not_running:
     en: "Tracking isn't running"
   not_running_detail:
@@ -57,7 +57,7 @@ summary:
   no_face_data:
     en: No face data from %{module} yet. Put the headset on and stream to this PC with face tracking on.
   live:
-    en: Tracking is live
+    en: Tracking is on
   config_error:
     en: "config.json couldn't be read, so the defaults are in use: %{error}"
   engine_not_running:

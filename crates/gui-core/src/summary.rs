@@ -449,7 +449,7 @@ mod tests {
 
         let live = headline(&Connection::Online, Some(&status), &LIVE, &Launch::Idle);
         assert_eq!(live.tone, Tone::Good);
-        assert_eq!(live.value, "Tracking is live");
+        assert_eq!(live.value, "Tracking is on");
     }
 
     #[test]
@@ -520,7 +520,7 @@ mod tests {
         // Once started, the headline is about tracking again.
         assert_eq!(
             reading(&Connection::Online, Launch::Starting).value,
-            "Tracking is live"
+            "Tracking is on"
         );
     }
 

@@ -66,13 +66,5 @@ home:
     en: Getting Started
   generic_udp:
     en: Generic UDP
-  state_live:
-    en: LIVE
-  state_working:
-    en: WORKING
-  state_needs_you:
-    en: NEEDS YOU
-  state_stopped:
-    en: STOPPED
   change:
     en: Change

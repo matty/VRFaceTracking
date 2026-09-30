@@ -1,6 +1,7 @@
 //! VRFT's colours and type, for what the theme's semantic tokens have no
-//! slot for. One neutral ramp and one signal colour: shape carries state, so
-//! nothing relies on colour alone, and orange only ever means "look at this".
+//! slot for. One neutral ramp, one signal colour and Home's green: shape
+//! carries state, so nothing relies on colour alone, orange only ever means
+//! "look at this", and green only that tracking is on.
 use gpui_kit::{rgb, Hsla};
 
 /// The interface's typeface, embedded by the app.
@@ -75,6 +76,21 @@ pub fn text_3() -> Hsla {
 /// Decoration only, such as a chevron or an idle ring; never words.
 pub fn text_4() -> Hsla {
     rgb(0x5f5f66).into()
+}
+
+/// Tracking is on, for Home's mark and nothing else.
+pub fn good() -> Hsla {
+    rgb(0x4ade80).into()
+}
+
+/// Behind Home's status band while tracking is on.
+pub fn good_bg() -> Hsla {
+    rgb(0x0c1710).into()
+}
+
+/// The edge of Home's status band while tracking is on.
+pub fn good_line() -> Hsla {
+    rgb(0x1c3a26).into()
 }
 
 /// The signal colour: something needs the player.

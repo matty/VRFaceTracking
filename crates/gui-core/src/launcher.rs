@@ -41,6 +41,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// stopping takes more than a few.
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHECK_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a stopped daemon's process may be gone before the app's status
+/// polling notices; stopping is done then even if it hasn't.
+const GONE_GRACE: Duration = Duration::from_secs(3);
 /// How long closing the app waits for its daemon to stop by itself before
 /// ending it. Waiting at all lets an update replace `vrft_d.exe` once the app
 /// has closed.
@@ -349,6 +352,7 @@ impl Launcher {
                 return;
             }
             let began = Instant::now();
+            let mut exited_at = None;
             loop {
                 cx.background_executor().timer(CHECK_INTERVAL).await;
                 let Ok(offline) = this.update(cx, |launcher, cx| launcher.offline(cx)) else {
@@ -362,7 +366,12 @@ impl Launcher {
                     Some(process) => process.has_exited(),
                     None => offline,
                 };
-                if exited {
+                // Stopping lasts until the app sees it gone too, so what's
+                // shown doesn't flash back to its last status in between.
+                let seen_gone = offline
+                    || (exited
+                        && exited_at.get_or_insert_with(Instant::now).elapsed() > GONE_GRACE);
+                if exited && seen_gone {
                     this.update(cx, |launcher, cx| {
                         launcher.forget_exited();
                         let restart = std::mem::take(&mut launcher.restart);
@@ -601,7 +610,7 @@ fn reason_from_log(text: &str) -> Option<String> {
 pub struct StartVrft {
     launcher: Entity<Launcher>,
     prominent: bool,
-    corner: bool,
+    buttons_only: bool,
 }
 
 impl StartVrft {
@@ -609,7 +618,7 @@ impl StartVrft {
         Self {
             launcher,
             prominent: false,
-            corner: false,
+            buttons_only: false,
         }
     }
 
@@ -619,10 +628,10 @@ impl StartVrft {
         self
     }
 
-    /// Just the buttons, Start last, for a card's top-right corner where
-    /// Stop sits while tracking runs. The page says why starting failed.
-    pub fn corner(mut self) -> Self {
-        self.corner = true;
+    /// Just the buttons, for where Stop sits while tracking runs. The page
+    /// says why starting failed.
+    pub fn buttons_only(mut self) -> Self {
+        self.buttons_only = true;
         self
     }
 }
@@ -658,14 +667,9 @@ impl RenderOnce for StartVrft {
                     launcher.update(cx, |launcher, cx| launcher.start(cx));
                 }),
         );
-        let (first, last) = if self.corner {
-            (None, Some(start))
-        } else {
-            (Some(start), None)
-        };
         let buttons = h_flex()
             .gap_2()
-            .children(first)
+            .child(start)
             .when_some(log, |row, log| {
                 row.child(size(
                     Button::new("open-log")
@@ -685,10 +689,9 @@ impl RenderOnce for StartVrft {
                             end_launcher.update(cx, |launcher, cx| launcher.end_stuck(true, cx))
                         }),
                 ))
-            })
-            .children(last);
+            });
         let failure = match state {
-            LaunchState::Failed(message) if !self.corner => {
+            LaunchState::Failed(message) if !self.buttons_only => {
                 Some(Notice::new(Tone::Problem, message.clone()).details(message))
             }
             _ => None,
