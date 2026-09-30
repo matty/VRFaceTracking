@@ -19,6 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use burn::backend::Autodiff;
 use burn::module::{AutodiffModule, ModuleVisitor, Param};
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
+use burn::tensor::activation::log_sigmoid;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{ElementConversion, Tensor, TensorData};
 use rand::rngs::StdRng;
@@ -438,8 +439,17 @@ impl Job<'_> {
                     TensorData::new(pixels, [count, 2, size, size]),
                     device,
                 );
-                let prediction = model.forward(images);
-                let loss = loss(&self.enabled, prediction, &targets, &cheeks, focus, device);
+                let raw = model.forward_raw(images);
+                let prediction = model.activate(raw.clone());
+                let loss = loss(
+                    &self.enabled,
+                    raw,
+                    prediction,
+                    &targets,
+                    &cheeks,
+                    focus,
+                    device,
+                );
                 let value: f32 = loss.clone().into_scalar().elem();
                 if !value.is_finite() {
                     bail!("Training loss is not finite");
@@ -634,6 +644,7 @@ fn ridge(samples: &[Sample]) -> Result<Vec<f64>> {
 /// labelled, tongue out or not.
 fn loss<B: Backend>(
     enabled: &[bool; TARGETS.len()],
+    raw: Tensor<B, 2>,
     prediction: Tensor<B, 2>,
     targets: &[f32],
     cheeks_labelled: &[bool],
@@ -642,7 +653,10 @@ fn loss<B: Backend>(
 ) -> Tensor<B, 1> {
     let heads = TARGETS.len();
     let count = targets.len() / heads;
-    // Class-weighted BCE on the post-sigmoid visibility head.
+    // Class-weighted BCE on the visibility head, from its logit. Clamping the
+    // post-sigmoid probability instead zeroes the gradient of any frame whose
+    // output saturates, and over a full run the gate could saturate at "out"
+    // for every frame with nothing left to pull it back.
     let expected: Vec<f32> = targets.chunks(heads).map(|row| row[0]).collect();
     let class_weight: Vec<f32> = expected
         .iter()
@@ -655,13 +669,9 @@ fn loss<B: Backend>(
         })
         .collect();
     let expected = Tensor::<B, 1>::from_floats(expected.as_slice(), device);
-    let probability = prediction
-        .clone()
-        .narrow(1, 0, 1)
-        .reshape([count])
-        .clamp(1e-5, 1.0 - 1e-5);
-    let bce = (expected.clone() * probability.clone().log()
-        + (expected.neg() + 1.0) * probability.neg().log1p())
+    let logit = raw.narrow(1, 0, 1).reshape([count]);
+    let bce = (expected.clone() * log_sigmoid(logit.clone())
+        + (expected.neg() + 1.0) * log_sigmoid(logit.neg()))
     .neg();
     let visibility = (bce * Tensor::<B, 1>::from_floats(class_weight.as_slice(), device)).mean();
     if focus == Focus::Gate {
@@ -1059,12 +1069,25 @@ mod tests {
         enabled[10..].fill(true);
         let device = Default::default();
         let targets = widen(targets);
+        // Only the visibility logit is read, and the reference's
+        // probabilities are all inside (0, 1).
+        let logits: Vec<f32> = widen(prediction)
+            .chunks(TARGETS.len())
+            .flat_map(|row| {
+                let p = row[0];
+                std::iter::once((p / (1.0 - p)).ln()).chain(row[1..].iter().copied())
+            })
+            .collect();
         let value = |focus, cheeks: [bool; 6]| {
             let prediction = Tensor::<Cpu, 2>::from_data(
                 TensorData::new(widen(prediction), [6, TARGETS.len()]),
                 &device,
             );
-            let value: f32 = loss(&enabled, prediction, &targets, &cheeks, focus, &device)
+            let raw = Tensor::<Cpu, 2>::from_data(
+                TensorData::new(logits.clone(), [6, TARGETS.len()]),
+                &device,
+            );
+            let value: f32 = loss(&enabled, raw, prediction, &targets, &cheeks, focus, &device)
                 .into_scalar()
                 .elem();
             value

@@ -552,9 +552,19 @@ impl<B: Backend> TongueNet<B> {
     /// `cameras` is `[batch, 2, size, size]` in 0..1: the left then the right
     /// mouth camera. Returns `[batch, TARGETS.len()]` in `TARGETS` order.
     pub fn forward(&self, cameras: Tensor<B, 4>) -> Tensor<B, 2> {
-        let [batch, ..] = cameras.dims();
+        self.activate(self.forward_raw(cameras))
+    }
+
+    /// The heads' values before their sigmoid or tanh, as
+    /// [`forward`](Self::forward) would return them after [`activate`](Self::activate).
+    pub fn forward_raw(&self, cameras: Tensor<B, 4>) -> Tensor<B, 2> {
         let features = self.features(cameras);
-        let values = self.head[self.head.len() - 1].forward(features);
+        self.head[self.head.len() - 1].forward(features)
+    }
+
+    /// Each head's sigmoid, or tanh for the signed heads.
+    pub fn activate(&self, values: Tensor<B, 2>) -> Tensor<B, 2> {
+        let [batch, _] = values.dims();
         let signed: Tensor<B, 2, Bool> = self
             .signed
             .value()
