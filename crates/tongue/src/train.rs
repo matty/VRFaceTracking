@@ -874,10 +874,20 @@ fn best_runs(scores: &[f64], best: f64) -> Vec<(usize, usize)> {
 /// clamped to [0.3, 0.8]. Many thresholds usually tie, and breaking ties
 /// toward the largest pinned the shipped gate at the grid edge, where live
 /// detection flickers across the daemon's hysteresis band.
+///
+/// Only the user's own frames count when there are any: synthetic ones
+/// have no tracking module TongueOut, and the camera is surer of them than
+/// of real faces.
 fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
     let thresholds: Vec<f64> = (0..86).map(|i| (10 + i) as f64 / 100.0).collect();
-    let native: Option<Vec<f64>> = frames
-        .records
+    let recorded = frames.records.iter().any(|record| !record.synthetic);
+    let (camera, records): (Vec<f64>, Vec<&Record>) = camera
+        .iter()
+        .zip(&frames.records)
+        .filter(|(_, record)| !(recorded && record.synthetic))
+        .map(|(camera, record)| (*camera, record))
+        .unzip();
+    let native: Option<Vec<f64>> = records
         .iter()
         .map(|record| record.native.map(f64::from))
         .collect();
@@ -886,14 +896,14 @@ fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
     } else {
         CAMERA_ONLY_WEIGHT
     };
-    let expected: Vec<f64> = frames.records.iter().map(|r| r.targets[0] as f64).collect();
+    let expected: Vec<f64> = records.iter().map(|r| r.targets[0] as f64).collect();
     let fused: Vec<f64> = match &native {
         Some(native) => camera
             .iter()
             .zip(native)
             .map(|(camera, native)| weight * camera + (1.0 - weight) * native)
             .collect(),
-        None => camera.to_vec(),
+        None => camera,
     };
     let scores: Vec<f64> = thresholds
         .iter()
@@ -951,6 +961,7 @@ mod tests {
                     native: native(index),
                     moving: false,
                     key: index.to_string(),
+                    synthetic: false,
                 }
             })
             .collect();
@@ -974,6 +985,33 @@ mod tests {
         let partly = calibrate(&camera, &gate_frames(|index| (index > 3).then_some(0.0)));
         assert_eq!(partly.camera_weight, CAMERA_ONLY_WEIGHT);
         assert!((0.3..=0.8).contains(&partly.threshold));
+    }
+
+    #[test]
+    fn gate_is_tuned_on_recorded_frames_alone() {
+        // Ten recorded frames with tracking module values, then ten synthetic
+        // ones without any, which the camera is far surer of.
+        let native = |index: usize| (index < 10).then_some(index.is_multiple_of(2) as u8 as f32);
+        let mut mixed = gate_frames(native);
+        for record in &mut mixed.records[10..] {
+            record.synthetic = true;
+        }
+        let camera: Vec<f64> = (0..20)
+            .map(|index| match (index < 10, index % 2 == 0) {
+                (true, true) => 0.6,
+                (true, false) => 0.35,
+                (false, true) => 1.0,
+                (false, false) => 0.0,
+            })
+            .collect();
+        let gate = calibrate(&camera, &mixed);
+        assert_eq!(gate.camera_weight, PREFERRED_CAMERA_WEIGHT);
+        let mut recorded = gate_frames(native);
+        recorded.records.truncate(10);
+        assert_eq!(
+            gate.threshold,
+            calibrate(&camera[..10], &recorded).threshold
+        );
     }
 
     /// Values from the Python trainer's `loss_for` on the same inputs.

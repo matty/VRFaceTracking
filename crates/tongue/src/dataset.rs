@@ -9,7 +9,7 @@ use rand::rngs::StdRng;
 use rand::Rng;
 use serde_json::{json, Value};
 
-use crate::preprocess::AreaResize;
+use crate::preprocess::{AreaResize, VIEW};
 use crate::recordings::{Recording, Sample};
 use crate::{CHEEK_COLUMNS, TARGETS, TONGUE_TARGETS};
 
@@ -52,6 +52,8 @@ pub struct Record {
     pub moving: bool,
     /// Frames sharing a key share one sampling weight.
     pub key: String,
+    /// From a synthetic set rather than the user's own recordings.
+    pub synthetic: bool,
 }
 
 /// Evenly subsampled frames of every usable pose.
@@ -122,10 +124,24 @@ impl Frames {
             if let Some(resize) = &resize {
                 let indices: Vec<usize> = selected.iter().map(|sample| sample.index).collect();
                 let size = resize.size();
+                let stored = recording.view;
+                if stored != VIEW && stored != size {
+                    bail!(
+                        "{} holds {stored} px views; this model reads {size} px",
+                        recording.dir.display()
+                    );
+                }
                 recording.read_frames(&indices, |strip| {
                     let mut image = vec![0u8; 2 * size * size];
                     for (view, out) in image.chunks_mut(size * size).enumerate() {
-                        resize.view(strip, view, out);
+                        if stored == VIEW {
+                            resize.view(strip, view, out);
+                        } else {
+                            // Already at the model's size: rows of both views side by side.
+                            for (row, line) in out.chunks_mut(size).enumerate() {
+                                line.copy_from_slice(&strip[(2 * row + view) * size..][..size]);
+                            }
+                        }
                     }
                     images.push(image);
                 })?;
@@ -136,6 +152,7 @@ impl Frames {
                 native: sample.native,
                 moving: sample.moving,
                 key: sampling_key(sample),
+                synthetic: recording.synthetic,
             }));
         }
         if records.is_empty() {
@@ -207,6 +224,7 @@ impl Frames {
             "negative": self.len() - positive,
             "positive": positive,
             "sources": {"follow": follow, "poses": self.len() - follow},
+            "synthetic": self.records.iter().filter(|record| record.synthetic).count(),
             "poses": poses,
             "targets": targets,
         })

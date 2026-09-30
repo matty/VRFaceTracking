@@ -1,7 +1,8 @@
 //! Installs the built-in tongue model pair: the v8 demo checkpoints from the
 //! Qpro-Enhanced-FT v0.1.10 release (MIT license), verified by SHA-256.
 //! Files already present are never overwritten, and the release zip is
-//! removed once the pair is out of it.
+//! removed once the pair is out of it. Then the synthetic training examples
+//! that personal training mixes in, from VRFaceTracking's own release.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -13,9 +14,37 @@ use std::time::Instant;
 use vrft_quest_pro_protocol::BuiltinStage;
 use vrft_tongue::Role;
 
-const RELEASE_URL: &str = "https://github.com/n0tmast3r/Qpro-Enhanced-FT/releases/download/v0.1.10/QproFaceTracking-0.1.10-poc.zip";
-const RELEASE_NAME: &str = "QproFaceTracking-0.1.10-poc.zip";
-const RELEASE_SHA256: &str = "db40f4b8331a50ca6c2ec37372f1ab4b44cfbe6d21e09ca04244aaaa339cb18f";
+/// A release zip the install downloads, checked by SHA-256.
+struct Release {
+    url: &'static str,
+    name: &'static str,
+    sha256: &'static str,
+    /// Its size, for the download the Training page offers.
+    megabytes: u32,
+    /// What it is, for errors.
+    what: &'static str,
+}
+
+const MODEL_RELEASE: Release = Release {
+    url: "https://github.com/n0tmast3r/Qpro-Enhanced-FT/releases/download/v0.1.10/QproFaceTracking-0.1.10-poc.zip",
+    name: "QproFaceTracking-0.1.10-poc.zip",
+    sha256: "db40f4b8331a50ca6c2ec37372f1ab4b44cfbe6d21e09ca04244aaaa339cb18f",
+    megabytes: 140,
+    what: "the built-in model",
+};
+/// Rendered training examples (tools/tongue-synth), stored at the model's
+/// input size. Personal training mixes them in, so a model keeps knowing the
+/// faces and tongue positions a user's own recording doesn't show.
+const EXAMPLES_RELEASE: Release = Release {
+    url: "https://github.com/matty/VRFaceTracking/releases/download/tongue-synthetic-v4/tongue-synthetic-v4.zip",
+    name: "tongue-synthetic-v4.zip",
+    sha256: "4620d22c3bed55945330ac907e794396c4b073a53fa3e85863947dfa29e123f5",
+    megabytes: 123,
+    what: "the training examples",
+};
+/// Where the examples unpack, beside the built-in pair, and their files.
+const EXAMPLES_DIR: &str = "tongue-synthetic-v4";
+const EXAMPLES_FILES: [&str; 3] = ["metadata.json", "samples.jsonl", "frames.gray8"];
 const MODELS: [(&str, &str); 2] = [
     (
         "qpro-stereo-tongue-v8-gate.pt",
@@ -59,6 +88,30 @@ fn models_dir(root: &Path) -> PathBuf {
 pub fn installed(root: &Path) -> bool {
     let dir = models_dir(root);
     Role::Gate.find(&dir).is_some() && Role::Direction.find(&dir).is_some()
+}
+
+/// The synthetic training examples, once they're in place.
+pub fn examples_dir(root: &Path) -> Option<PathBuf> {
+    let dir = models_dir(root).join(EXAMPLES_DIR);
+    EXAMPLES_FILES
+        .iter()
+        .all(|file| dir.join(file).is_file())
+        .then_some(dir)
+}
+
+/// Megabytes an install would still download.
+pub fn download_megabytes(root: &Path) -> u32 {
+    let pair = if installed(root) {
+        0
+    } else {
+        MODEL_RELEASE.megabytes
+    };
+    let examples = if examples_dir(root).is_some() {
+        0
+    } else {
+        EXAMPLES_RELEASE.megabytes
+    };
+    pair + examples
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -132,6 +185,11 @@ impl BuiltinModel {
     }
 
     fn install(&self, root: &Path) -> Result<(), String> {
+        self.install_pair(root)?;
+        self.install_examples(root)
+    }
+
+    fn install_pair(&self, root: &Path) -> Result<(), String> {
         let dir = models_dir(root);
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let missing: Vec<_> = MODELS
@@ -152,7 +210,7 @@ impl BuiltinModel {
                 ));
             }
         }
-        let archive = self.download(root)?;
+        let archive = self.download(root, &MODEL_RELEASE)?;
         self.check_cancelled()?;
         self.set_stage(BuiltinStage::Unpacking);
         let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
@@ -178,21 +236,58 @@ impl BuiltinModel {
         Ok(())
     }
 
+    /// Unpacks the training examples beside the pair, through a temporary
+    /// folder so training never reads a half-unpacked set.
+    fn install_examples(&self, root: &Path) -> Result<(), String> {
+        if examples_dir(root).is_some() {
+            return Ok(());
+        }
+        let archive = self.download(root, &EXAMPLES_RELEASE)?;
+        self.check_cancelled()?;
+        self.set_stage(BuiltinStage::Unpacking);
+        let dir = models_dir(root).join(EXAMPLES_DIR);
+        let pending = models_dir(root).join(format!("{EXAMPLES_DIR}.download"));
+        let _ = fs::remove_dir_all(&pending);
+        fs::create_dir_all(&pending).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
+            // The files sit in one folder; take each by its own name.
+            let name = entry.name().rsplit(['/', '\\']).next().unwrap_or("");
+            if !entry.is_file() || !EXAMPLES_FILES.contains(&name) {
+                continue;
+            }
+            let mut out = File::create(pending.join(name)).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        }
+        drop(zip);
+        if let Some(file) = EXAMPLES_FILES.iter().find(|f| !pending.join(f).is_file()) {
+            let _ = fs::remove_dir_all(&pending);
+            return Err(format!("{file} is missing from the training examples"));
+        }
+        // What an interrupted install from before may have left.
+        let _ = fs::remove_dir_all(&dir);
+        fs::rename(&pending, &dir).map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(&archive);
+        Ok(())
+    }
+
     /// The verified release zip in `.local/`, downloaded unless it's there.
-    fn download(&self, root: &Path) -> Result<PathBuf, String> {
+    fn download(&self, root: &Path, release: &Release) -> Result<PathBuf, String> {
         let local = root.join(".local");
         fs::create_dir_all(&local).map_err(|e| e.to_string())?;
-        let archive = local.join(RELEASE_NAME);
+        let archive = local.join(release.name);
         if archive.is_file() {
             self.set_stage(BuiltinStage::Verifying);
-            if sha256_file(&archive)? == RELEASE_SHA256 {
+            if sha256_file(&archive)? == release.sha256 {
                 return Ok(archive);
             }
             self.set_stage(BuiltinStage::Connecting);
         }
-        let mut response = ureq::get(RELEASE_URL)
+        let mut response = ureq::get(release.url)
             .call()
-            .map_err(|e| format!("could not download the built-in model: {e}"))?;
+            .map_err(|e| format!("could not download {}: {e}", release.what))?;
         let total = response
             .headers()
             .get("content-length")
@@ -200,8 +295,8 @@ impl BuiltinModel {
             .and_then(|value| value.parse::<u64>().ok());
         self.progress(0, total, None);
         self.set_stage(BuiltinStage::Downloading);
-        let pending = local.join(format!("{RELEASE_NAME}.download"));
-        if let Err(error) = self.receive(response.body_mut(), &pending, total) {
+        let pending = local.join(format!("{}.download", release.name));
+        if let Err(error) = self.receive(response.body_mut(), &pending, total, release) {
             let _ = fs::remove_file(&pending);
             return Err(error);
         }
@@ -215,6 +310,7 @@ impl BuiltinModel {
         body: &mut ureq::Body,
         pending: &Path,
         total: Option<u64>,
+        release: &Release,
     ) -> Result<(), String> {
         let mut out = File::create(pending).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
@@ -245,7 +341,7 @@ impl BuiltinModel {
         }
         drop(out);
         self.set_stage(BuiltinStage::Verifying);
-        if format!("{:x}", hasher.finalize()) != RELEASE_SHA256 {
+        if format!("{:x}", hasher.finalize()) != release.sha256 {
             return Err("the downloaded release failed its SHA-256 check".into());
         }
         Ok(())
@@ -261,7 +357,7 @@ mod tests {
     #[test]
     fn installs_from_a_verified_release_and_never_overwrites() {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let cached = repo.join(".local").join(RELEASE_NAME);
+        let cached = repo.join(".local").join(MODEL_RELEASE.name);
         if !cached.is_file() {
             eprintln!("skipped: no cached release zip");
             return;
@@ -274,20 +370,57 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(root.join(".local")).unwrap();
-        fs::hard_link(&cached, root.join(".local").join(RELEASE_NAME)).unwrap();
+        fs::hard_link(&cached, root.join(".local").join(MODEL_RELEASE.name)).unwrap();
         assert!(!installed(&root));
         let builtin = BuiltinModel::default();
-        builtin.install(&root).unwrap();
+        builtin.install_pair(&root).unwrap();
         assert!(installed(&root));
 
         let gate = models_dir(&root).join(MODELS[0].0);
         fs::write(&gate, b"personal").unwrap();
         fs::remove_file(models_dir(&root).join(MODELS[1].0)).unwrap();
         assert!(builtin
-            .install(&root)
+            .install_pair(&root)
             .unwrap_err()
             .contains("never overwrites"));
         assert_eq!(fs::read(&gate).unwrap(), b"personal");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Unpacks the training examples from the release zip that
+    /// `pack_synthetic` and 7-Zip made in `.local/tongue-synthetic-release/`,
+    /// without downloading; skipped when that zip isn't there.
+    #[test]
+    fn installs_the_training_examples_whole() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let packed = repo
+            .join(".local/tongue-synthetic-release")
+            .join(EXAMPLES_RELEASE.name);
+        if !packed.is_file() {
+            eprintln!("skipped: no packed training examples");
+            return;
+        }
+        let root = repo.join(".local/tongue-tests-rust").join(format!(
+            "examples-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".local")).unwrap();
+        fs::hard_link(&packed, root.join(".local").join(EXAMPLES_RELEASE.name)).unwrap();
+        assert_eq!(
+            download_megabytes(&root),
+            MODEL_RELEASE.megabytes + EXAMPLES_RELEASE.megabytes
+        );
+        BuiltinModel::default().install_examples(&root).unwrap();
+        let dir = examples_dir(&root).expect("examples in place");
+        assert_eq!(download_megabytes(&root), MODEL_RELEASE.megabytes);
+        let recording = vrft_tongue::recordings::Recording::open(&dir).unwrap();
+        assert!(recording.synthetic && !recording.samples.is_empty());
+        assert!(!models_dir(&root)
+            .join(format!("{EXAMPLES_DIR}.download"))
+            .exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

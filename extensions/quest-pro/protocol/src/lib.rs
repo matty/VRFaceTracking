@@ -742,11 +742,17 @@ pub struct ReportCalibration {
     pub plateau: Option<Value>,
 }
 
-/// The built-in model pair.
+/// The built-in model pair, and the synthetic training examples personal
+/// training mixes in, which download with it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BuiltinStatus {
+    /// The pair is in place.
     pub installed: bool,
+    /// The training examples aren't in place yet.
+    pub examples_missing: bool,
+    /// Megabytes an install would still download.
+    pub download_megabytes: Option<u32>,
     pub installing: bool,
     /// Download progress, 0 to 1.
     pub fraction: Option<f32>,

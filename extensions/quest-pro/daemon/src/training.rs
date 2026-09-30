@@ -428,6 +428,8 @@ async fn start(
         recordings.push(safe_child(&manager.root.join(".local/tongue-captures"), id).map_err(bad)?);
     }
     let base = crate::camera::base_model_dir(&manager.root).map_err(bad)?;
+    // The synthetic examples keep what the user's recordings don't show.
+    recordings.extend(builtin::examples_dir(&manager.root));
     // Training runs in a child vrft_d, so cancelling can simply end it.
     let trainer = std::env::current_exe().map_err(bad)?;
     let id = format!(
@@ -523,6 +525,8 @@ fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
     let state = manager.builtin.state();
     BuiltinStatus {
         installed: builtin::installed(&manager.root),
+        examples_missing: builtin::examples_dir(&manager.root).is_none(),
+        download_megabytes: Some(builtin::download_megabytes(&manager.root)),
         installing: state.installing,
         fraction: state.fraction.map(|fraction| fraction as f32),
         error: state.error,
@@ -534,9 +538,10 @@ fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
     }
 }
 
-/// Downloads and verifies the built-in model pair in the background.
+/// Downloads and verifies the built-in model pair and the training
+/// examples in the background.
 async fn install_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
-    if !builtin::installed(&manager.root) {
+    if builtin::download_megabytes(&manager.root) > 0 {
         manager.builtin.start(manager.root.clone());
     }
     Json(builtin_status(&manager))

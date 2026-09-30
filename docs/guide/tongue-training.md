@@ -2,7 +2,7 @@
 
 The same personal model tracks your tongue and puffs each cheek on its own. The headset's own face tracking puffs both cheeks together, so the model's cheek puffs replace it once it has learned them.
 
-Open the desktop app's **Training** page: record, then train. The app splits this into three tabs, **Record**, **Train** and **Test**, with a tick on each one that's done. It opens on the tab that comes next and moves on by itself when a recording or training finishes; click a tab to go back to it. Training starts from the built-in model, so if it isn't installed yet, download it first: the app's Train tab offers **Download**. Everything runs on this PC, with nothing else to install; camera images are never uploaded.
+Open the desktop app's **Training** page: record, then train. The app splits this into three tabs, **Record**, **Train** and **Test**, with a tick on each one that's done. It opens on the tab that comes next and moves on by itself when a recording or training finishes; click a tab to go back to it. Training starts from the built-in model and mixes in a set of rendered training examples, so if either isn't downloaded yet, download it first: the app's Train tab offers **Download**. Everything runs on this PC, with nothing else to install; camera images are never uploaded.
 
 ## 1. Record
 
@@ -38,9 +38,15 @@ Recording pauses if the mouth cameras stop, and stops if they don't come back wi
 
 Every run starts from the installed built-in pair (the visibility gate and the direction model) and fine-tunes both on all ticked recordings for the chosen number of passes. Each pose is sampled equally, so long or repeated poses don't dominate. Follow-the-dot frames are grouped by where the label points (the centre, then eight directions at half and full reach). Held poses keep at most 90 evenly spaced frames per pose per recording; follow-the-dot frames are all used, since each one differs. Every training frame gets a random small rotation, zoom and shift, as from a refitted headset, plus brightness and contrast changes, occasional blur and sensor noise. Both camera views of a frame get the same change. The final weights are kept. Nothing is held out for validation or testing, so no accuracy score is reported. Judge the model by trying it live.
 
-The visibility threshold is chosen from the gate's own predictions on the recordings: it is the middle of the widest range of thresholds that best separate tongue out from tongue in, clamped to 0.3 to 0.8. The camera/native blend weight is fixed at 0.8, because frames the model trained on can't show how far to trust the camera over the tracking module's own TongueOut. If any recording was made without a tracking module, the gate is tuned on the cameras alone (weight 1.0). Live, whenever no tracking module TongueOut is arriving, every setting uses the cameras alone. The **When to show the tongue** setting on the app's Mouth page (or the preview's Settings tab) still lets you choose cameras only, headset only or both.
+The visibility threshold is chosen from the gate's own predictions on the recordings: it is the middle of the widest range of thresholds that best separate tongue out from tongue in, clamped to 0.3 to 0.8. The camera/native blend weight is fixed at 0.8, because frames the model trained on can't show how far to trust the camera over the tracking module's own TongueOut. If any recording was made without a tracking module, the gate is tuned on the cameras alone (weight 1.0). The rendered training examples count toward neither: the threshold and the weight come from your recordings alone. Live, whenever no tracking module TongueOut is arriving, every setting uses the cameras alone. The **When to show the tongue** setting on the app's Mouth page (or the preview's Settings tab) still lets you choose cameras only, headset only or both.
 
 Recordings train visibility, extension and horizontal/vertical direction. All other tongue outputs are always sent as 0.
+
+### Rendered training examples
+
+Every training run also mixes in 2,000 rendered frames of synthetic people (made with [tools/tongue-synth](../../tools/tongue-synth/README.md)): tongues out in every direction and extension, and smiles, speech, open jaws, teeth and cheek puffs with the tongue in. Your recordings teach the model your face; the examples keep it knowing the poses and faces your recordings don't show, which fine-tuning on a short recording otherwise forgets. On held-out poses of one real recording, adding them raised frames judged right from 67-80% to 94-95%. With them, training takes two to three times as long.
+
+They download with the built-in model, once (about 123 MB, VRFaceTracking's `tongue-synthetic-v4` release), are checked against a fixed SHA-256 hash, and unpack to `models/quest-pro/tongue-synthetic-v4/`, stored at the model's 224 px input size. To use a copy you already have, put `tongue-synthetic-v4.zip` in `.local/` first.
 
 ### Cheek puffs
 

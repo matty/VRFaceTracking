@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use vrft_tongue::backend::Cpu;
 use vrft_tongue::checkpoint::{Metadata, VisibilityGate};
+use vrft_tongue::dataset::Frames;
 use vrft_tongue::model::{TongueNet, Trainable, Weights, ARCHITECTURE};
 use vrft_tongue::preprocess::FRAME_BYTES;
+use vrft_tongue::recordings::Recording;
 use vrft_tongue::train::{run, Options};
 use vrft_tongue::{Accelerator, Checkpoint, Role, TongueModel, TARGETS, TONGUE_TARGETS};
 
@@ -235,6 +237,82 @@ fn cheek_puffs_train_on_hidden_tongue_frames() {
         .disabled_targets
         .iter()
         .any(|name| name.starts_with("cheek")));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A synthetic set stored at the test models' 32 px input size: left views
+/// all 10, right views all 240, tongue out on even frames, no tracking
+/// module values.
+fn synthetic_set(dir: &Path, count: usize) {
+    const SIZE: usize = 32;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("metadata.json"),
+        json!({"format": "vrft-tongue-capture-v1", "mode": "synthetic", "width": 2 * SIZE,
+            "height": SIZE, "bytesPerFrame": 2 * SIZE * SIZE, "targets": TARGETS})
+        .to_string(),
+    )
+    .unwrap();
+    let mut frames = vec![];
+    let mut lines = String::new();
+    for index in 0..count {
+        for _ in 0..SIZE {
+            frames.extend(std::iter::repeat_n(10u8, SIZE));
+            frames.extend(std::iter::repeat_n(240u8, SIZE));
+        }
+        let (pose, targets) = if index % 2 == 0 {
+            let (v, h) = (index as f32).sin_cos();
+            ("Synthetic: Tongue out", target(1., 1., h, v))
+        } else {
+            ("Synthetic: Neutral", target(0., 0., 0., 0.))
+        };
+        let line = json!({"index": index, "step": 20 + index % 2, "pose": pose,
+            "targets": targets, "native_tongue_out": null, "dot": [targets[2], targets[3]]});
+        lines += &format!("{line}\n");
+    }
+    std::fs::write(dir.join("frames.gray8"), frames).unwrap();
+    std::fs::write(dir.join("samples.jsonl"), lines).unwrap();
+}
+
+#[test]
+fn synthetic_sets_load_at_the_model_size() {
+    let root = temp("synthetic-load");
+    let dir = root.join("synthetic");
+    synthetic_set(&dir, 4);
+    let recording = Recording::open(&dir).unwrap();
+    assert!(recording.synthetic);
+    assert_eq!(recording.view, 32);
+    let frames = Frames::load(std::slice::from_ref(&recording), Some(32)).unwrap();
+    let (left, right) = frames.images[0].split_at(32 * 32);
+    assert!(left.iter().all(|&value| value == 10));
+    assert!(right.iter().all(|&value| value == 240));
+    assert!(frames.records.iter().all(|record| record.synthetic));
+    let error = Frames::load(&[recording], Some(16)).err().unwrap();
+    assert!(error.to_string().contains("32 px"), "{error}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn synthetic_examples_leave_the_gate_to_recorded_frames() {
+    let root = temp("synthetic-mix");
+    let base = root.join("base");
+    base_models(&base);
+    let recorded = root.join("recording");
+    graded(&recorded, 1);
+    let synthetic = root.join("synthetic");
+    synthetic_set(&synthetic, 40);
+    let output = root.join("output");
+    run(
+        &write_request(&root, &base, &[recorded, synthetic]),
+        &output,
+        &one_pass(),
+    )
+    .unwrap();
+    let report = read_json(&output.join("report.json"));
+    assert_eq!(report["coverage"]["synthetic"], 40);
+    // Every recorded frame has a tracking module TongueOut; the synthetic
+    // frames' missing ones mustn't switch the gate to the camera alone.
+    assert_eq!(report["calibration"]["camera_weight"], 0.8, "{report}");
     std::fs::remove_dir_all(root).unwrap();
 }
 

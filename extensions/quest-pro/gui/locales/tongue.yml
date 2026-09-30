@@ -130,12 +130,16 @@ tongue:
     en: "Couldn't start the download"
   downloading_builtin:
     en: "Downloading the built-in model"
+  downloading_examples:
+    en: "Downloading the training examples"
   connecting_download:
     en: "Starting the download…"
   checking_download:
     en: "Checking the download…"
   unpacking_builtin:
     en: "Unpacking the model…"
+  unpacking_examples:
+    en: "Unpacking the training examples…"
   download_amount:
     en: "%{received} of %{total} MB"
   download_received:
@@ -147,7 +151,7 @@ tongue:
   download_left:
     en: "about %{duration} left"
   download_cancelled:
-    en: "Download cancelled · 140 MB"
+    en: "Download cancelled · %{size} MB"
   export:
     en: "Export with its recordings"
   export_prompt:
@@ -189,7 +193,7 @@ tongue:
   download_failed:
     en: "The download failed: %{error}"
   builtin_not_downloaded:
-    en: "Not downloaded · 140 MB"
+    en: "Not downloaded · %{size} MB"
   try_again:
     en: "Try again"
   download:
@@ -210,6 +214,8 @@ tongue:
     en: "Training"
   builtin_model:
     en: "Built-in model"
+  training_examples:
+    en: "Training examples"
   in_use:
     en: "In use"
   override_picks_model:

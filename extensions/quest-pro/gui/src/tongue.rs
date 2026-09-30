@@ -1085,17 +1085,24 @@ impl TongueTraining {
     /// nothing else can go on without it.
     fn builtin_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
         let builtin = self.builtin()?;
-        if builtin.installed {
+        if builtin.installed && !builtin.examples_missing {
             return None;
         }
         if builtin.installing {
             return Some(download_progress(builtin, self.pending.is_some(), cx));
         }
         let failed = builtin.error.is_some();
+        let size = builtin.download_megabytes.unwrap_or(140);
         let state = match &builtin.error {
             Some(error) => t!("tongue.download_failed", error = error),
-            None if builtin.cancelled => t!("tongue.download_cancelled"),
-            None => t!("tongue.builtin_not_downloaded"),
+            None if builtin.cancelled => t!("tongue.download_cancelled", size = size),
+            None => t!("tongue.builtin_not_downloaded", size = size),
+        };
+        // With the model in place, only the examples are left to download.
+        let what = if builtin.installed {
+            t!("tongue.training_examples")
+        } else {
+            t!("tongue.builtin_model")
         };
         // One row: what it is and how it stands, with its button beside it,
         // wrapping under it when the card is narrow.
@@ -1134,12 +1141,7 @@ impl TongueTraining {
                         .flex_1()
                         .min_w(px(160.))
                         .gap_0p5()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_medium()
-                                .child(t!("tongue.builtin_model")),
-                        )
+                        .child(div().text_sm().font_medium().child(what))
                         .child(
                             div()
                                 .text_xs()
@@ -1565,13 +1567,13 @@ impl TongueTraining {
             .find(|model| model.id == active)
     }
 
-    /// Whether the built-in model, which training starts from, still needs
-    /// downloading.
+    /// Whether the built-in model, which training starts from, or the
+    /// training examples it mixes in still need downloading.
     fn builtin_missing(&self) -> bool {
         self.training
             .as_ref()
             .and_then(|training| training.builtin.as_ref())
-            .is_some_and(|builtin| !builtin.installed)
+            .is_some_and(|builtin| !builtin.installed || builtin.examples_missing)
     }
 
     fn recorded(&self) -> bool {
@@ -4238,9 +4240,13 @@ fn download_progress(
     cx: &Context<TongueTraining>,
 ) -> AnyElement {
     let stage = builtin.stage.unwrap_or_default();
+    // The examples come after the model, once it's in place.
+    let examples = builtin.installed;
     let title = match stage {
+        BuiltinStage::Downloading if examples => t!("tongue.downloading_examples"),
         BuiltinStage::Downloading => t!("tongue.downloading_builtin"),
         BuiltinStage::Verifying => t!("tongue.checking_download"),
+        BuiltinStage::Unpacking if examples => t!("tongue.unpacking_examples"),
         BuiltinStage::Unpacking => t!("tongue.unpacking_builtin"),
         _ => t!("tongue.connecting_download"),
     };
