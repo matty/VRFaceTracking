@@ -8,7 +8,7 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Tensor, TensorData};
 use log::warn;
 
-use crate::backend::{Accelerator, Cpu, Gpu};
+use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
 use crate::checkpoint::{Checkpoint, Role};
 use crate::model::TongueNet;
 use crate::preprocess::{AreaResize, FRAME_BYTES};
@@ -155,7 +155,7 @@ impl TongueModel {
             camera_weight: gate.metadata.visibility_gate.camera_weight as f32,
             threshold: gate.metadata.visibility_gate.threshold as f32,
             device: match engine {
-                Engine::Gpu(_) => "GPU (wgpu)".into(),
+                Engine::Gpu(_) => GPU_NAME.into(),
                 Engine::Cpu(_) => "CPU".into(),
             },
             gate_size: gate.metadata.image_size,

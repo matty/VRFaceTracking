@@ -19,3 +19,7 @@ rand = "0.9"
 rayon = "1"
 burn-flex = { version = "=0.21.0", features = ["rayon", "simd"] }
 burn-store = { version = "=0.21.0", default-features = false, features = ["std", "pytorch"] }
+
+[features]
+# Train and run on NVIDIA's CUDA rather than wgpu, for Linux GPU servers.
+cuda = ["burn/cuda"]

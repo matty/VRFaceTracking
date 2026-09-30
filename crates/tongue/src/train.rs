@@ -27,7 +27,7 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 
-use crate::backend::{Accelerator, Cpu, Gpu};
+use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
 use crate::checkpoint::{Checkpoint, Metadata, Role, VisibilityGate};
 use crate::dataset::Record;
 use crate::dataset::{augment, Frames, ACTIVE};
@@ -268,7 +268,7 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
         };
         match accelerator {
             Accelerator::Cpu => job.run::<Autodiff<Cpu>>("CPU"),
-            Accelerator::Gpu => job.run::<Autodiff<Gpu>>("GPU (wgpu)"),
+            Accelerator::Gpu => job.run::<Autodiff<Gpu>>(GPU_NAME),
             Accelerator::Auto => {
                 // Prove the GPU works before committing to it.
                 let works = guarded(|| {
@@ -278,7 +278,7 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
                     Ok(())
                 });
                 match works {
-                    Ok(()) => job.run::<Autodiff<Gpu>>("GPU (wgpu)"),
+                    Ok(()) => job.run::<Autodiff<Gpu>>(GPU_NAME),
                     Err(error) => {
                         println!("GPU unavailable ({error:#}); training on the CPU");
                         job.run::<Autodiff<Cpu>>("CPU")
