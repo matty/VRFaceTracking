@@ -25,12 +25,20 @@ fn read_json(config: &Path) -> Result<Value, String> {
     }
 }
 
+/// Held while the file is read, changed and written, so two changes at once
+/// (the Tracking and Settings pages saving together, say) can't each write
+/// back the file as it was before the other.
+static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Applies `change` to the file's JSON, checks VRFT can still read it, and
 /// saves it.
 fn edit(
     config: &Path,
     change: impl FnOnce(&mut Map<String, Value>) -> Result<(), String>,
 ) -> Result<(), String> {
+    let _editing = EDITING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut root = read_json(config)?;
     let Some(object) = root.as_object_mut() else {
         return Err(format!("{} isn't a JSON object", config.display()));
@@ -368,6 +376,35 @@ mod tests {
             written,
             json!({"extensions": {"quest-pro": {"enabled": true}}})
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changes_saved_at_the_same_time_all_stay() {
+        let dir = temp_dir("together");
+        let config = dir.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        std::thread::scope(|scope| {
+            for round in 0..20 {
+                let config = &config;
+                scope.spawn(move || {
+                    let patch = ConfigPatch {
+                        send_port: Some(9000 + round),
+                        ..ConfigPatch::default()
+                    };
+                    apply(config, &patch, &[]).unwrap();
+                });
+                scope.spawn(move || write_enabled(config, &format!("ext{round}"), true).unwrap());
+            }
+        });
+        let written: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        for round in 0..20 {
+            assert_eq!(
+                written["extensions"][format!("ext{round}")]["enabled"],
+                true,
+                "no change was written over"
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

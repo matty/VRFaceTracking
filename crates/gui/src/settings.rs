@@ -254,6 +254,9 @@ impl SettingsPage {
                 if *daemon.read(cx).connection() != Connection::Online {
                     page.stale = true;
                     page.applied = None;
+                    // A save that failed as VRFT went away is tried again
+                    // once it's back, rather than shown as saved.
+                    page.failed = None;
                 }
                 cx.notify();
             }),
@@ -419,7 +422,8 @@ impl SettingsPage {
         let Some(config) = self.config.as_ref() else {
             return;
         };
-        if self.saving {
+        // Changes wait while VRFT restarts; saving then would fail.
+        if self.saving || *self.daemon.read(cx).connection() != Connection::Online {
             return;
         }
         let form = self.form(cx);

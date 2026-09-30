@@ -176,7 +176,10 @@ impl ExtensionSwitches {
                     }))
             });
             let confirm = confirming.map(|(_, target)| {
+                // The buttons wrap under the text when the card is narrow.
                 h_flex()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
                     .pt_3()
                     .border_t_1()
@@ -184,28 +187,34 @@ impl ExtensionSwitches {
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(200.))
                             .text_xs()
                             .text_color(palette::text_2())
                             .child(t!("extension_switches.restart_to_apply")),
                     )
                     .child(
-                        Button::new(format!("switch-later-{id}"))
-                            .ghost()
-                            .small()
-                            .label(t!("extension_switches.later"))
-                            .tooltip(t!("extension_switches.later_tooltip"))
-                            .on_click(cx.listener(move |switches, _, _, cx| {
-                                switches.switch(id, target, false, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(format!("switch-now-{id}"))
-                            .primary()
-                            .small()
-                            .label(t!("extension_switches.restart_now"))
-                            .on_click(cx.listener(move |switches, _, _, cx| {
-                                switches.switch(id, target, true, cx)
-                            })),
+                        h_flex()
+                            .flex_none()
+                            .gap_2()
+                            .child(
+                                Button::new(format!("switch-later-{id}"))
+                                    .ghost()
+                                    .small()
+                                    .label(t!("extension_switches.later"))
+                                    .tooltip(t!("extension_switches.later_tooltip"))
+                                    .on_click(cx.listener(move |switches, _, _, cx| {
+                                        switches.switch(id, target, false, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new(format!("switch-now-{id}"))
+                                    .primary()
+                                    .small()
+                                    .label(t!("extension_switches.restart_now"))
+                                    .on_click(cx.listener(move |switches, _, _, cx| {
+                                        switches.switch(id, target, true, cx)
+                                    })),
+                            ),
                     )
             });
             rows.push(
