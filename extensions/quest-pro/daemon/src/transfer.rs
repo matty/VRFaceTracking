@@ -135,7 +135,7 @@ impl Transfers {
             state.clone()
         };
         let state = self.state.clone();
-        std::thread::spawn(move || {
+        let transfer = move || {
             let mut progress = Progress {
                 state: &state,
                 done: 0,
@@ -157,7 +157,11 @@ impl Transfers {
                     state.error = Some(error);
                 }
             }
-        });
+        };
+        std::thread::Builder::new()
+            .name("quest-pro-model-transfer".into())
+            .spawn(transfer)
+            .expect("couldn't start the model transfer thread");
         Ok(started)
     }
 }

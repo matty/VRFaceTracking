@@ -3,10 +3,17 @@
 //! The app needs the daemon for everything it shows, so it starts the daemon
 //! when it opens, and offers to start it again whenever it isn't running. The
 //! daemon runs without a console window, with its output in `vrft_d.log` in
-//! the folder it runs in. A daemon the app started stops when the app closes; one that was already
-//! running, such as one started from a console, is left alone.
+//! the folder it runs in. A daemon the app started stops when the app
+//! closes, and by itself if the app crashes or is ended; one that was
+//! already running, such as one started from a console, is left alone.
+//!
+//! The app holds the daemon it uses by its process handle: the one it
+//! started, or the one that answers, by the process id it reports. Stopping
+//! or ending the daemon only ever reaches that process, never another
+//! `vrft_d.exe` such as a tongue training run.
 use crate::client::DaemonClient;
 use crate::live::DaemonState;
+use crate::processes::Process;
 use crate::summary::{Connection, Launch, Tone};
 use crate::widgets::Notice;
 use gpui_kit::assets::IconName;
@@ -23,18 +30,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vrft_protocol::{DAEMON_INSTANCE, OWNER_PID_ARG};
 
 const DAEMON_EXE: &str = "vrft_d.exe";
 const LOG_FILE: &str = "vrft_d.log";
 /// Loading a .NET module or the tongue runtime can take a while, but not this
 /// long.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
-/// The daemon stops within a second or two once asked.
+/// The daemon stops within a second or two once asked, and ends itself if
+/// stopping takes more than a few.
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// How long closing the app waits for its daemon to stop by itself before
-/// ending it. The daemon puts the headset's eye model back as it stops.
+/// ending it. Waiting at all lets an update replace `vrft_d.exe` once the app
+/// has closed.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an ended daemon takes to be gone.
+const END_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The daemon process the app is using.
+struct DaemonProcess {
+    process: Arc<Process>,
+    /// This app started it, so stops it when it closes.
+    started_here: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LaunchState {
@@ -52,8 +71,11 @@ pub struct Launcher {
     /// `vrft_d.exe` beside this app, if it is there.
     executable: Option<PathBuf>,
     state: LaunchState,
-    /// The daemon this app started, which it stops when it closes.
-    managed: Option<Child>,
+    /// The daemon this app started or answers it, while it runs.
+    process: Option<DaemonProcess>,
+    /// A daemon's process id that couldn't be opened, so it isn't tried again
+    /// on every status.
+    unopened: Option<u32>,
     /// Start the daemon again once it has stopped.
     restart: bool,
     /// The failure shown is from starting, so it clears once the daemon
@@ -61,7 +83,8 @@ pub struct Launcher {
     start_failed: bool,
     /// The user stopped the daemon, and it hasn't been started since.
     stopped_by_user: bool,
-    /// A daemon is running but not answering, so the app offers to end it.
+    /// The daemon the app uses is running but not answering, so the app
+    /// offers to end it.
     stuck: bool,
     _task: Option<Task<()>>,
     _online: Subscription,
@@ -73,14 +96,18 @@ impl Launcher {
             .ok()
             .map(|app| app.with_file_name(DAEMON_EXE))
             .filter(|path| path.is_file());
-        let online = cx.observe(&daemon, |launcher, _, cx| launcher.clear_start_failure(cx));
+        let online = cx.observe(&daemon, |launcher, _, cx| {
+            launcher.follow_answering_daemon(cx);
+            launcher.clear_start_failure(cx);
+        });
         let client = daemon.read(cx).client();
         Self {
             daemon,
             client,
             executable,
             state: LaunchState::Idle,
-            managed: None,
+            process: None,
+            unopened: None,
             restart: false,
             start_failed: false,
             stopped_by_user: false,
@@ -120,32 +147,54 @@ impl Launcher {
             .filter(|log| log.is_file())
     }
 
-    /// Ends a daemon that isn't answering, then starts a new one if `restart`.
+    /// Ends the daemon the app uses, which isn't answering, then starts a new
+    /// one if `restart`. Only that process: any other `vrft_d.exe` is left
+    /// alone.
     pub fn end_stuck(&mut self, restart: bool, cx: &mut Context<Self>) {
         if self.is_busy() {
             return;
         }
+        let Some(process) = self.running_process() else {
+            if self.process.is_some() {
+                // It has just stopped by itself.
+                self.ended(restart, cx);
+            } else {
+                self.fail(t!("launcher.not_answering"), cx);
+            }
+            return;
+        };
         self.state = LaunchState::Stopping;
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
             let ended = cx
                 .background_executor()
-                .spawn(async { crate::processes::end(DAEMON_EXE) })
+                .spawn(async move {
+                    process.end()?;
+                    if process.wait(END_TIMEOUT) {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::other(format!(
+                            "{DAEMON_EXE} is still running"
+                        )))
+                    }
+                })
                 .await;
             this.update(cx, |launcher, cx| match ended {
-                Ok(()) => {
-                    launcher.stuck = false;
-                    launcher.managed = None;
-                    launcher.stopped_by_user = !restart;
-                    launcher.finish(cx);
-                    if restart {
-                        launcher.start(cx);
-                    }
-                }
+                Ok(()) => launcher.ended(restart, cx),
                 Err(error) => launcher.fail(t!("launcher.couldnt_end", error = error), cx),
             })
             .ok();
         }));
+    }
+
+    /// The daemon that wasn't answering is gone; starts another if `restart`.
+    fn ended(&mut self, restart: bool, cx: &mut Context<Self>) {
+        self.process = None;
+        self.stopped_by_user = !restart;
+        self.finish(cx);
+        if restart {
+            self.start(cx);
+        }
     }
 
     /// Reads as stopped by the user without starting anything, for
@@ -158,13 +207,14 @@ impl Launcher {
         matches!(self.state, LaunchState::Starting | LaunchState::Stopping)
     }
 
-    /// Starts the daemon unless a `vrft_d.exe` is already running, such as one
-    /// started from a console, which the app then simply connects to.
+    /// Starts the daemon unless one is already running, such as one started
+    /// from a console, which the app then simply connects to.
     pub fn start_unless_running(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let running = cx
                 .background_executor()
-                .spawn(async { daemon_running() })
+                .spawn(async move { daemon_running(&client) })
                 .await;
             if !running {
                 this.update(cx, |launcher, cx| launcher.start(cx)).ok();
@@ -184,6 +234,7 @@ impl Launcher {
         self.state = LaunchState::Starting;
         self.stopped_by_user = false;
         cx.notify();
+        let client = self.client.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
             let log = work_dir(&executable).join(LOG_FILE);
             let spawn_log = log.clone();
@@ -192,7 +243,7 @@ impl Launcher {
             let started = cx
                 .background_executor()
                 .spawn(async move {
-                    if daemon_running() {
+                    if daemon_running(&client) {
                         return Ok(None);
                     }
                     spawn_daemon(&executable, &spawn_log).map(Some)
@@ -210,8 +261,13 @@ impl Launcher {
             };
             let spawned = child.is_some();
             if let Some(child) = child {
-                this.update(cx, |launcher, _| launcher.managed = Some(child))
-                    .ok();
+                this.update(cx, |launcher, _| {
+                    launcher.process = Some(DaemonProcess {
+                        process: Arc::new(Process::from_child(child)),
+                        started_here: true,
+                    });
+                })
+                .ok();
             }
             let began = Instant::now();
             loop {
@@ -224,7 +280,7 @@ impl Launcher {
                     return;
                 }
                 let exited = this
-                    .update(cx, |launcher, _| launcher.managed_exit())
+                    .update(cx, |launcher, _| launcher.started_exit())
                     .ok()
                     .flatten();
                 if let Some(status) = exited {
@@ -247,7 +303,7 @@ impl Launcher {
                     };
                     this.update(cx, |launcher, cx| {
                         launcher.fail_start(message, cx);
-                        launcher.stuck = true;
+                        launcher.stuck = launcher.running_process().is_some();
                     })
                     .ok();
                     return;
@@ -276,15 +332,20 @@ impl Launcher {
         }
         self.state = LaunchState::Stopping;
         cx.notify();
-        let client = self.daemon.read(cx).client();
+        let client = self.client.clone();
+        let process = self.running_process();
         self._task = Some(cx.spawn(async move |this, cx| {
             let asked = cx
                 .background_executor()
                 .spawn(async move { client.shutdown() })
                 .await;
             if let Err(error) = asked {
-                this.update(cx, |launcher, cx| launcher.fail(error.to_string(), cx))
-                    .ok();
+                this.update(cx, |launcher, cx| {
+                    launcher.fail(error.to_string(), cx);
+                    // Too busy to answer, perhaps: ending it is the way out.
+                    launcher.stuck = launcher.running_process().is_some();
+                })
+                .ok();
                 return;
             }
             let began = Instant::now();
@@ -293,16 +354,17 @@ impl Launcher {
                 let Ok(offline) = this.update(cx, |launcher, cx| launcher.offline(cx)) else {
                     return;
                 };
-                // It stops answering before it exits, such as while it puts
-                // the headset's eye model back. Starting again before then
-                // would find it still running and start nothing.
-                let exited = offline
-                    && cx
-                        .background_executor()
-                        .spawn(async { !daemon_running() })
-                        .await;
+                // The process itself must be gone: starting again while it
+                // still exits would find it running and start nothing. A
+                // daemon too old to say which process it is, is gone once
+                // it stops answering.
+                let exited = match &process {
+                    Some(process) => process.has_exited(),
+                    None => offline,
+                };
                 if exited {
                     this.update(cx, |launcher, cx| {
+                        launcher.forget_exited();
                         let restart = std::mem::take(&mut launcher.restart);
                         launcher.stopped_by_user = !restart;
                         launcher.finish(cx);
@@ -316,7 +378,7 @@ impl Launcher {
                 if began.elapsed() > STOP_TIMEOUT {
                     this.update(cx, |launcher, cx| {
                         launcher.fail(t!("launcher.didnt_stop"), cx);
-                        launcher.stuck = true;
+                        launcher.stuck = launcher.running_process().is_some();
                     })
                     .ok();
                     return;
@@ -363,38 +425,84 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Holds the daemon that answers, by the process id it reports, so
+    /// stopping or ending it reaches that process and no other.
+    fn follow_answering_daemon(&mut self, cx: &App) {
+        let Some(pid) = self
+            .daemon
+            .read(cx)
+            .status()
+            .and_then(|status| status.daemon.as_ref()?.pid)
+        else {
+            return;
+        };
+        let held = self
+            .process
+            .as_ref()
+            .is_some_and(|daemon| daemon.process.pid() == pid && !daemon.process.has_exited());
+        if held || self.unopened == Some(pid) {
+            return;
+        }
+        match open_daemon(pid) {
+            Some(process) => {
+                self.process = Some(DaemonProcess {
+                    process: Arc::new(process),
+                    started_here: false,
+                });
+                self.unopened = None;
+            }
+            None => {
+                log::warn!("Couldn't open vrft_d (process {pid}), so this app can't end it");
+                self.unopened = Some(pid);
+            }
+        }
+    }
+
+    /// The daemon process the app uses, while it runs.
+    fn running_process(&self) -> Option<Arc<Process>> {
+        self.process
+            .as_ref()
+            .filter(|daemon| !daemon.process.has_exited())
+            .map(|daemon| daemon.process.clone())
+    }
+
+    fn forget_exited(&mut self) {
+        if self.running_process().is_none() {
+            self.process = None;
+        }
+    }
+
     /// How the daemon this app started exited, if it has. It's then no longer
     /// this app's to stop.
-    fn managed_exit(&mut self) -> Option<ExitStatus> {
-        let status = self.managed.as_mut()?.try_wait().ok().flatten()?;
-        self.managed = None;
+    fn started_exit(&mut self) -> Option<ExitStatus> {
+        let daemon = self.process.as_ref().filter(|daemon| daemon.started_here)?;
+        let status = daemon.process.exit_status()?;
+        self.process = None;
         Some(status)
     }
 
     /// Stops the daemon this app started, as the app closes. It's asked to
-    /// shut down first, so it can put the headset's eye model back, and only
-    /// ended if it hasn't stopped within `QUIT_TIMEOUT`.
-    fn stop_managed(&mut self) {
-        let Some(mut child) = self.managed.take() else {
+    /// shut down first, and only ended if it hasn't stopped within
+    /// `QUIT_TIMEOUT`. Were the app to crash instead, the daemon stops by
+    /// itself as the app goes.
+    fn stop_started(&mut self) {
+        let Some(daemon) = self.process.take().filter(|daemon| daemon.started_here) else {
             return;
         };
-        let running = |child: &mut Child| matches!(child.try_wait(), Ok(None));
-        if !running(&mut child) {
+        if daemon.process.has_exited() {
             return;
         }
         if let Err(error) = self.client.shutdown() {
             log::warn!("Couldn't ask vrft_d to stop: {error:#}");
         }
-        let began = Instant::now();
-        while began.elapsed() < QUIT_TIMEOUT {
-            if !running(&mut child) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
+        if daemon.process.wait(QUIT_TIMEOUT) {
+            return;
         }
         log::warn!("vrft_d didn't stop within {QUIT_TIMEOUT:?}, so it's being ended");
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Err(error) = daemon.process.end() {
+            log::warn!("Couldn't end vrft_d: {error}");
+        }
+        daemon.process.wait(END_TIMEOUT);
     }
 }
 
@@ -403,8 +511,18 @@ impl Launcher {
 /// the app closes short of it being killed.
 impl Drop for Launcher {
     fn drop(&mut self) {
-        self.stop_managed();
+        self.stop_started();
     }
+}
+
+/// Process `pid`, if it's a `vrft_d.exe` this app can end.
+fn open_daemon(pid: u32) -> Option<Process> {
+    let process = Process::open(pid)?;
+    let name = process.executable()?;
+    name.file_name()?
+        .to_str()?
+        .eq_ignore_ascii_case(DAEMON_EXE)
+        .then_some(process)
 }
 
 /// The folder the daemon runs in, which holds `config.json` and `plugins/`:
@@ -424,6 +542,8 @@ fn spawn_daemon(executable: &Path, log: &Path) -> std::io::Result<Child> {
         let output = fs::File::create(log)?;
         let mut command = Command::new(executable);
         command
+            .arg(OWNER_PID_ARG)
+            .arg(std::process::id().to_string())
             .current_dir(dir)
             .stdin(Stdio::null())
             .stdout(output.try_clone()?)
@@ -450,10 +570,11 @@ fn spawn_daemon(executable: &Path, log: &Path) -> std::io::Result<Child> {
     }
 }
 
-/// Whether a `vrft_d.exe` is already running, perhaps still starting up.
-/// Starting another would send every expression to VRChat twice.
-fn daemon_running() -> bool {
-    !crate::processes::find(DAEMON_EXE).is_empty()
+/// Whether a daemon is already running, perhaps still starting up: one
+/// holds the daemon's mutex, or one answers, if it's too old to hold it.
+/// Another `vrft_d.exe`, such as a tongue training run, isn't a daemon.
+fn daemon_running(client: &DaemonClient) -> bool {
+    crate::processes::named_mutex_exists(DAEMON_INSTANCE) || client.status().is_ok()
 }
 
 /// The last error the daemon logged, or else its last line, without the

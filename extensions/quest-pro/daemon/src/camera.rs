@@ -558,14 +558,23 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let capture = CaptureManager::default();
     let retry = Arc::new(AtomicBool::new(false));
     let training = crate::training::TrainingManager::new(root, capture.clone());
-    let training_shutdown = training.clone();
-    let shutdown_running = running.clone();
-    thread::spawn(move || {
-        while shutdown_running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(250));
-        }
-        training_shutdown.cancel();
-    });
+    let training_watch = training.clone();
+    let watch_running = running.clone();
+    thread::Builder::new()
+        .name("quest-pro-training".into())
+        .spawn(move || {
+            let mut ticks = 0u32;
+            while watch_running.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(250));
+                ticks = ticks.wrapping_add(1);
+                // Every 2 s.
+                if ticks.is_multiple_of(8) {
+                    training_watch.yield_to_vrchat();
+                }
+            }
+            training_watch.cancel();
+        })
+        .expect("couldn't start the Quest Pro training thread");
     let browser_state = PreviewState {
         feed: shared.clone(),
         model: inference_state.clone(),
@@ -604,15 +613,19 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let worker_state = inference_state.clone();
     let worker_running = running.clone();
     let worker_settings = settings.clone();
-    thread::spawn(move || {
-        inference_loop(worker_feed, worker_state, worker_settings, worker_running)
-    });
+    thread::Builder::new()
+        .name("quest-pro-tongue".into())
+        .spawn(move || inference_loop(worker_feed, worker_state, worker_settings, worker_running))
+        .expect("couldn't start the Quest Pro tongue thread");
     let receiver_capture = capture.clone();
     let processors = Processors {
         eyes: eye_state.processor(settings.clone()),
         pupils: pupil_state.processor(),
     };
-    thread::spawn(move || receive_loop(shared, receiver_capture, processors, running, retry));
+    thread::Builder::new()
+        .name("quest-pro-camera".into())
+        .spawn(move || receive_loop(shared, receiver_capture, processors, running, retry))
+        .expect("couldn't start the Quest Pro camera thread");
     let overlay = QuestProOverlay {
         latest: inference_state,
         output: output_state,

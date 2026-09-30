@@ -206,60 +206,73 @@ impl Default for ProxyModule {
     }
 }
 
+impl ProxyModule {
+    /// Beats the daemon's heartbeat and, when the runtime has written a
+    /// frame since the last read, copies it into `data`. The runtime writes
+    /// one each time its heartbeat beats. A frame read again isn't new:
+    /// counting it as one let the daemon's loop spin a whole core when
+    /// tracking has no frame limit.
+    fn read_frame(&mut self, data: &mut UnifiedTrackingData) -> bool {
+        let Some(ptr) = self.shmem_ptr else {
+            return false;
+        };
+        unsafe {
+            let m_data_mut = &mut *(ptr as *mut MarshaledTrackingData);
+
+            // Increment main app heartbeat
+            m_data_mut.main_app_heartbeat = m_data_mut.main_app_heartbeat.wrapping_add(1);
+
+            let m_data = &*m_data_mut;
+
+            if m_data.runtime_heartbeat == self.last_runtime_heartbeat {
+                return false;
+            }
+            self.last_runtime_heartbeat = m_data.runtime_heartbeat;
+            self.last_runtime_update = std::time::Instant::now();
+
+            // Copied across unchanged: the .NET side already stores gaze in
+            // the convention documented on UnifiedSingleEyeData::gaze, so
+            // this path must not reorder or rescale the components.
+            data.eye.left.gaze.x = m_data.left_eye_gaze_x;
+            data.eye.left.gaze.y = m_data.left_eye_gaze_y;
+            data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;
+            data.eye.left.openness = m_data.left_eye_openness;
+
+            data.eye.right.gaze.x = m_data.right_eye_gaze_x;
+            data.eye.right.gaze.y = m_data.right_eye_gaze_y;
+            data.eye.right.pupil_diameter_mm = m_data.right_eye_pupil_diameter_mm;
+            data.eye.right.openness = m_data.right_eye_openness;
+
+            data.eye.max_dilation = m_data.eye_max_dilation;
+            data.eye.min_dilation = m_data.eye_min_dilation;
+            if data.eye.max_dilation <= data.eye.min_dilation {
+                self.learn_dilation(data);
+            }
+            data.eye.left_diameter = m_data.eye_left_diameter;
+            data.eye.right_diameter = m_data.eye_right_diameter;
+
+            data.head.head_yaw = m_data.head_yaw;
+            data.head.head_pitch = m_data.head_pitch;
+            data.head.head_roll = m_data.head_roll;
+            data.head.head_pos_x = m_data.head_pos_x;
+            data.head.head_pos_y = m_data.head_pos_y;
+            data.head.head_pos_z = m_data.head_pos_z;
+
+            for i in 0..data.shapes.len().min(200) {
+                data.shapes[i].weight = m_data.shapes[i];
+            }
+        }
+        true
+    }
+}
+
 impl TrackingModule for ProxyModule {
     fn initialize(&mut self, _logger: ModuleLogger) -> Result<()> {
         Ok(())
     }
 
     fn update(&mut self, data: &mut UnifiedTrackingData) -> Result<()> {
-        if let Some(ptr) = self.shmem_ptr {
-            unsafe {
-                let m_data_mut = &mut *(ptr as *mut MarshaledTrackingData);
-
-                // Increment main app heartbeat
-                m_data_mut.main_app_heartbeat = m_data_mut.main_app_heartbeat.wrapping_add(1);
-
-                let m_data = &*m_data_mut;
-
-                // Check runtime heartbeat
-                if m_data.runtime_heartbeat != self.last_runtime_heartbeat {
-                    self.last_runtime_heartbeat = m_data.runtime_heartbeat;
-                    self.last_runtime_update = std::time::Instant::now();
-                }
-
-                // Copied across unchanged: the .NET side already stores gaze in
-                // the convention documented on UnifiedSingleEyeData::gaze, so
-                // this path must not reorder or rescale the components.
-                data.eye.left.gaze.x = m_data.left_eye_gaze_x;
-                data.eye.left.gaze.y = m_data.left_eye_gaze_y;
-                data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;
-                data.eye.left.openness = m_data.left_eye_openness;
-
-                data.eye.right.gaze.x = m_data.right_eye_gaze_x;
-                data.eye.right.gaze.y = m_data.right_eye_gaze_y;
-                data.eye.right.pupil_diameter_mm = m_data.right_eye_pupil_diameter_mm;
-                data.eye.right.openness = m_data.right_eye_openness;
-
-                data.eye.max_dilation = m_data.eye_max_dilation;
-                data.eye.min_dilation = m_data.eye_min_dilation;
-                if data.eye.max_dilation <= data.eye.min_dilation {
-                    self.learn_dilation(data);
-                }
-                data.eye.left_diameter = m_data.eye_left_diameter;
-                data.eye.right_diameter = m_data.eye_right_diameter;
-
-                data.head.head_yaw = m_data.head_yaw;
-                data.head.head_pitch = m_data.head_pitch;
-                data.head.head_roll = m_data.head_roll;
-                data.head.head_pos_x = m_data.head_pos_x;
-                data.head.head_pos_y = m_data.head_pos_y;
-                data.head.head_pos_z = m_data.head_pos_z;
-
-                for i in 0..data.shapes.len().min(200) {
-                    data.shapes[i].weight = m_data.shapes[i];
-                }
-            }
-        }
+        let fresh = self.read_frame(data);
 
         // Check for crash or timeout
         let should_restart = if let Some(child) = &mut self.child {
@@ -301,7 +314,11 @@ impl TrackingModule for ProxyModule {
             }
         }
 
-        Ok(())
+        if fresh {
+            Ok(())
+        } else {
+            anyhow::bail!("No new frame")
+        }
     }
 
     fn unload(&mut self) {
@@ -327,5 +344,40 @@ impl TrackingModule for ProxyModule {
             // the old one.
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_frame_written_since_the_last_read_is_new() {
+        // SAFETY: all zeroes is a valid MarshaledTrackingData, and the
+        // allocation is only reached through this pointer until it's freed.
+        let shared: *mut MarshaledTrackingData =
+            Box::into_raw(Box::new(unsafe { std::mem::zeroed() }));
+        let mut proxy = ProxyModule::new();
+        proxy.shmem_ptr = Some(shared.cast());
+        let mut data = UnifiedTrackingData::default();
+
+        assert!(
+            !proxy.read_frame(&mut data),
+            "the runtime hasn't written yet"
+        );
+        unsafe {
+            (*shared).runtime_heartbeat = 1;
+            (*shared).left_eye_openness = 0.25;
+        }
+        assert!(proxy.read_frame(&mut data));
+        assert_eq!(data.eye.left.openness, 0.25);
+        assert!(!proxy.read_frame(&mut data), "the same frame again");
+        unsafe { (*shared).runtime_heartbeat = 2 };
+        assert!(proxy.read_frame(&mut data));
+        // The daemon's side beats on every read, new frame or not.
+        assert_eq!(unsafe { (*shared).main_app_heartbeat }, 4);
+
+        proxy.shmem_ptr = None;
+        drop(unsafe { Box::from_raw(shared) });
     }
 }

@@ -44,6 +44,28 @@ struct Job {
     id: Option<String>,
     /// How the job ended, when the trainer couldn't say itself.
     terminal: Option<TrainingProgress>,
+    /// The trainer runs below normal priority, as VRChat is running.
+    below_normal: bool,
+}
+
+/// Sets the trainer's priority for whether VRChat is running, when that
+/// changed.
+fn give_way(job: &mut Job, vrchat: bool) {
+    let Some(child) = job.child.as_ref() else {
+        return;
+    };
+    if job.below_normal == vrchat {
+        return;
+    }
+    // Recorded either way, so a failure is logged once, not every check.
+    job.below_normal = vrchat;
+    match crate::priority::set_below_normal(child, vrchat) {
+        Ok(()) if vrchat => {
+            log::info!("VRChat is running, so tongue training runs at below-normal priority")
+        }
+        Ok(()) => log::info!("VRChat has closed, so tongue training runs at normal priority"),
+        Err(error) => log::warn!("Couldn't change tongue training's priority: {error}"),
+    }
 }
 
 #[derive(Clone)]
@@ -69,6 +91,14 @@ impl TrainingManager {
         let mut job = self.job.lock().unwrap();
         poll_job(&mut job, &self.root);
         job.child.is_some()
+    }
+    /// Runs the trainer below normal priority while VRChat runs, so training
+    /// doesn't take CPU time VRChat needs, and at normal priority otherwise.
+    pub fn yield_to_vrchat(&self) {
+        let mut job = self.job.lock().unwrap();
+        if job.child.is_some() {
+            give_way(&mut job, crate::priority::vrchat_running());
+        }
     }
     pub fn cancel(&self) {
         let mut job = self.job.lock().unwrap();
@@ -442,6 +472,7 @@ async fn start(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    let vrchat = crate::priority::vrchat_running();
     // Reserve the job under the mutex immediately before spawning.
     let mut job = manager.job.lock().unwrap();
     if job.child.is_some() {
@@ -450,6 +481,8 @@ async fn start(
     job.child = Some(command.spawn().map_err(bad)?);
     job.id = Some(id.clone());
     job.terminal = None;
+    job.below_normal = false;
+    give_way(&mut job, vrchat);
     Ok(Json(TrainingStarted { id }))
 }
 
@@ -873,7 +906,7 @@ mod tests {
         let mut job = Job {
             child: Some(command.spawn().unwrap()),
             id: Some("personal".into()),
-            terminal: None,
+            ..Job::default()
         };
         while job.child.is_some() {
             poll_job(&mut job, &root);

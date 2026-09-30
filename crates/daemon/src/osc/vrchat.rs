@@ -92,7 +92,7 @@ impl VRChatOsc {
         let shutdown = self.shutdown_flag.clone();
         let target = self.target.clone();
 
-        thread::spawn(move || {
+        let listen = move || {
             info!("Listening for OSC messages on port {}", port);
             // Max UDP payload. A datagram larger than the buffer fails with
             // WSAEMSGSIZE on Windows and is discarded rather than truncated.
@@ -117,7 +117,10 @@ impl VRChatOsc {
                 }
             }
             info!("OSC listener thread exiting gracefully");
-        });
+        };
+        thread::Builder::new()
+            .name("osc-listen".into())
+            .spawn(listen)?;
 
         *self.socket.lock().unwrap() = Some(socket);
         Ok(())

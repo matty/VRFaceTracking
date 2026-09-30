@@ -169,7 +169,7 @@ impl ModuleManager {
             inner.registry.url.clone()
         };
         let this = self.clone();
-        std::thread::spawn(move || {
+        let fetch = move || {
             let result = module_registry::fetch(&this.agent, &url);
             let mut inner = this.inner.lock().unwrap();
             inner.registry.loading = false;
@@ -185,7 +185,11 @@ impl ModuleManager {
                     inner.registry.error = Some(format!("{error:#}"));
                 }
             }
-        });
+        };
+        std::thread::Builder::new()
+            .name("module-registry".into())
+            .spawn(fetch)
+            .expect("couldn't start the module-registry thread");
     }
 
     /// Installs or updates registry module `id` in the background.
@@ -221,7 +225,7 @@ impl ModuleManager {
             entry
         };
         let this = self.clone();
-        std::thread::spawn(move || {
+        let install = move || {
             let result = this.run_install(&entry);
             let (state, message) = match result {
                 Ok(message) => (OperationState::Done, message),
@@ -234,7 +238,11 @@ impl ModuleManager {
                 operation.state = state;
                 operation.message = message;
             });
-        });
+        };
+        std::thread::Builder::new()
+            .name("module-install".into())
+            .spawn(install)
+            .expect("couldn't start the module-install thread");
         Ok(())
     }
 

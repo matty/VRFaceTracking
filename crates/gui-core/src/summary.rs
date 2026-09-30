@@ -415,6 +415,7 @@ mod tests {
                 extensions: Vec::new(),
                 config_error: None,
                 tracking_frames: 100,
+                pid: None,
             }),
             ..Status::default()
         }

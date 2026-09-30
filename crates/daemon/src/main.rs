@@ -5,6 +5,7 @@ mod daemon_status;
 mod dev_build;
 mod extensions;
 mod installed;
+mod lifetime;
 mod modules;
 
 use vrft_daemon::dispatcher;
@@ -94,6 +95,15 @@ fn main() -> Result<()> {
     env_logger::init();
 
     info!("Starting vrft_d {}...", env!("VRFT_VERSION"));
+    // First, before this touches the config or plugins another daemon uses.
+    let _instance = match lifetime::claim_instance() {
+        Ok(instance) => instance,
+        Err(error) => {
+            error!("{error:#}");
+            return Err(error);
+        }
+    };
+    lifetime::end_children_with_daemon();
     let dev_build = dev_build::use_repository_root();
     if dev_build.is_none() {
         installed::use_data_dir();
@@ -109,6 +119,10 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
+    lifetime::end_if_stopping_stalls(running.clone());
+    if let Some(owner) = lifetime::owner_pid(&arguments) {
+        lifetime::stop_with_owner(owner, running.clone());
+    }
 
     // `--camera-preview-only` is the name from before it applied to every
     // extension.
@@ -244,8 +258,12 @@ fn main() -> Result<()> {
         config.osc.output_mode
     );
 
-    thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let osc_query = move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("osc-query")
+            .build()
+            .expect("Failed to create Tokio runtime");
         rt.block_on(async {
             let extensions_router = osc::query::extensions::get_router(debug_state_for_host);
 
@@ -259,7 +277,11 @@ fn main() -> Result<()> {
                 error!("OSC Query Host failed: {}", e);
             }
         });
-    });
+    };
+    thread::Builder::new()
+        .name("osc-query-host".into())
+        .spawn(osc_query)
+        .expect("couldn't start the OSC Query thread");
 
     let mut mutator = UnifiedTrackingMutator::new(config.clone());
 
@@ -276,7 +298,7 @@ fn main() -> Result<()> {
             .max(10.0),
     );
 
-    thread::spawn(move || {
+    let consumer = move || {
         info!("Consumer Thread Started");
 
         let transport_manager = transport_manager;
@@ -422,7 +444,11 @@ fn main() -> Result<()> {
                 error!("Failed to send OSC data: {}", e);
             }
         }
-    });
+    };
+    thread::Builder::new()
+        .name("output".into())
+        .spawn(consumer)
+        .expect("couldn't start the output thread");
 
     info!("Entering Main Loop (Producer)...");
 
@@ -505,6 +531,9 @@ fn main() -> Result<()> {
     if let Some(loaded) = current.take() {
         retire_module(loaded, &mut retired);
     }
+    // Unloading them now could crash the exit, for the same reason they
+    // were kept: a module's leftover threads may still be running its code.
+    std::mem::forget(retired);
     Ok(())
 }
 

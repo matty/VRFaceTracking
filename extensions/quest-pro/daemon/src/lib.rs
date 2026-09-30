@@ -6,6 +6,7 @@ mod builtin;
 mod camera;
 mod capture;
 mod eye;
+mod priority;
 mod pupil;
 mod settings;
 mod training;

@@ -88,7 +88,7 @@ impl BuiltinModel {
         }
         self.cancel.store(false, Ordering::SeqCst);
         let this = self.clone();
-        std::thread::spawn(move || {
+        let download = move || {
             let result = this.install(&root);
             let cancelled = result.as_ref().err().map(String::as_str) == Some(CANCELLED);
             *this.state.lock().unwrap() = InstallState {
@@ -96,7 +96,11 @@ impl BuiltinModel {
                 cancelled,
                 ..InstallState::default()
             };
-        });
+        };
+        std::thread::Builder::new()
+            .name("quest-pro-model-download".into())
+            .spawn(download)
+            .expect("couldn't start the model download thread");
     }
 
     /// Stops a running install at its next step, removing what it had

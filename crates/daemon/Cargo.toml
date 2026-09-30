@@ -34,6 +34,14 @@ ctrlc = "3.5"
 fancy-regex = "0.17"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = ["quest-pro"]
 xtralog = []

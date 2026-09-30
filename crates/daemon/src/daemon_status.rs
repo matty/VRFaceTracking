@@ -76,6 +76,7 @@ impl DaemonStatus {
             extensions: setup.extensions.clone(),
             config_error: setup.config_error.clone(),
             tracking_frames: self.tracking_frames.load(Ordering::Relaxed),
+            pid: Some(std::process::id()),
         }
     }
 }

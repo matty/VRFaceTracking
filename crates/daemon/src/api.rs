@@ -55,8 +55,12 @@ pub fn start(
     extensions: Vec<ApiExtension>,
 ) {
     let router = router(daemon, running, config, plugins, modules, extensions);
-    thread::spawn(move || {
-        let runtime = match tokio::runtime::Runtime::new() {
+    let serve = move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("local-api")
+            .build()
+        {
             Ok(runtime) => runtime,
             Err(error) => {
                 warn!("Local API runtime failed: {error}");
@@ -75,7 +79,11 @@ pub fn start(
                 Err(error) => warn!("Local API bind failed: {error}"),
             }
         });
-    });
+    };
+    thread::Builder::new()
+        .name("local-api-host".into())
+        .spawn(serve)
+        .expect("couldn't start the local API thread");
 }
 
 fn router(

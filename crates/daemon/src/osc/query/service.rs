@@ -82,7 +82,7 @@ impl OscQueryService {
         let fetches_change = fetches.clone();
 
         // mDNS Thread
-        thread::spawn(move || {
+        let discover = move || {
             info!("Starting mDNS Discovery Thread...");
 
             loop {
@@ -196,11 +196,14 @@ impl OscQueryService {
                 // If we broke out of the loop, wait a bit before restarting
                 thread::sleep(Duration::from_secs(2));
             }
-        });
+        };
+        thread::Builder::new()
+            .name("vrchat-discovery".into())
+            .spawn(discover)?;
 
         // Change Listener Thread (with debounce)
         if let Some(change_rx) = self.change_receiver.take() {
-            thread::spawn(move || {
+            let listen = move || {
                 info!("Starting Avatar Change Listener Thread...");
                 const DEBOUNCE: Duration = Duration::from_millis(500);
 
@@ -231,7 +234,10 @@ impl OscQueryService {
                         break;
                     }
                 }
-            });
+            };
+            thread::Builder::new()
+                .name("avatar-change".into())
+                .spawn(listen)?;
         }
 
         Ok(())
@@ -255,7 +261,7 @@ impl Fetches {
         let retry_delay = Duration::from_secs(1);
         let url = url.to_string();
         let sender = sender.clone();
-        thread::spawn(move || {
+        let fetch = move || {
             for i in 0..max_retries {
                 if !fetches.is_current(generation) {
                     return;
@@ -284,7 +290,11 @@ impl Fetches {
                 "Failed to fetch avatar parameters after {} attempts.",
                 max_retries
             );
-        });
+        };
+        thread::Builder::new()
+            .name("avatar-fetch".into())
+            .spawn(fetch)
+            .expect("couldn't start the avatar-fetch thread");
     }
 
     /// Stops any read running from delivering; returns the new generation.

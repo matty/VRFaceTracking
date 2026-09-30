@@ -13,6 +13,15 @@ pub mod layout;
 pub const PORT: u16 = 27275;
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:27275";
 
+/// `vrft_d --owner-pid <pid>`: the daemon stops when process `pid`, the
+/// desktop app that started it, exits, however it exits.
+pub const OWNER_PID_ARG: &str = "--owner-pid";
+
+/// A named mutex each running daemon holds, and only daemons: a
+/// `vrft_d train-tongue` run is also `vrft_d.exe`, but isn't one. A second
+/// daemon refuses to start while it exists, as both would send to VRChat.
+pub const DAEMON_INSTANCE: &str = "Local\\VRFaceTracking.vrft_d";
+
 /// The daemon's own routes.
 pub mod routes {
     /// GET: [`Status`](super::Status).
@@ -77,6 +86,9 @@ pub struct DaemonReport {
     /// Frames the tracking module has delivered since startup. A client
     /// derives the tracking rate from how fast this grows.
     pub tracking_frames: u64,
+    /// The daemon's process id, so the desktop app can stop exactly this
+    /// process and no other `vrft_d.exe`. Missing from older daemons.
+    pub pid: Option<u32>,
 }
 
 impl DaemonReport {
@@ -517,6 +529,7 @@ mod tests {
                 }],
                 config_error: None,
                 tracking_frames: 5,
+                pid: Some(1234),
             }),
             extensions: BTreeMap::from([("quest-pro".into(), serde_json::json!({"a": 1}))]),
         };

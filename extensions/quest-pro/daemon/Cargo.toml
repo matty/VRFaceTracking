@@ -22,5 +22,12 @@ sha2 = "0.10"
 ureq = { workspace = true }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tokio = { workspace = true }
