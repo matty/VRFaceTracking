@@ -93,6 +93,17 @@ pub mod routes {
     /// POST: starts installing the built-in model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_BUILTIN: &str = "/training/builtin";
+    /// POST: stops installing the built-in model; answers
+    /// [`BuiltinStatus`](super::BuiltinStatus).
+    pub const TRAINING_BUILTIN_CANCEL: &str = "/training/builtin/cancel";
+    /// POST an [`ExportModel`](super::ExportModel): starts copying a trained
+    /// model and its recordings to a folder; answers
+    /// [`TransferStatus`](super::TransferStatus).
+    pub const TRAINING_EXPORT_MODEL: &str = "/training/models/export";
+    /// POST an [`ImportModel`](super::ImportModel): starts adding an exported
+    /// model from its folder or a zip of it; answers
+    /// [`TransferStatus`](super::TransferStatus).
+    pub const TRAINING_IMPORT_MODEL: &str = "/training/models/import";
 }
 
 /// Quest Pro's status, in `/status` under `extensions.quest-pro` and at
@@ -641,6 +652,9 @@ pub struct TrainingStatus {
     pub model_override: bool,
     /// The built-in model pair; absent from daemons that can't install it.
     pub builtin: Option<BuiltinStatus>,
+    /// The last model export or import since VRFT started; absent from
+    /// daemons that can't do either.
+    pub transfer: Option<TransferStatus>,
 }
 
 /// Where a training run is, as the trainer writes it to `progress.json`.
@@ -730,6 +744,77 @@ pub struct BuiltinStatus {
     pub fraction: Option<f32>,
     /// Why the last install failed.
     pub error: Option<String>,
+    /// What the install is doing, while installing.
+    pub stage: Option<BuiltinStage>,
+    /// Bytes of the release downloaded so far, and of the whole release
+    /// when the server says.
+    pub received_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    /// Recent download speed.
+    pub bytes_per_second: Option<f64>,
+    /// The last install was cancelled.
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinStage {
+    /// Connecting to the release's server.
+    #[default]
+    Connecting,
+    Downloading,
+    /// Checking the downloaded release's SHA-256.
+    Verifying,
+    /// Taking the model pair out of the release.
+    Unpacking,
+    /// A stage from a newer daemon.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Copies a trained model, with the recordings it was trained on, into a
+/// new folder inside `folder`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportModel {
+    pub id: String,
+    pub folder: PathBuf,
+}
+
+/// Adds an exported model from its folder, or from a zip of that folder.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportModel {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferKind {
+    #[default]
+    Export,
+    Import,
+}
+
+/// A model export or import, running or finished.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransferStatus {
+    pub kind: TransferKind,
+    pub busy: bool,
+    /// 0 to 1, by bytes copied.
+    pub fraction: Option<f32>,
+    /// Counts up with every export or import, so each outcome is shown once.
+    pub serial: u64,
+    /// Why it failed.
+    pub error: Option<String>,
+    /// Once done: the export's folder, or the imported model's id.
+    pub folder: Option<PathBuf>,
+    pub model_id: Option<String>,
+    /// Once done: how many recordings went with the model, and how many of
+    /// those an import already had.
+    pub recordings: u32,
+    pub recordings_already_here: u32,
 }
 
 /// The built-in model and every personal one trained on this PC.

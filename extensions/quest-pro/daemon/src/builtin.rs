@@ -1,12 +1,16 @@
 //! Installs the built-in tongue model pair: the v8 demo checkpoints from the
 //! Qpro-Enhanced-FT v0.1.10 release (MIT license), verified by SHA-256.
-//! Files already present are never overwritten.
+//! Files already present are never overwritten, and the release zip is
+//! removed once the pair is out of it.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use vrft_quest_pro_protocol::BuiltinStage;
 use vrft_tongue::Role;
 
 const RELEASE_URL: &str = "https://github.com/n0tmast3r/Qpro-Enhanced-FT/releases/download/v0.1.10/QproFaceTracking-0.1.10-poc.zip";
@@ -22,6 +26,8 @@ const MODELS: [(&str, &str); 2] = [
         "1900e8761c9ceaf89069121af1016ba24c33849836a5b7ee94b4dfd9fc7db396",
     ),
 ];
+/// What an install stops with when it was cancelled rather than failed.
+const CANCELLED: &str = "cancelled";
 
 #[derive(Clone, Default)]
 pub struct InstallState {
@@ -30,11 +36,19 @@ pub struct InstallState {
     pub fraction: Option<f64>,
     /// Why the last attempt failed.
     pub error: Option<String>,
+    pub stage: Option<BuiltinStage>,
+    /// Bytes downloaded, and in the whole release when the server says.
+    pub received: Option<u64>,
+    pub total: Option<u64>,
+    pub bytes_per_second: Option<f64>,
+    /// The last attempt was cancelled.
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct BuiltinModel {
     state: Arc<Mutex<InstallState>>,
+    cancel: Arc<AtomicBool>,
 }
 
 fn models_dir(root: &Path) -> PathBuf {
@@ -68,24 +82,49 @@ impl BuiltinModel {
             }
             *state = InstallState {
                 installing: true,
-                fraction: Some(0.0),
-                error: None,
+                stage: Some(BuiltinStage::Connecting),
+                ..InstallState::default()
             };
         }
+        self.cancel.store(false, Ordering::SeqCst);
         let this = self.clone();
         std::thread::spawn(move || {
             let result = this.install(&root);
-            let mut state = this.state.lock().unwrap();
-            *state = InstallState {
-                installing: false,
-                fraction: None,
-                error: result.err(),
+            let cancelled = result.as_ref().err().map(String::as_str) == Some(CANCELLED);
+            *this.state.lock().unwrap() = InstallState {
+                error: result.err().filter(|_| !cancelled),
+                cancelled,
+                ..InstallState::default()
             };
         });
     }
 
-    fn progress(&self, fraction: f64) {
-        self.state.lock().unwrap().fraction = Some(fraction);
+    /// Stops a running install at its next step, removing what it had
+    /// downloaded.
+    pub fn cancel(&self) {
+        if self.state.lock().unwrap().installing {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            Err(CANCELLED.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_stage(&self, stage: BuiltinStage) {
+        self.state.lock().unwrap().stage = Some(stage);
+    }
+
+    fn progress(&self, received: u64, total: Option<u64>, bytes_per_second: Option<f64>) {
+        let mut state = self.state.lock().unwrap();
+        state.received = Some(received);
+        state.total = total;
+        state.fraction = total.map(|total| received as f64 / total.max(1) as f64);
+        state.bytes_per_second = bytes_per_second;
     }
 
     fn install(&self, root: &Path) -> Result<(), String> {
@@ -110,6 +149,8 @@ impl BuiltinModel {
             }
         }
         let archive = self.download(root)?;
+        self.check_cancelled()?;
+        self.set_stage(BuiltinStage::Unpacking);
         let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         for (name, hash) in missing {
@@ -127,16 +168,23 @@ impl BuiltinModel {
             }
             fs::rename(&pending, dir.join(name)).map_err(|e| e.to_string())?;
         }
+        drop(zip);
+        // Only the pair is needed, so the release doesn't keep 140 MB on disk.
+        let _ = fs::remove_file(&archive);
         Ok(())
     }
 
-    /// The verified release zip, downloaded once into `.local/`.
+    /// The verified release zip in `.local/`, downloaded unless it's there.
     fn download(&self, root: &Path) -> Result<PathBuf, String> {
         let local = root.join(".local");
         fs::create_dir_all(&local).map_err(|e| e.to_string())?;
         let archive = local.join(RELEASE_NAME);
-        if archive.is_file() && sha256_file(&archive)? == RELEASE_SHA256 {
-            return Ok(archive);
+        if archive.is_file() {
+            self.set_stage(BuiltinStage::Verifying);
+            if sha256_file(&archive)? == RELEASE_SHA256 {
+                return Ok(archive);
+            }
+            self.set_stage(BuiltinStage::Connecting);
         }
         let mut response = ureq::get(RELEASE_URL)
             .call()
@@ -146,13 +194,34 @@ impl BuiltinModel {
             .get("content-length")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
+        self.progress(0, total, None);
+        self.set_stage(BuiltinStage::Downloading);
         let pending = local.join(format!("{RELEASE_NAME}.download"));
-        let mut out = File::create(&pending).map_err(|e| e.to_string())?;
+        if let Err(error) = self.receive(response.body_mut(), &pending, total) {
+            let _ = fs::remove_file(&pending);
+            return Err(error);
+        }
+        fs::rename(&pending, &archive).map_err(|e| e.to_string())?;
+        Ok(archive)
+    }
+
+    /// Writes the release to `pending`, checking its SHA-256 as it arrives.
+    fn receive(
+        &self,
+        body: &mut ureq::Body,
+        pending: &Path,
+        total: Option<u64>,
+    ) -> Result<(), String> {
+        let mut out = File::create(pending).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
-        let mut reader = response.body_mut().with_config().limit(512 << 20).reader();
+        let mut reader = body.with_config().limit(512 << 20).reader();
         let mut buffer = vec![0u8; 1 << 16];
         let mut received = 0u64;
+        // The speed, smoothed and updated about four times a second.
+        let mut since = (Instant::now(), 0u64);
+        let mut speed: Option<f64> = None;
         loop {
+            self.check_cancelled()?;
             let read = reader
                 .read(&mut buffer)
                 .map_err(|e| format!("download interrupted: {e}"))?;
@@ -162,17 +231,20 @@ impl BuiltinModel {
             out.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
             hasher.update(&buffer[..read]);
             received += read as u64;
-            if let Some(total) = total {
-                self.progress(received as f64 / total.max(1) as f64);
+            let elapsed = since.0.elapsed().as_secs_f64();
+            if elapsed >= 0.25 {
+                let now = (received - since.1) as f64 / elapsed;
+                speed = Some(speed.map_or(now, |before| before * 0.6 + now * 0.4));
+                since = (Instant::now(), received);
             }
+            self.progress(received, total, speed);
         }
         drop(out);
+        self.set_stage(BuiltinStage::Verifying);
         if format!("{:x}", hasher.finalize()) != RELEASE_SHA256 {
-            let _ = fs::remove_file(&pending);
             return Err("the downloaded release failed its SHA-256 check".into());
         }
-        fs::rename(&pending, &archive).map_err(|e| e.to_string())?;
-        Ok(archive)
+        Ok(())
     }
 }
 

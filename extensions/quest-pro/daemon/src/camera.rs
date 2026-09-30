@@ -1142,7 +1142,8 @@ pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
 /// The folder of the model pair in use.
 fn model_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let dir = crate::training::selected_dir(&cwd, base_model_dir(&cwd)?)?;
+    // A trained model in use runs without the built-in one.
+    let dir = crate::training::selected_dir(&cwd, || base_model_dir(&cwd))?;
     if !crate::training::complete_pair(&dir) {
         return Err(format!("incomplete tongue model pair in {}", dir.display()));
     }

@@ -19,11 +19,13 @@ use std::{
 };
 
 use crate::builtin::{self, BuiltinModel};
+use crate::transfer::Transfers;
 use vrft_quest_pro_protocol::{
-    routes, BuiltinStatus, CaptureMode, Coverage, FrameQuery, ModelActivated, Models, RecordedPose,
-    Recording, RecordingDeleted, RecordingId, RenameModel, ReviewRequest, ReviewSaved, SavedModel,
-    TrainRequest, TrainerRequest, TrainingCancelled, TrainingProgress, TrainingReport,
-    TrainingStage, TrainingStarted, TrainingStatus, FRAME_BYTES,
+    routes, BuiltinStatus, CaptureMode, Coverage, ExportModel, FrameQuery, ImportModel,
+    ModelActivated, Models, RecordedPose, Recording, RecordingDeleted, RecordingId, RenameModel,
+    ReviewRequest, ReviewSaved, SavedModel, TrainRequest, TrainerRequest, TrainingCancelled,
+    TrainingProgress, TrainingReport, TrainingStage, TrainingStarted, TrainingStatus,
+    TransferStatus, FRAME_BYTES,
 };
 use vrft_tongue::Role;
 
@@ -50,6 +52,7 @@ pub struct TrainingManager {
     capture: CaptureManager,
     job: Arc<Mutex<Job>>,
     builtin: BuiltinModel,
+    transfers: Transfers,
 }
 
 impl TrainingManager {
@@ -59,6 +62,7 @@ impl TrainingManager {
             capture,
             job: Arc::new(Mutex::new(Job::default())),
             builtin: BuiltinModel::default(),
+            transfers: Transfers::default(),
         }
     }
     pub fn busy(&self) -> bool {
@@ -80,6 +84,14 @@ impl TrainingManager {
     fn idle(&self) -> Result<(), ApiError> {
         if self.busy() || self.capture.status().active {
             Err(bad("Finish the current recording or training first"))
+        } else {
+            Ok(())
+        }
+    }
+    /// For changing recordings and models, which an export may be copying.
+    fn untouched(&self) -> Result<(), ApiError> {
+        if self.transfers.busy() {
+            Err(bad("Wait for the model export or import to finish"))
         } else {
             Ok(())
         }
@@ -112,6 +124,9 @@ pub fn routes(manager: TrainingManager) -> Router {
         .route(routes::TRAINING_DELETE_MODEL, post(delete_model))
         .route(routes::TRAINING_RENAME_MODEL, post(rename_model))
         .route(routes::TRAINING_BUILTIN, post(install_builtin))
+        .route(routes::TRAINING_BUILTIN_CANCEL, post(cancel_builtin))
+        .route(routes::TRAINING_EXPORT_MODEL, post(export_model))
+        .route(routes::TRAINING_IMPORT_MODEL, post(import_model))
         .with_state(manager)
 }
 
@@ -174,6 +189,10 @@ async fn sessions(
         for entry in fs::read_dir(&root).map_err(bad)? {
             let entry = entry.map_err(bad)?;
             if !entry.file_type().map_err(bad)?.is_dir() {
+                continue;
+            }
+            // Hidden folders are imports still being copied in.
+            if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
             let path = entry.path();
@@ -301,6 +320,7 @@ async fn review(
     Json(request): Json<ReviewRequest>,
 ) -> Result<Json<ReviewSaved>, ApiError> {
     manager.idle()?;
+    manager.untouched()?;
     let path =
         safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
     let samples = labels(&path).map_err(bad)?;
@@ -325,6 +345,7 @@ async fn delete_recording(
 ) -> Result<Json<RecordingDeleted>, ApiError> {
     // Idle: never delete the recording being captured or read by training.
     manager.idle()?;
+    manager.untouched()?;
     let path =
         safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
     if !path.join("metadata.json").is_file() {
@@ -461,6 +482,7 @@ async fn status(State(manager): State<TrainingManager>) -> Json<TrainingStatus> 
         active_id: active_id(&manager.root),
         model_override: std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some(),
         builtin: Some(builtin_status(&manager)),
+        transfer: manager.transfers.status(),
     })
 }
 
@@ -471,6 +493,11 @@ fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
         installing: state.installing,
         fraction: state.fraction.map(|fraction| fraction as f32),
         error: state.error,
+        stage: state.stage,
+        received_bytes: state.received,
+        total_bytes: state.total,
+        bytes_per_second: state.bytes_per_second,
+        cancelled: state.cancelled,
     }
 }
 
@@ -480,6 +507,36 @@ async fn install_builtin(State(manager): State<TrainingManager>) -> Json<Builtin
         manager.builtin.start(manager.root.clone());
     }
     Json(builtin_status(&manager))
+}
+
+async fn cancel_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+    manager.builtin.cancel();
+    Json(builtin_status(&manager))
+}
+
+/// Starts copying a trained model and its recordings into a new folder.
+async fn export_model(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<ExportModel>,
+) -> Result<Json<TransferStatus>, ApiError> {
+    safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
+    manager
+        .transfers
+        .export(manager.root.clone(), request.id, request.folder)
+        .map(Json)
+        .map_err(bad)
+}
+
+/// Starts adding an exported model from its folder or a zip.
+async fn import_model(
+    State(manager): State<TrainingManager>,
+    Json(request): Json<ImportModel>,
+) -> Result<Json<TransferStatus>, ApiError> {
+    manager
+        .transfers
+        .import(manager.root.clone(), request.path)
+        .map(Json)
+        .map_err(bad)
 }
 
 fn poll_job(job: &mut Job, root: &Path) {
@@ -525,13 +582,18 @@ fn active_id(root: &Path) -> String {
         .unwrap_or_else(|| "demo".into())
 }
 
-pub fn selected_dir(root: &Path, base: PathBuf) -> Result<PathBuf, String> {
+/// The folder of the model in use; `base` finds the built-in one, and is
+/// only asked when that's the one in use.
+pub fn selected_dir(
+    root: &Path,
+    base: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
     if std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some() {
-        return Ok(base);
+        return base();
     }
     let id = active_id(root);
     if id == "demo" {
-        return Ok(base);
+        return base();
     }
     safe_child(&root.join(".local/tongue-models"), &id)
 }
@@ -546,6 +608,10 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
     if root.exists() {
         for entry in fs::read_dir(root).map_err(bad)? {
             let entry = entry.map_err(bad)?;
+            // Hidden folders are imports still being copied in.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let path = entry.path();
             if let Ok(report) = read_json(&path.join("report.json")) {
                 if complete_pair(&path) {
@@ -568,21 +634,33 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
     }))
 }
 
-/// Deletes a trained model, unless it's the one in use.
+/// Deletes a trained model, unless it's the one in use and there's another
+/// to switch to. The last trained model in use, with the built-in one not
+/// downloaded, can go; the built-in one is then in use again.
 async fn delete_model(
     State(manager): State<TrainingManager>,
     Json(request): Json<RecordingId>,
 ) -> Result<Json<RecordingDeleted>, ApiError> {
     manager.idle()?;
+    manager.untouched()?;
     if request.id == "demo" {
         return Err(bad("The built-in model can't be deleted"));
-    }
-    if request.id == active_id(&manager.root) {
-        return Err(bad("Switch to another model before deleting this one"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
     if !path.join("report.json").is_file() && !complete_pair(&path) {
         return Err(bad("Not a trained model"));
+    }
+    let in_use = request.id == active_id(&manager.root);
+    if in_use {
+        let Json(models) = models(State(manager.clone())).await?;
+        let others = models
+            .models
+            .iter()
+            .any(|model| model.id != "demo" && model.id != request.id);
+        if others || builtin::installed(&manager.root) {
+            return Err(bad("Switch to another model before deleting this one"));
+        }
+        select_model(&manager.root, "demo").map_err(bad)?;
     }
     fs::remove_dir_all(&path).map_err(bad)?;
     Ok(Json(RecordingDeleted { deleted: true }))
@@ -593,6 +671,7 @@ async fn rename_model(
     State(manager): State<TrainingManager>,
     Json(request): Json<RenameModel>,
 ) -> Result<Json<SavedModel>, ApiError> {
+    manager.untouched()?;
     let name = request.name.trim();
     if name.is_empty() || name.len() > 100 {
         return Err(bad("Give the model a name of up to 100 characters"));
@@ -858,11 +937,42 @@ mod tests {
         select_model(&root, "personal").unwrap();
         let delete =
             |id: &str| delete_model(State(manager.clone()), Json(RecordingId { id: id.into() }));
+        // With the built-in model there to switch to, the model in use stays.
+        let builtin = root.join("models/quest-pro");
+        fs::create_dir_all(&builtin).unwrap();
+        for role in [Role::Gate, Role::Direction] {
+            fs::write(role.safetensors(&builtin), b"test").unwrap();
+        }
         assert!(delete("personal").await.is_err(), "the model in use stays");
         assert!(delete("demo").await.is_err());
         select_model(&root, "demo").unwrap();
         assert!(delete("personal").await.unwrap().0.deleted);
         assert!(!pair.exists());
+        remove_test_root(root);
+    }
+
+    #[tokio::test]
+    async fn the_last_model_in_use_can_go_when_the_builtin_one_is_not_downloaded() {
+        let root = test_root("last");
+        for id in ["first", "second"] {
+            let pair = root.join(".local/tongue-models").join(id);
+            fs::create_dir_all(&pair).unwrap();
+            for role in [Role::Gate, Role::Direction] {
+                fs::write(role.safetensors(&pair), b"test").unwrap();
+            }
+            save_json(&pair.join("report.json"), &json!({"name": id})).unwrap();
+        }
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        let delete =
+            |id: &str| delete_model(State(manager.clone()), Json(RecordingId { id: id.into() }));
+        select_model(&root, "first").unwrap();
+        assert!(
+            delete("first").await.is_err(),
+            "there's another to switch to"
+        );
+        assert!(delete("second").await.unwrap().0.deleted);
+        assert!(delete("first").await.unwrap().0.deleted);
+        assert_eq!(active_id(&root), "demo");
         remove_test_root(root);
     }
 

@@ -9,6 +9,7 @@ mod eye;
 mod pupil;
 mod settings;
 mod training;
+mod transfer;
 
 use anyhow::Context as _;
 use vrft_extension::{DaemonExtension, HostContext, Started};

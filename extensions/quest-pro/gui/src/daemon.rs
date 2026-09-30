@@ -152,6 +152,30 @@ impl QuestProClient {
             .map(drop)
     }
 
+    /// Stops downloading the built-in model.
+    pub fn cancel_builtin(&self) -> Result<()> {
+        self.post::<BuiltinStatus>(routes::TRAINING_BUILTIN_CANCEL, None::<&()>)
+            .map(drop)
+    }
+
+    /// Starts copying a trained model and its recordings into a new folder
+    /// inside `folder`; answers the export's serial.
+    pub fn export_model(&self, id: &str, folder: std::path::PathBuf) -> Result<u64> {
+        let request = ExportModel {
+            id: id.into(),
+            folder,
+        };
+        self.post::<TransferStatus>(routes::TRAINING_EXPORT_MODEL, Some(&request))
+            .map(|status| status.serial)
+    }
+
+    /// Starts adding an exported model from its folder or a zip of it;
+    /// answers the import's serial.
+    pub fn import_model(&self, path: std::path::PathBuf) -> Result<u64> {
+        self.post::<TransferStatus>(routes::TRAINING_IMPORT_MODEL, Some(&ImportModel { path }))
+            .map(|status| status.serial)
+    }
+
     /// The built-in tongue model and every personal one trained on this PC.
     pub fn models(&self) -> Result<Models> {
         self.get(routes::TRAINING_MODELS)

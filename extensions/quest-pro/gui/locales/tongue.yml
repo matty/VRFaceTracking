@@ -129,11 +129,67 @@ tongue:
   couldnt_start_download:
     en: "Couldn't start the download"
   downloading_builtin:
-    en: "Downloading the built-in model… %{percent}%"
+    en: "Downloading the built-in model"
+  connecting_download:
+    en: "Starting the download…"
+  checking_download:
+    en: "Checking the download…"
+  unpacking_builtin:
+    en: "Unpacking the model…"
+  download_amount:
+    en: "%{received} of %{total} MB"
+  download_received:
+    en: "%{received} MB"
+  download_speed:
+    en: "%{speed} MB/s"
+  seconds_left:
+    en: "%{seconds} s left"
+  download_left:
+    en: "about %{duration} left"
+  download_cancelled:
+    en: "Download cancelled · 140 MB"
+  export:
+    en: "Export with its recordings"
+  export_prompt:
+    en: "Export to this folder"
+  exporting:
+    en: "Exporting… %{percent}%"
+  exported:
+    en: "Exported with %{recordings} to %{folder}."
+  exported_alone:
+    en: "Exported to %{folder}. Its recordings were deleted, so none went with it."
+  export_failed:
+    en: "The export failed: %{error}"
+  couldnt_export:
+    en: "Couldn't start the export"
+  show_folder:
+    en: "Show folder"
+  import_folder:
+    en: "Import folder"
+  import_folder_tooltip:
+    en: "Add a model exported from VRFaceTracking, from its folder."
+  import_zip:
+    en: "Import zip"
+  import_zip_tooltip:
+    en: "Add a model exported from VRFaceTracking, from a zip of its folder."
+  import_folder_prompt:
+    en: "Import this exported model"
+  import_zip_prompt:
+    en: "Import this zip"
+  importing:
+    en: "Importing… %{percent}%"
+  imported:
+    en: "Imported with %{recordings}. Choose Use to switch to it."
+  imported_alone:
+    en: "Imported. Choose Use to switch to it."
+  import_failed:
+    en: "The import failed: %{error}"
+  couldnt_import:
+    en: "Couldn't start the import"
   download_failed:
     en: "The download failed: %{error}"
   builtin_not_downloaded:
-    en: "Built-in model not downloaded · 140 MB"
+    en: "Not downloaded · 140 MB"
   try_again:
     en: "Try again"
   download:
@@ -258,8 +314,6 @@ tongue:
     en: "Stop this recording? What's recorded so far is kept, but you can't resume it."
   record_just_those:
     en: "Record just those (about %{seconds} s)"
-  builtin_first:
-    en: "First, the built-in model"
   positions_covered:
     en: "Tongue positions covered"
   no_cheek_puffs:

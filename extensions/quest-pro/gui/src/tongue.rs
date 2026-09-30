@@ -4,9 +4,9 @@
 //! this drives and shows it, as the preview page's Tongue tab does in a
 //! browser.
 use crate::daemon::{
-    CaptureCommand, CaptureMode, CaptureStatus, Coverage, Models, QuestProClient, Recording,
-    SavedModel, TrainRequest, TrainingDevice, TrainingProgress, TrainingStage, TrainingStatus,
-    CHEEK_POSES,
+    BuiltinStage, BuiltinStatus, CaptureCommand, CaptureMode, CaptureStatus, Coverage, Models,
+    QuestProClient, Recording, SavedModel, TrainRequest, TrainingDevice, TrainingProgress,
+    TrainingStage, TrainingStatus, TransferKind, TransferStatus, CHEEK_POSES,
 };
 use crate::live::{CameraFeed, QuestProState};
 use crate::speech::Speaker;
@@ -26,8 +26,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     black, div, img, px, relative, rgb, AnyElement, App, AppContext as _, Context, Div, Entity,
     FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, Keystroke, ObjectFit,
-    ParentElement, Render, RenderImage, RenderOnce, SharedString, StatefulInteractiveElement as _,
-    Styled, StyledImage as _, Subscription, Task, Window,
+    ParentElement, PathPromptOptions, Render, RenderImage, RenderOnce, SharedString,
+    StatefulInteractiveElement as _, Styled, StyledImage as _, Subscription, Task, Window,
 };
 
 gpui_kit::actions!(tongue_recording, [PauseRecording, SkipPose, StopRecording]);
@@ -272,6 +272,9 @@ enum Pending {
     RenameModel(String),
     DeleteModel(String),
     InstallBuiltin,
+    CancelBuiltin,
+    Export(String),
+    Import,
     Train,
     Cancel,
     Delete(String),
@@ -351,6 +354,12 @@ pub struct TongueTraining {
     model_message: Option<Notice>,
     /// When a success in `model_message` stops being shown.
     model_message_until: Option<Instant>,
+    /// The export or import this app started, whose outcome isn't shown yet.
+    awaited_transfer: Option<u64>,
+    /// How the last export or import this app started went.
+    transfer_message: Option<Notice>,
+    /// The folder the last export made, for showing it.
+    exported_to: Option<std::path::PathBuf>,
     list_message: Option<Notice>,
     watching: bool,
     lists_stale: bool,
@@ -450,6 +459,9 @@ impl TongueTraining {
             just_trained: false,
             model_message: None,
             model_message_until: None,
+            awaited_transfer: None,
+            transfer_message: None,
+            exported_to: None,
             list_message: None,
             watching: false,
             lists_stale: true,
@@ -492,6 +504,24 @@ impl TongueTraining {
             .is_some_and(|builtin| builtin.installing)
     }
 
+    fn builtin(&self) -> Option<&BuiltinStatus> {
+        self.training
+            .as_ref()
+            .and_then(|training| training.builtin.as_ref())
+    }
+
+    /// A model export or import running.
+    fn transfer(&self) -> Option<&TransferStatus> {
+        self.training
+            .as_ref()
+            .and_then(|training| training.transfer.as_ref())
+            .filter(|transfer| transfer.busy)
+    }
+
+    fn transferring(&self) -> bool {
+        self.transfer().is_some() || self.awaited_transfer.is_some()
+    }
+
     fn online(&self, cx: &App) -> bool {
         *self.daemon.read(cx).connection() == Connection::Online
     }
@@ -500,7 +530,8 @@ impl TongueTraining {
         let wanted = self.watching
             || self.capture_active()
             || self.training_busy()
-            || self.builtin_installing();
+            || self.builtin_installing()
+            || self.transferring();
         if !wanted || !self.online(cx) {
             return None;
         }
@@ -640,7 +671,53 @@ impl TongueTraining {
         if let Some(models) = &mut self.models {
             models.active_id = training.active_id.clone();
         }
+        if let Some(transfer) = &training.transfer {
+            self.show_transfer(transfer);
+        }
         self.training = Some(training);
+    }
+
+    /// Says how the export or import this app started went, once it's done.
+    fn show_transfer(&mut self, transfer: &TransferStatus) {
+        if transfer.busy || self.awaited_transfer != Some(transfer.serial) {
+            return;
+        }
+        self.awaited_transfer = None;
+        self.lists_stale = true;
+        let recordings = recording_count(u64::from(transfer.recordings));
+        self.exported_to = None;
+        self.transfer_message = Some(match (transfer.kind, &transfer.error) {
+            (TransferKind::Export, Some(error)) => {
+                Notice::new(Tone::Problem, t!("tongue.export_failed", error = error))
+            }
+            (TransferKind::Import, Some(error)) => {
+                Notice::new(Tone::Problem, t!("tongue.import_failed", error = error))
+            }
+            (TransferKind::Export, None) => {
+                self.exported_to = transfer.folder.clone();
+                let folder = transfer
+                    .folder
+                    .as_ref()
+                    .map(|folder| folder.display().to_string())
+                    .unwrap_or_default();
+                Notice::new(
+                    Tone::Good,
+                    if transfer.recordings == 0 {
+                        t!("tongue.exported_alone", folder = folder)
+                    } else {
+                        t!("tongue.exported", folder = folder, recordings = recordings)
+                    },
+                )
+            }
+            (TransferKind::Import, None) => Notice::new(
+                Tone::Good,
+                if transfer.recordings == 0 {
+                    t!("tongue.imported_alone")
+                } else {
+                    t!("tongue.imported", recordings = recordings)
+                },
+            ),
+        });
     }
 
     fn say(&mut self, text: &str) {
@@ -970,6 +1047,8 @@ impl TongueTraining {
                     {
                         builtin.installing = true;
                         builtin.error = None;
+                        builtin.cancelled = false;
+                        builtin.stage = Some(BuiltinStage::Connecting);
                     }
                 }
                 Err(error) => {
@@ -981,49 +1060,232 @@ impl TongueTraining {
         );
     }
 
-    /// Offers to download the built-in model while it isn't installed; as
-    /// the view's main action when nothing else can go on without it.
+    fn cancel_builtin(&mut self, cx: &mut Context<Self>) {
+        self.request(
+            Pending::CancelBuiltin,
+            |client| client.cancel_builtin(),
+            |section, result, _| {
+                if let Err(error) = result {
+                    section.model_message = Some(Notice::error("", &error));
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Whether the built-in model is wanted: it isn't downloaded and no
+    /// trained model is in use instead. Training still needs it, and says so
+    /// itself.
+    fn builtin_needed(&self) -> bool {
+        self.builtin_missing() && self.active_model().is_none()
+    }
+
+    /// Offers to download the built-in model while it isn't installed, and
+    /// shows the download while it runs; as the view's main action when
+    /// nothing else can go on without it.
     fn builtin_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
-        let builtin = self.training.as_ref()?.builtin.as_ref()?;
+        let builtin = self.builtin()?;
         if builtin.installed {
             return None;
         }
-        let (tone, text): (Tone, SharedString) = match (&builtin.error, builtin.installing) {
-            (_, true) => (
-                Tone::Waiting,
-                t!(
-                    "tongue.downloading_builtin",
-                    percent = (builtin.fraction.unwrap_or(0.0) * 100.0).round()
-                )
-                .into(),
-            ),
-            (Some(error), false) => (
-                Tone::Problem,
-                t!("tongue.download_failed", error = error).into(),
-            ),
-            (None, false) => (Tone::Waiting, t!("tongue.builtin_not_downloaded").into()),
+        if builtin.installing {
+            return Some(download_progress(builtin, self.pending.is_some(), cx));
+        }
+        let failed = builtin.error.is_some();
+        let state = match &builtin.error {
+            Some(error) => t!("tongue.download_failed", error = error),
+            None if builtin.cancelled => t!("tongue.download_cancelled"),
+            None => t!("tongue.builtin_not_downloaded"),
         };
+        // One row: what it is and how it stands, with its button beside it,
+        // wrapping under it when the card is narrow.
         Some(
-            v_flex()
-                .gap_2()
-                .items_start()
-                .child(Notice::new(tone, text))
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px_3p5()
+                .py_3()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(if failed {
+                    palette::signal_line()
+                } else {
+                    palette::line_strong()
+                })
+                .bg(if failed {
+                    palette::signal_bg()
+                } else {
+                    palette::inset()
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(if failed {
+                            palette::signal()
+                        } else {
+                            palette::text_3()
+                        })
+                        .child(Icon::new(IconName::Download).size(px(16.))),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(160.))
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_medium()
+                                .child(t!("tongue.builtin_model")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if failed {
+                                    palette::signal_text()
+                                } else {
+                                    palette::text_3()
+                                })
+                                .child(state),
+                        ),
+                )
                 .child(
                     Button::new("install-builtin")
                         .when(primary, |button| button.primary())
                         .small()
-                        .label(if builtin.error.is_some() {
+                        .label(if failed {
                             t!("tongue.try_again")
                         } else {
                             t!("tongue.download")
                         })
                         .tooltip(t!("tongue.download_tooltip"))
-                        .loading(
-                            builtin.installing || self.pending == Some(Pending::InstallBuiltin),
-                        )
-                        .disabled(builtin.installing || self.pending.is_some())
+                        .loading(self.pending == Some(Pending::InstallBuiltin))
+                        .disabled(self.pending.is_some())
                         .on_click(cx.listener(|section, _, _, cx| section.install_builtin(cx))),
                 )
+                .into_any_element(),
+        )
+    }
+
+    /// Asks where to export trained model `id`, then starts the export.
+    fn export_model(&mut self, id: String, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("tongue.export_prompt").into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(folder) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |section, cx| {
+                section.start_transfer(
+                    Pending::Export(id.clone()),
+                    move |client| client.export_model(&id, folder),
+                    cx,
+                )
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Asks for an exported model's folder, or a zip of one, then starts
+    /// importing it.
+    fn import_model(&mut self, zip: bool, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: zip,
+            directories: !zip,
+            multiple: false,
+            prompt: Some(if zip {
+                t!("tongue.import_zip_prompt").into()
+            } else {
+                t!("tongue.import_folder_prompt").into()
+            }),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |section, cx| {
+                section.start_transfer(Pending::Import, move |client| client.import_model(path), cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn start_transfer(
+        &mut self,
+        pending: Pending,
+        work: impl FnOnce(&QuestProClient) -> anyhow::Result<u64> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.transfer_message = None;
+        self.exported_to = None;
+        let export = matches!(pending, Pending::Export(_));
+        self.request(
+            pending,
+            work,
+            move |section, result, _| match result {
+                Ok(serial) => section.awaited_transfer = Some(serial),
+                Err(error) => {
+                    section.transfer_message = Some(Notice::error(
+                        &if export {
+                            t!("tongue.couldnt_export")
+                        } else {
+                            t!("tongue.couldnt_import")
+                        },
+                        &error,
+                    ))
+                }
+            },
+            cx,
+        );
+    }
+
+    /// An export or import running, or how the last one this app started
+    /// went.
+    fn transfer_panel(&self) -> Option<AnyElement> {
+        if let Some(transfer) = self.transfer() {
+            let percent = (transfer.fraction.unwrap_or(0.) * 100.).round();
+            let text = match transfer.kind {
+                TransferKind::Export => t!("tongue.exporting", percent = percent),
+                TransferKind::Import => t!("tongue.importing", percent = percent),
+            };
+            return Some(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Notice::new(Tone::Waiting, text))
+                    .child(Meter::new(transfer.fraction.unwrap_or(0.), palette::text()))
+                    .into_any_element(),
+            );
+        }
+        let message = self.transfer_message.clone()?;
+        Some(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(message)
+                .children(self.exported_to.clone().map(|folder| {
+                    h_flex().child(
+                        Button::new("show-export")
+                            .small()
+                            .icon(IconName::FolderOpen)
+                            .label(t!("tongue.show_folder"))
+                            .on_click(move |_, _, cx| cx.reveal_path(&folder)),
+                    )
+                }))
                 .into_any_element(),
         )
     }
@@ -1427,173 +1689,248 @@ impl TongueTraining {
         } else {
             None
         };
-        let rows = std::iter::once((
-            "demo".to_string(),
-            t!("tongue.builtin_model").to_string(),
-            t!("tongue.not_trained_on_you").to_string(),
-        ))
-        .chain(self.trained_models().into_iter().map(|model| {
-            (
-                model.id.clone(),
-                model_name(model),
-                model_detail(model, now),
-            )
-        }))
-        .enumerate()
-        .map(|(index, (id, name, detail))| {
-            let trained = id != "demo";
-            let renaming = self.renaming.as_deref() == Some(id.as_str());
-            let confirming = self.confirm_delete_model.as_deref() == Some(id.as_str());
-            let in_use = id == active;
-            // The built-in model is "in use" only once it's there to use.
-            let missing = id == "demo" && self.builtin_missing();
-            let activating = self.pending == Some(Pending::Activate(id.clone()));
-            h_flex()
-                .gap_3()
-                .min_h(px(56.))
-                .px(px(18.))
-                .py(px(10.))
-                .border_t_1()
-                .border_color(palette::line_soft())
-                .when(in_use, |row| row.bg(palette::raised()))
-                .child(if renaming {
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_2()
-                        .child(div().flex_1().child(Input::new(&self.rename).small()))
-                        .child(
-                            Button::new(("save-name", index))
-                                .primary()
-                                .small()
-                                .label(t!("tongue.save"))
-                                .loading(self.pending == Some(Pending::RenameModel(id.clone())))
-                                .on_click(
-                                    cx.listener(|section, _, _, cx| section.finish_rename(cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new(("cancel-name", index))
-                                .ghost()
-                                .small()
-                                .label(t!("tongue.cancel"))
-                                .on_click(cx.listener(|section, _, _, cx| {
-                                    section.renaming = None;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element()
-                } else {
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_0p5()
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_medium()
-                                .truncate()
-                                .child(name.clone()),
-                        )
-                        .child(div().text_xs().text_color(palette::text_3()).child(detail))
-                        .into_any_element()
-                })
-                .when(trained && !renaming, |row| {
-                    let rename_id = id.clone();
-                    let delete_id = id.clone();
-                    let busy = locked || self.pending.is_some();
-                    row.child(
+        // A trained model in use doesn't need the built-in one, so it isn't
+        // offered while it isn't downloaded.
+        let builtin_row = !self.builtin_missing() || self.active_model().is_none();
+        let trained_count = self.trained_models().len();
+        let transferring = self.transferring();
+        let rows = builtin_row
+            .then(|| {
+                (
+                    "demo".to_string(),
+                    t!("tongue.builtin_model").to_string(),
+                    t!("tongue.not_trained_on_you").to_string(),
+                )
+            })
+            .into_iter()
+            .chain(self.trained_models().into_iter().map(|model| {
+                (
+                    model.id.clone(),
+                    model_name(model),
+                    model_detail(model, now),
+                )
+            }))
+            .enumerate()
+            .map(|(index, (id, name, detail))| {
+                let trained = id != "demo";
+                let renaming = self.renaming.as_deref() == Some(id.as_str());
+                let confirming = self.confirm_delete_model.as_deref() == Some(id.as_str());
+                let in_use = id == active;
+                // The built-in model is "in use" only once it's there to use.
+                let missing = id == "demo" && self.builtin_missing();
+                let activating = self.pending == Some(Pending::Activate(id.clone()));
+                h_flex()
+                    .gap_3()
+                    .min_h(px(56.))
+                    .px(px(18.))
+                    .py(px(10.))
+                    .border_t_1()
+                    .border_color(palette::line_soft())
+                    .when(in_use, |row| row.bg(palette::raised()))
+                    .child(if renaming {
                         h_flex()
-                            .gap_1()
-                            .flex_none()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .child(div().flex_1().child(Input::new(&self.rename).small()))
                             .child(
-                                Button::new(("rename-model", index))
+                                Button::new(("save-name", index))
+                                    .primary()
+                                    .small()
+                                    .label(t!("tongue.save"))
+                                    .loading(self.pending == Some(Pending::RenameModel(id.clone())))
+                                    .on_click(
+                                        cx.listener(|section, _, _, cx| section.finish_rename(cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new(("cancel-name", index))
                                     .ghost()
                                     .small()
-                                    .icon(IconName::Pencil)
-                                    .tooltip(t!("tongue.rename"))
-                                    .disabled(busy)
-                                    .on_click(cx.listener(move |section, _, window, cx| {
-                                        section.start_rename(
-                                            rename_id.clone(),
-                                            name.clone(),
-                                            window,
-                                            cx,
-                                        )
+                                    .label(t!("tongue.cancel"))
+                                    .on_click(cx.listener(|section, _, _, cx| {
+                                        section.renaming = None;
+                                        cx.notify();
                                     })),
                             )
-                            .child(if confirming {
-                                Button::new(("confirm-delete-model", index))
-                                    .danger()
-                                    .outline()
-                                    .small()
-                                    .label(t!("tongue.delete"))
-                                    .loading(self.pending == Some(Pending::DeleteModel(id.clone())))
-                                    .on_click(cx.listener(move |section, _, _, cx| {
-                                        section.delete_model(delete_id.clone(), cx)
-                                    }))
-                            } else {
-                                Button::new(("delete-model", index))
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Trash)
-                                    .tooltip(if in_use {
-                                        t!("tongue.switch_before_deleting")
-                                    } else {
-                                        t!("tongue.delete")
-                                    })
-                                    .disabled(busy || in_use)
-                                    .on_click(cx.listener(move |section, _, _, cx| {
-                                        section.renaming = None;
-                                        section.confirm_delete_model = Some(delete_id.clone());
-                                        cx.notify();
-                                    }))
-                            }),
-                    )
-                })
-                .child(if in_use && missing {
-                    StatusPill::new(Tone::Waiting, t!("tongue.not_downloaded")).into_any_element()
-                } else if in_use {
-                    StatusPill::new(Tone::Good, t!("tongue.in_use")).into_any_element()
-                } else {
-                    Button::new(("use-model", index))
-                        .small()
-                        .label(t!("tongue.use"))
-                        .loading(activating)
-                        .when_some(use_blocked.clone(), |button, reason| button.tooltip(reason))
-                        .disabled(locked || override_set || self.pending.is_some())
-                        .on_click(
-                            cx.listener(move |section, _, _, cx| section.activate(id.clone(), cx)),
+                            .into_any_element()
+                    } else {
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_medium()
+                                    .truncate()
+                                    .child(name.clone()),
+                            )
+                            .child(div().text_xs().text_color(palette::text_3()).child(detail))
+                            .into_any_element()
+                    })
+                    .when(trained && !renaming, |row| {
+                        let rename_id = id.clone();
+                        let delete_id = id.clone();
+                        let export_id = id.clone();
+                        let busy = locked || self.pending.is_some() || transferring;
+                        // With nothing else to switch to, the model in use can go
+                        // too; the built-in one is then offered again.
+                        let deletable = !in_use || (self.builtin_missing() && trained_count == 1);
+                        row.child(
+                            h_flex()
+                                .gap_1()
+                                .flex_none()
+                                .child(
+                                    Button::new(("export-model", index))
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::FolderOutput)
+                                        .tooltip(t!("tongue.export"))
+                                        .loading(self.pending == Some(Pending::Export(id.clone())))
+                                        .disabled(busy)
+                                        .on_click(cx.listener(move |section, _, _, cx| {
+                                            section.export_model(export_id.clone(), cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("rename-model", index))
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Pencil)
+                                        .tooltip(t!("tongue.rename"))
+                                        .disabled(busy)
+                                        .on_click(cx.listener(move |section, _, window, cx| {
+                                            section.start_rename(
+                                                rename_id.clone(),
+                                                name.clone(),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(if confirming {
+                                    Button::new(("confirm-delete-model", index))
+                                        .danger()
+                                        .outline()
+                                        .small()
+                                        .label(t!("tongue.delete"))
+                                        .loading(
+                                            self.pending == Some(Pending::DeleteModel(id.clone())),
+                                        )
+                                        .on_click(cx.listener(move |section, _, _, cx| {
+                                            section.delete_model(delete_id.clone(), cx)
+                                        }))
+                                } else {
+                                    Button::new(("delete-model", index))
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Trash)
+                                        .tooltip(if deletable {
+                                            t!("tongue.delete")
+                                        } else {
+                                            t!("tongue.switch_before_deleting")
+                                        })
+                                        .disabled(busy || !deletable)
+                                        .on_click(cx.listener(move |section, _, _, cx| {
+                                            section.renaming = None;
+                                            section.confirm_delete_model = Some(delete_id.clone());
+                                            cx.notify();
+                                        }))
+                                }),
                         )
-                        .into_any_element()
-                })
-                .into_any_element()
-        });
+                    })
+                    .child(if in_use && missing {
+                        StatusPill::new(Tone::Waiting, t!("tongue.not_downloaded"))
+                            .into_any_element()
+                    } else if in_use {
+                        StatusPill::new(Tone::Good, t!("tongue.in_use")).into_any_element()
+                    } else {
+                        Button::new(("use-model", index))
+                            .small()
+                            .label(t!("tongue.use"))
+                            .loading(activating)
+                            .when_some(use_blocked.clone(), |button, reason| button.tooltip(reason))
+                            .disabled(locked || override_set || self.pending.is_some())
+                            .on_click(cx.listener(move |section, _, _, cx| {
+                                section.activate(id.clone(), cx)
+                            }))
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            });
         let model_message = self.model_message.clone().filter(|_| {
             self.model_message_until
                 .is_none_or(|until| Instant::now() < until)
         });
+        let import_blocked = self.pending.is_some() || transferring;
+        let importing = self.pending == Some(Pending::Import);
         card(cx)
             .flex()
             .flex_col()
             .overflow_hidden()
             .child(
-                v_flex()
-                    .gap_0p5()
+                h_flex()
+                    .flex_wrap()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
                     .px(px(18.))
                     .pt_4()
                     .pb_3()
-                    .child(card_title(t!("tongue.model_in_use")))
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::text_3())
-                            .child(t!("tongue.model_in_use_about")),
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(180.))
+                            .gap_0p5()
+                            .child(card_title(t!("tongue.model_in_use")))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_3())
+                                    .child(t!("tongue.model_in_use_about")),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1()
+                            .child(
+                                Button::new("import-folder")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::FolderInput)
+                                    .label(t!("tongue.import_folder"))
+                                    .tooltip(t!("tongue.import_folder_tooltip"))
+                                    .loading(importing)
+                                    .disabled(import_blocked)
+                                    .on_click(cx.listener(|section, _, _, cx| {
+                                        section.import_model(false, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("import-zip")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::FileArchive)
+                                    .label(t!("tongue.import_zip"))
+                                    .tooltip(t!("tongue.import_zip_tooltip"))
+                                    .disabled(import_blocked)
+                                    .on_click(cx.listener(|section, _, _, cx| {
+                                        section.import_model(true, cx)
+                                    })),
+                            ),
                     ),
             )
             .children(
-                self.builtin_panel(true, cx)
+                self.builtin_needed()
+                    .then(|| self.builtin_panel(true, cx))
+                    .flatten()
                     .map(|builtin| div().px(px(18.)).pb_3().child(builtin)),
+            )
+            .children(
+                self.transfer_panel()
+                    .map(|transfer| div().px(px(18.)).pb_3().child(transfer)),
             )
             .child(v_flex().children(rows))
             .when(override_set, |panel| {
@@ -1778,15 +2115,21 @@ impl TongueTraining {
                 t!("tongue.record_lead"),
             ))
             // Training starts from the built-in model; downloading it now
-            // means it's ready by the time the recording is.
-            .when_some(self.builtin_panel(false, cx), |panel, builtin| {
-                panel.child(
-                    v_flex()
-                        .gap_2()
-                        .child(builtin)
-                        .child(hint(t!("tongue.download_while_recording"), cx)),
-                )
-            })
+            // means it's ready by the time the recording is. With a trained
+            // model in use it isn't pressed on anyone; training asks for it.
+            .when_some(
+                self.builtin_needed()
+                    .then(|| self.builtin_panel(false, cx))
+                    .flatten(),
+                |panel, builtin| {
+                    panel.child(
+                        v_flex()
+                            .gap_2()
+                            .child(builtin)
+                            .child(hint(t!("tongue.download_while_recording"), cx)),
+                    )
+                },
+            )
             .child(
                 v_flex()
                     .gap_2()
@@ -2340,12 +2683,9 @@ impl TongueTraining {
         let ready = recorded && !ticked.is_empty() && lacking.is_empty();
         // Training starts from the built-in model, so that comes first; its
         // download is the next step once it's all that's missing.
-        let base = builtin_missing.then(|| {
-            v_flex()
-                .gap_2()
-                .child(cap(t!("tongue.builtin_first")))
-                .children(self.builtin_panel(ready, cx))
-        });
+        let base = builtin_missing
+            .then(|| self.builtin_panel(ready, cx))
+            .flatten();
         let covered = (recorded && !ticked.is_empty() && !busy).then(|| {
             let cells = coverage(&ticked).into_iter().map(|(name, have, needed)| {
                 v_flex()
@@ -3888,6 +4228,100 @@ fn training_time_left(progress: &TrainingProgress) -> String {
         None if progress.stage == TrainingStage::Training => t!("tongue.setting_up_gpu").into(),
         None => String::new(),
     }
+}
+
+/// The built-in model's download as it runs: what it's doing, a meter, how
+/// much has come and how fast, and a way to stop it.
+fn download_progress(
+    builtin: &BuiltinStatus,
+    busy: bool,
+    cx: &Context<TongueTraining>,
+) -> AnyElement {
+    let stage = builtin.stage.unwrap_or_default();
+    let title = match stage {
+        BuiltinStage::Downloading => t!("tongue.downloading_builtin"),
+        BuiltinStage::Verifying => t!("tongue.checking_download"),
+        BuiltinStage::Unpacking => t!("tongue.unpacking_builtin"),
+        _ => t!("tongue.connecting_download"),
+    };
+    let fraction = match stage {
+        BuiltinStage::Downloading => builtin.fraction.unwrap_or(0.),
+        BuiltinStage::Verifying | BuiltinStage::Unpacking => 1.,
+        _ => 0.,
+    };
+    let detail = (stage == BuiltinStage::Downloading)
+        .then(|| download_detail(builtin))
+        .flatten();
+    v_flex()
+        .w_full()
+        .gap_2p5()
+        .px_3p5()
+        .py_3()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(palette::line_strong())
+        .bg(palette::inset())
+        .child(
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(div().flex_1().min_w_0().text_sm().child(title))
+                // Unpacking is over in moments and can't stop part-way.
+                .when(stage != BuiltinStage::Unpacking, |row| {
+                    row.child(
+                        Button::new("cancel-builtin")
+                            .ghost()
+                            .xsmall()
+                            .label(t!("tongue.cancel"))
+                            .disabled(busy)
+                            .on_click(cx.listener(|section, _, _, cx| section.cancel_builtin(cx))),
+                    )
+                }),
+        )
+        .child(Meter::new(fraction, palette::text()))
+        .children(detail.map(|detail| {
+            div()
+                .text_xs()
+                .font_family(MONO_FONT)
+                .text_color(palette::text_3())
+                .child(detail)
+        }))
+        .into_any_element()
+}
+
+/// "45.2 of 140.1 MB · 5.3 MB/s · 18 s left", as much of it as is known.
+fn download_detail(builtin: &BuiltinStatus) -> Option<String> {
+    let received = builtin.received_bytes?;
+    let mut parts = vec![match builtin.total_bytes {
+        Some(total) => t!(
+            "tongue.download_amount",
+            received = megabytes(received as f64),
+            total = megabytes(total as f64)
+        )
+        .to_string(),
+        None => t!(
+            "tongue.download_received",
+            received = megabytes(received as f64)
+        )
+        .to_string(),
+    }];
+    if let Some(speed) = builtin.bytes_per_second.filter(|speed| *speed > 0.) {
+        parts.push(t!("tongue.download_speed", speed = megabytes(speed)).to_string());
+        if let Some(total) = builtin.total_bytes {
+            let seconds = total.saturating_sub(received) as f64 / speed;
+            parts.push(if seconds < 60. {
+                t!("tongue.seconds_left", seconds = seconds.ceil() as u64).to_string()
+            } else {
+                t!("tongue.download_left", duration = duration(seconds)).to_string()
+            });
+        }
+    }
+    Some(parts.join(" · "))
+}
+
+/// Bytes as megabytes to one place: "45.2".
+fn megabytes(bytes: f64) -> String {
+    format!("{:.1}", bytes / 1_000_000.)
 }
 
 fn duration(seconds: f64) -> String {
