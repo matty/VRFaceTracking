@@ -25,6 +25,9 @@ const FILTER_RESET_GAP_S: f64 = 0.5;
 const FLAG_TAG0_VALID: u32 = 1;
 const FLAG_TAG1_VALID: u32 = 2;
 const FLAG_MODEL_PATCHED: u32 = 4;
+/// A traced vector whose squared length falls outside this is not a
+/// direction, whatever its flags say (after Qpro-Enhanced-FT-GNimrodG).
+const SQUARED_LENGTH: std::ops::RangeInclusive<f32> = 0.25..=2.25;
 const BUNDLED_CALIBRATION: &str = "models/quest-pro/qpro-independent-visual-axis-v2.json";
 const PERSONAL_CALIBRATION: &str = ".local/eye-calibration.json";
 
@@ -64,12 +67,11 @@ impl GazePacket {
     }
 
     fn valid(&self) -> bool {
+        // A NaN or infinite component fails the length check too.
         self.flags & (FLAG_TAG0_VALID | FLAG_TAG1_VALID) == FLAG_TAG0_VALID | FLAG_TAG1_VALID
-            && self
-                .tag0
-                .iter()
-                .chain(self.tag1.iter())
-                .all(|value| value.is_finite())
+            && [self.tag0, self.tag1].iter().all(|vector| {
+                SQUARED_LENGTH.contains(&vector.iter().map(|value| value * value).sum::<f32>())
+            })
     }
 }
 
@@ -747,6 +749,27 @@ mod tests {
         processor.process(&packet, Instant::now());
         assert!(state.latest_fresh().is_none());
         assert_eq!(state.status().dropped_invalid, 2);
+    }
+
+    #[test]
+    fn vectors_far_from_unit_length_are_dropped() {
+        let (state, mut processor) = processor(identity_calibration(), QuestProSettings::default());
+        for (index, tag0) in [[0.0, 0.0, 0.45], [0.0, 0.0, 1.55], [0.0, 0.0, 0.0]]
+            .into_iter()
+            .enumerate()
+        {
+            let packet =
+                GazePacket::parse(&packet_bytes(index as u64, 1, 7, tag0, [0.0, 0.0, 1.0]))
+                    .unwrap();
+            processor.process(&packet, Instant::now());
+        }
+        assert!(state.latest_fresh().is_none());
+        assert_eq!(state.status().dropped_invalid, 3);
+        // Within the band, but not a unit vector: still a direction.
+        let packet =
+            GazePacket::parse(&packet_bytes(4, 2, 7, [0.0, 0.0, 0.55], [0.0, 0.0, 1.45])).unwrap();
+        processor.process(&packet, Instant::now());
+        assert!(state.latest_fresh().is_some());
     }
 
     #[test]

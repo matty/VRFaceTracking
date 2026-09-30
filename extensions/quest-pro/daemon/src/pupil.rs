@@ -7,6 +7,10 @@
 //! the range that eye has shown this session, then onto a typical human
 //! pupil range. That keeps dilation, which is what avatars use, correct
 //! without knowing the camera's scale.
+//!
+//! Pupils widen and narrow together, so a size far from what an eye usually
+//! shows, or a sudden change, counts only when the other eye shows it too.
+//! Checks after Qpro-Enhanced-FT-GNimrodG's `pupil_tracking.py` (MIT).
 
 use crate::settings::QuestProSettings;
 use std::collections::VecDeque;
@@ -49,15 +53,35 @@ const MIN_ASPECT: f32 = 0.45;
 /// How much of the ellipse its moments describe the area must fill.
 const FILL: std::ops::RangeInclusive<f32> = 0.6..=1.3;
 
-/// Smoothing of each eye's millimetres, and how fast the range it has shown
-/// forgets an extreme.
+/// Smoothing of each eye's dilation.
 const SMOOTHING: Duration = Duration::from_millis(350);
-const RANGE_MEMORY: Duration = Duration::from_secs(120);
-/// Until an eye has shown this much change, relative to its size, its range
-/// is widened to it, so small wobbles do not read as full dilation.
-const MIN_SPAN: f32 = 0.3;
-/// Measurements further apart than this start the smoothing over.
+/// Accepted measurements further apart than this start the eye over, all
+/// but its range.
 const GAP: Duration = Duration::from_secs(2);
+/// Each eye's range is taken from its sizes over this long, between these
+/// shares of them, so a few stray measurements cannot stretch it.
+const RANGE_HISTORY: Duration = Duration::from_secs(600);
+const RANGE_SHARES: [f32; 2] = [0.03, 0.97];
+/// Until an eye has shown this much change, relative to its typical size,
+/// its range is widened to it, so small wobbles do not read as full dilation.
+const MIN_SPAN: f32 = 0.45;
+/// Looking aside turns an eye from its camera, and lashes can then pass for
+/// a small pupil. So a size outside this band around the eye's median over
+/// the last minute counts only when the other eye has changed the same way.
+const TYPICAL_WINDOW: Duration = Duration::from_secs(60);
+const TYPICAL_BAND: [f32; 2] = [0.6, 1.7];
+/// The band applies once the last minute holds this many sizes: two
+/// seconds of snapshots at the default 5 a second.
+const TYPICAL_MIN: usize = 10;
+/// A size this far from the eye's current one is a jump. It counts only
+/// when the other eye jumps the same way, and once it has lasted this long,
+/// staying within `JUMP_STEADY` of itself.
+const JUMP: f32 = 0.3;
+const JUMP_HOLD: Duration = Duration::from_millis(600);
+const JUMP_STEADY: f32 = 0.15;
+/// The other eye agrees when it has changed the same way by at least this
+/// share as much, in ratio terms.
+const AGREE: f32 = 0.5;
 
 /// Box blur of a `SIZE` square image, `radius` pixels each way.
 fn blur(image: &[f32], radius: usize) -> Vec<f32> {
@@ -291,53 +315,195 @@ fn shape(pixels: &[usize]) -> Option<(f32, f32, f32)> {
     ))
 }
 
+/// The middle of `values`, the upper one of an even count.
+fn median(values: impl IntoIterator<Item = f32>) -> Option<f32> {
+    let mut values: Vec<f32> = values.into_iter().collect();
+    values.sort_by(f32::total_cmp);
+    values.get(values.len() / 2).copied()
+}
+
+/// How a width compares with the eye's current and typical widths, as
+/// ratios, where the eye has them.
+#[derive(Clone, Copy)]
+struct Change {
+    current: Option<f32>,
+    typical: Option<f32>,
+}
+
+/// A jump waiting to last: when it started, which way it went, and its
+/// widths over the last `JUMP_HOLD`.
+struct Jump {
+    since: Instant,
+    wider: bool,
+    widths: VecDeque<(Instant, f32)>,
+}
+
 /// One eye's measurements over time.
 #[derive(Default)]
 struct EyeTrack {
-    /// The last three widths, whose median is used, so one bad
+    /// The last three accepted widths, whose median is used, so one bad
     /// snapshot, as in a blink, does not show.
     recent: VecDeque<f32>,
-    /// The smallest and largest widths this eye has shown, forgetting slowly.
-    range: Option<(f32, f32)>,
+    /// Accepted widths over `RANGE_HISTORY`, for the range and the
+    /// typical width.
+    history: VecDeque<(Instant, f32)>,
+    jump: Option<Jump>,
     /// Where the eye sits in its range, 0 to 1, smoothed.
     dilation: Option<f32>,
+    /// When a width was last accepted.
     last: Option<Instant>,
 }
 
 impl EyeTrack {
-    /// Takes one width measured at `at` and returns the eye's dilation.
-    fn update(&mut self, width: f32, at: Instant) -> f32 {
-        let elapsed = self.last.map(|last| at.saturating_duration_since(last));
-        self.last = Some(at);
-        if elapsed.is_none_or(|elapsed| elapsed > GAP) {
+    /// Forgets what a long gap or old age has made stale.
+    fn age(&mut self, at: Instant) {
+        if self
+            .last
+            .is_none_or(|last| at.saturating_duration_since(last) > GAP)
+        {
             self.recent.clear();
+            self.jump = None;
             self.dilation = None;
+        }
+        while self
+            .history
+            .front()
+            .is_some_and(|(when, _)| at.saturating_duration_since(*when) > RANGE_HISTORY)
+        {
+            self.history.pop_front();
+        }
+    }
+
+    fn current(&self) -> Option<f32> {
+        median(self.recent.iter().copied())
+    }
+
+    /// The median width over the last minute, once there are enough.
+    fn typical(&self, at: Instant) -> Option<f32> {
+        let widths: Vec<f32> = self
+            .history
+            .iter()
+            .filter(|(when, _)| at.saturating_duration_since(*when) <= TYPICAL_WINDOW)
+            .map(|&(_, width)| width)
+            .collect();
+        if widths.len() < TYPICAL_MIN {
+            return None;
+        }
+        median(widths)
+    }
+
+    fn change(&self, width: f32, at: Instant) -> Change {
+        Change {
+            current: self.current().map(|current| width / current),
+            typical: self.typical(at).map(|typical| width / typical),
+        }
+    }
+
+    /// Takes one width measured at `at`, how it compares with this eye's
+    /// widths, and how the other eye's width at the same moment compares
+    /// with its own, if it was measured. Returns the eye's dilation, which
+    /// stays where it was while a width is held back.
+    fn update(
+        &mut self,
+        width: f32,
+        change: Change,
+        other: Option<Change>,
+        at: Instant,
+    ) -> Option<f32> {
+        let agrees = |own: f32, theirs: Option<f32>| {
+            theirs.is_some_and(|theirs| {
+                let (own, theirs) = (own.ln(), theirs.ln());
+                own * theirs > 0.0 && theirs.abs() >= AGREE * own.abs()
+            })
+        };
+        if let Some(ratio) = change.current.filter(|ratio| (ratio - 1.0).abs() > JUMP) {
+            if !agrees(
+                ratio,
+                other.and_then(|other| other.current.or(other.typical)),
+            ) {
+                self.jump = None;
+                return self.held(at);
+            }
+            return self.hold_jump(width, ratio > 1.0, at);
+        }
+        self.jump = None;
+        let [low, high] = TYPICAL_BAND;
+        if let Some(ratio) = change.typical.filter(|ratio| !(low..=high).contains(ratio)) {
+            if !agrees(
+                ratio,
+                other.and_then(|other| other.typical.or(other.current)),
+            ) {
+                return self.held(at);
+            }
         }
         self.recent.push_back(width);
         if self.recent.len() > 3 {
             self.recent.pop_front();
         }
-        let mut sorted: Vec<f32> = self.recent.iter().copied().collect();
-        sorted.sort_by(f32::total_cmp);
-        let width = sorted[sorted.len() / 2];
-        let (mut low, mut high) = self.range.unwrap_or((width, width));
-        let forget = elapsed.map_or(0.0, |elapsed| {
-            1.0 - (-elapsed.as_secs_f32() / RANGE_MEMORY.as_secs_f32()).exp()
+        Some(self.settle(at))
+    }
+
+    /// Counts a jump once it has lasted and stayed steady.
+    fn hold_jump(&mut self, width: f32, wider: bool, at: Instant) -> Option<f32> {
+        if self.jump.as_ref().is_some_and(|jump| jump.wider != wider) {
+            self.jump = None;
+        }
+        let jump = self.jump.get_or_insert_with(|| Jump {
+            since: at,
+            wider,
+            widths: VecDeque::new(),
         });
-        low = if width < low {
-            width
-        } else {
-            low + (width - low) * forget
-        };
-        high = if width > high {
-            width
-        } else {
-            high + (width - high) * forget
-        };
-        self.range = Some((low, high));
+        jump.widths.push_back((at, width));
+        while jump
+            .widths
+            .front()
+            .is_some_and(|(when, _)| at.saturating_duration_since(*when) > JUMP_HOLD)
+        {
+            jump.widths.pop_front();
+        }
+        let (low, high) = jump
+            .widths
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(low, high), &(_, width)| {
+                (low.min(width), high.max(width))
+            });
+        if at.saturating_duration_since(jump.since) < JUMP_HOLD || high - low > JUMP_STEADY * width
+        {
+            return self.held(at);
+        }
+        // It lasted: the eye's current width moves to it at once.
+        self.recent = jump
+            .widths
+            .iter()
+            .rev()
+            .take(3)
+            .map(|&(_, width)| width)
+            .collect();
+        self.jump = None;
+        Some(self.settle(at))
+    }
+
+    /// The dilation while a width is held back, as long as it is recent.
+    fn held(&self, at: Instant) -> Option<f32> {
+        self.dilation.filter(|_| {
+            self.last
+                .is_some_and(|last| at.saturating_duration_since(last) <= PUPIL_FRESH_FOR)
+        })
+    }
+
+    /// Records the current width and returns where it sits in the range.
+    fn settle(&mut self, at: Instant) -> f32 {
+        let width = self.current().unwrap_or_default();
+        self.history.push_back((at, width));
+        let mut sorted: Vec<f32> = self.history.iter().map(|&(_, width)| width).collect();
+        sorted.sort_by(f32::total_cmp);
+        let share = |share: f32| sorted[((sorted.len() - 1) as f32 * share).round() as usize];
+        let [low, high] = RANGE_SHARES.map(share);
         let middle = (low + high) / 2.0;
-        let span = (high - low).max(MIN_SPAN * middle).max(f32::EPSILON);
+        let span = (high - low).max(MIN_SPAN * share(0.5)).max(f32::EPSILON);
         let target = ((width - middle) / span + 0.5).clamp(0.0, 1.0);
+        let elapsed = self.last.map(|last| at.saturating_duration_since(last));
+        self.last = Some(at);
         let dilation = match (self.dilation, elapsed) {
             (Some(previous), Some(elapsed)) => {
                 let alpha = 1.0 - (-elapsed.as_secs_f32() / SMOOTHING.as_secs_f32()).exp();
@@ -348,6 +514,23 @@ impl EyeTrack {
         self.dilation = Some(dilation);
         dilation
     }
+}
+
+/// Takes one snapshot's widths, `None` where no pupil showed, and returns
+/// each eye's dilation.
+fn update_eyes(
+    eyes: &mut [EyeTrack; 2],
+    widths: [Option<f32>; 2],
+    at: Instant,
+) -> [Option<f32>; 2] {
+    for eye in eyes.iter_mut() {
+        eye.age(at);
+    }
+    let changes = [0, 1].map(|index| widths[index].map(|width| eyes[index].change(width, at)));
+    [0, 1].map(|index| {
+        let (width, change) = (widths[index]?, changes[index]?);
+        eyes[index].update(width, change, changes[1 - index], at)
+    })
 }
 
 fn millimetres(dilation: f32) -> f32 {
@@ -445,14 +628,13 @@ impl PupilProcessor {
             shared.missed += 1;
             return;
         }
-        let mut dilation = [None; 2];
-        for ((value, eye), width) in dilation.iter_mut().zip(&mut self.eyes).zip(widths) {
-            *value = width.map(|width| eye.update(width, received_at));
+        let dilation = update_eyes(&mut self.eyes, widths, received_at);
+        if dilation.iter().any(Option::is_some) {
+            shared.latest = Some(PupilSample {
+                dilation,
+                at: received_at,
+            });
         }
-        shared.latest = Some(PupilSample {
-            dilation,
-            at: received_at,
-        });
     }
 }
 
@@ -561,27 +743,110 @@ mod tests {
         assert_eq!(measure(&strip, 0), None);
     }
 
+    /// Both eyes, fed snapshots five times a second.
+    struct Eyes {
+        tracks: [EyeTrack; 2],
+        start: Instant,
+        millis: u64,
+    }
+
+    impl Eyes {
+        fn new() -> Self {
+            Self {
+                tracks: Default::default(),
+                start: Instant::now(),
+                millis: 0,
+            }
+        }
+
+        /// These widths for `seconds`; the dilations after the last.
+        fn run(&mut self, widths: [Option<f32>; 2], seconds: f32) -> [Option<f32>; 2] {
+            let mut dilation = [None; 2];
+            for _ in 0..(seconds * 5.0).round() as usize {
+                self.millis += 200;
+                let at = self.start + Duration::from_millis(self.millis);
+                dilation = update_eyes(&mut self.tracks, widths, at);
+            }
+            dilation
+        }
+    }
+
     #[test]
     fn each_eye_spans_the_range_it_has_shown() {
+        let mut eyes = Eyes::new();
+        assert_eq!(
+            eyes.run([Some(40.0); 2], 0.2),
+            [Some(0.5); 2],
+            "one size is the middle"
+        );
+        // Too small a change is not full dilation.
+        let slight = eyes.run([Some(41.0); 2], 0.2)[0].unwrap();
+        assert!(slight > 0.5 && slight < 0.6, "{slight}");
+        eyes.run([Some(40.0); 2], 20.0);
+        let narrow = eyes.run([Some(20.0); 2], 20.0)[0].unwrap();
+        let wide = eyes.run([Some(60.0); 2], 20.0)[0].unwrap();
+        assert!(narrow < 0.05 && wide > 0.95, "{narrow} {wide}");
+    }
+
+    #[test]
+    fn a_few_stray_sizes_do_not_stretch_the_range() {
         let mut eye = EyeTrack::default();
         let start = Instant::now();
-        let at = |seconds: f32| start + Duration::from_secs_f32(seconds);
-        assert_eq!(eye.update(40.0, at(0.0)), 0.5, "one size is the middle");
-        // Too small a change is not full dilation.
-        let slight = eye.update(41.0, at(0.2));
-        assert!(slight > 0.5 && slight < 0.6, "{slight}");
-        for step in 0..20 {
-            eye.update(20.0, at(0.4 + step as f32 * 0.2));
+        let at = |step: u64| start + Duration::from_millis(step * 200);
+        for step in 0..200 {
+            eye.recent = [30.0 + (step % 21) as f32].into();
+            eye.settle(at(step));
         }
-        let narrow = eye.dilation.unwrap();
-        for step in 0..20 {
-            eye.update(60.0, at(5.0 + step as f32 * 0.2));
+        for step in 200..203 {
+            eye.recent = [90.0].into();
+            eye.settle(at(step));
         }
-        let wide = eye.dilation.unwrap();
-        assert!(narrow < 0.05 && wide > 0.95, "{narrow} {wide}");
-        // A single outlier, as in a blink, is ignored.
-        let blink = eye.update(15.0, at(9.2));
-        assert!(blink > 0.9, "{blink}");
+        eye.recent = [50.0].into();
+        eye.dilation = None;
+        let wide = eye.settle(at(203));
+        assert!(wide > 0.95, "{wide}");
+    }
+
+    #[test]
+    fn a_jump_in_one_eye_alone_is_held_back() {
+        let mut eyes = Eyes::new();
+        eyes.run([Some(40.0); 2], 10.0);
+        // Lashes passing for a small pupil as an eye turns from its camera.
+        assert_eq!(eyes.run([Some(15.0), Some(40.0)], 1.0), [Some(0.5); 2]);
+        // Held back for long, the eye has no value, and borrows the other's.
+        assert_eq!(eyes.run([Some(15.0), Some(40.0)], 1.0), [None, Some(0.5)]);
+    }
+
+    #[test]
+    fn a_jump_in_both_eyes_counts_once_it_lasts() {
+        let mut eyes = Eyes::new();
+        eyes.run([Some(40.0); 2], 10.0);
+        // One snapshot, as in a blink, is ignored.
+        assert_eq!(eyes.run([Some(26.0); 2], 0.2), [Some(0.5); 2]);
+        assert_eq!(eyes.run([Some(40.0); 2], 0.2), [Some(0.5); 2]);
+        // A real change lasts, and comes through.
+        assert_eq!(eyes.run([Some(26.0); 2], 0.4), [Some(0.5); 2]);
+        let narrowed = eyes.run([Some(26.0); 2], 1.0)[0].unwrap();
+        assert!(narrowed < 0.4, "{narrowed}");
+    }
+
+    #[test]
+    fn a_slow_drift_counts_beyond_the_usual_band_only_in_both_eyes() {
+        let drift = |both: bool| {
+            let mut eyes = Eyes::new();
+            eyes.run([Some(40.0); 2], 10.0);
+            let mut width: f32 = 40.0;
+            while width > 16.0 {
+                // Too slow a change for a jump.
+                width *= 0.9;
+                eyes.run([Some(width), Some(if both { width } else { 40.0 })], 0.2);
+            }
+            eyes.tracks[0].current().unwrap()
+        };
+        let alone = drift(false);
+        assert!(alone >= 0.6 * 40.0, "{alone}");
+        let together = drift(true);
+        assert!(together < 20.0, "{together}");
     }
 
     #[test]

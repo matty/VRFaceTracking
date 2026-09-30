@@ -7,7 +7,7 @@ This is a port of the independent-gaze feature from [Qpro-Enhanced-FT](https://g
 ## How it works
 
 1. When **Independent eye gaze** is on, the APK briefly replaces Meta's experimental eye model with a copy patched so its public gaze output comes from each eye's own branch instead of the blended one. The patch changes two bytes of the model graph. The original file is never modified: the patched copy is bind-mounted over it until the stream stops.
-2. The APK traces the tracker's per-eye visual-axis vectors in the kernel and streams them to VRFT with the camera frames.
+2. The APK traces the tracker's per-eye visual-axis vectors in the kernel and streams them to VRFT with the camera frames. A sample whose vectors aren't roughly unit length is not a direction, and VRFT drops it.
 3. VRFT converts each vector to yaw and pitch, applies a per-eye calibration, filters each eye separately (a three-sample median, then a One Euro filter), and replaces the tracking module's gaze. Eye openness, pupils and all face expressions still come from the tracking module, if one is running. Without one, VRFT still sends the per-eye gaze.
 4. If eye samples stop for 250 ms, VRFT falls back to the tracking module's gaze without interrupting anything else.
 
@@ -55,7 +55,11 @@ Meta's eye tracking reports no pupil size, so streaming apps send a fixed one. V
 
 Under the headset's infrared light the pupil is the darkest round area of each eye image. VRFT finds it, outlines it halfway between its own darkness and the iris around it, fills in the lights' reflections on it, and measures its width along its longest axis, so a pupil partly under the eyelid still measures right. A snapshot where it is too faint, too small, or mostly covered, as in a blink, is skipped, and the median of the last three measurements is used so one bad snapshot does not show.
 
-Camera pixels are not millimetres, and the size in pixels depends on how far each eye sits from its camera. So each eye's width is mapped onto the range that eye has shown so far, which slowly forgets its extremes over a couple of minutes, and that onto 2 to 8 mm, a typical adult pupil's range. Dilation, what VRChat's `PupilDilation` parameters carry, is therefore right after your pupils have changed size once or twice, as they do when you look from something bright to something dark. The millimetre values are an estimate on that scale, not a measurement. Until an eye has changed by 30% its range is widened to that much, so small wobbles don't read as full dilation. After a snapshot VRFT keeps the measurement for 1.5 seconds; after that the tracking module's pupils are sent again.
+Camera pixels are not millimetres, and the size in pixels depends on how far each eye sits from its camera. So each eye's width is mapped onto the range that eye has shown over the last ten minutes, leaving out its rarest 3% at either end so a few misreadings can't stretch it, and that onto 2 to 8 mm, a typical adult pupil's range. Dilation, what VRChat's `PupilDilation` parameters carry, is therefore right after your pupils have changed size once or twice, as they do when you look from something bright to something dark. The millimetre values are an estimate on that scale, not a measurement. Until an eye has changed by 45% its range is widened to that much, so small wobbles don't read as full dilation.
+
+Pupils widen and narrow together, so VRFT checks each eye against the other. Looking aside can turn an eye away from its camera, and its lashes can then pass for a small pupil. So a width far from what that eye has shown over the last minute (below 0.6 or above 1.7 times its median) counts only when the other eye has changed the same way. A sudden change of more than 30% must also show in both eyes and hold steady for 0.6 seconds. A width held back leaves that eye's value where it was. After two seconds of that, the eye starts over from its next width, so long as it is within that band.
+
+After a measurement VRFT keeps it for 1.5 seconds. An eye without one then takes the other eye's value, and with neither the tracking module's pupils are sent again.
 
 The desktop app's Eyes page shows the dilation and each pupil under **Measure pupil size**, whose switch turns it on and off.
 
