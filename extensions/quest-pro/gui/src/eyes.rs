@@ -1,7 +1,7 @@
 //! Eyes: independent per-eye gaze from the Quest Pro, recentering, pupil
 //! size from the eye cameras, and the settings that decide what VRFT sends
 //! for each eye.
-use crate::daemon::{Settings, SettingsPatch, Status};
+use crate::daemon::{PupilMark, Settings, SettingsPatch, Status, FRAME_WIDTH};
 use crate::live::{CameraFeed, QuestProState};
 use crate::pages;
 use crate::speech::Speaker;
@@ -9,13 +9,15 @@ use crate::summary::Connection;
 use crate::summary::{self, Tone};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, Disableable as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    black, canvas, div, fill, img, point, px, relative, rgb, size, AnyElement, App, Bounds,
-    Context, Div, Entity, InteractiveElement as _, IntoElement, ObjectFit, ParentElement,
-    PathBuilder, Pixels, Render, RenderImage, RenderOnce, SharedString, Stateful,
+    black, canvas, div, fill, img, point, px, relative, rgb, size, AnyElement, App,
+    AppContext as _, Bounds, Context, Div, Entity, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement, PathBuilder, Pixels, Render, RenderImage, RenderOnce, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, StyledImage as _, Subscription, Task, Window,
 };
 use rust_i18n::t;
@@ -73,8 +75,12 @@ pub struct EyesPage {
     output_open: bool,
     /// The details show.
     details_open: bool,
+    pupil_smoothing: Entity<SliderState>,
+    /// The pupil smoothing the daemon last reported, so the slider only
+    /// follows changes made elsewhere, not every status.
+    shown_smoothing: Option<f32>,
     _action: Option<Task<()>>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl EyesPage {
@@ -82,12 +88,31 @@ impl EyesPage {
         daemon: Entity<QuestProState>,
         snapshots: Entity<CameraFeed>,
         launcher: Entity<Launcher>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let pupil_smoothing = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(1.)
+                .default_value(Settings::default().pupil_smoothing)
+        });
         let subscriptions = [
-            cx.observe(&daemon, |_, _, cx| cx.notify()),
+            cx.observe_in(&daemon, window, |page, _, window, cx| {
+                page.follow_smoothing(window, cx);
+                cx.notify();
+            }),
             cx.observe(&snapshots, |_, _, cx| cx.notify()),
             cx.observe(&launcher, |_, _, cx| cx.notify()),
+            // The number follows the drag; the setting saves on release.
+            cx.subscribe(
+                &pupil_smoothing,
+                |page, _, event: &SliderEvent, cx| match event {
+                    SliderEvent::Change(_) => cx.notify(),
+                    SliderEvent::Release(value) => page.save_smoothing(value.start().round(), cx),
+                },
+            ),
         ];
         Self {
             daemon,
@@ -98,9 +123,56 @@ impl EyesPage {
             speaker: Speaker::default(),
             output_open: false,
             details_open: false,
+            pupil_smoothing,
+            shown_smoothing: None,
             _action: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Moves the slider to a pupil smoothing changed elsewhere.
+    fn follow_smoothing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(value) = self
+            .daemon
+            .read(cx)
+            .status()
+            .map(|status| status.settings.pupil_smoothing)
+        else {
+            return;
+        };
+        if self.shown_smoothing != Some(value) {
+            self.shown_smoothing = Some(value);
+            self.pupil_smoothing
+                .update(cx, |slider, cx| slider.set_value(value, window, cx));
+        }
+    }
+
+    /// Shows the new pupil smoothing straight away, then saves it.
+    fn save_smoothing(&mut self, value: f32, cx: &mut Context<Self>) {
+        let Some(mut settings) = self
+            .daemon
+            .read(cx)
+            .status()
+            .map(|status| status.settings.clone())
+        else {
+            return;
+        };
+        settings.pupil_smoothing = value;
+        self.shown_smoothing = Some(value);
+        self.daemon
+            .update(cx, |daemon, cx| daemon.show_settings(settings, cx));
+        let client = self.daemon.read(cx).client();
+        let patch = SettingsPatch {
+            pupil_smoothing: Some(value),
+            ..SettingsPatch::default()
+        };
+        self.run(
+            move || client.update_settings(&patch),
+            None,
+            t!("eyes.couldnt_save").into(),
+            Spot::Pupils,
+            cx,
+        );
     }
 
     /// Counts down so the wearer can look away from the screen, then saves
@@ -184,6 +256,7 @@ impl EyesPage {
             "eye_swap_output" => settings.eye_swap_output = value,
             "eye_invert_yaw" => settings.eye_invert_yaw = value,
             "pupils" => settings.pupils = value,
+            "pupil_hold_closed" => settings.pupil_hold_closed = value,
             _ => return,
         }
         self.daemon
@@ -194,11 +267,12 @@ impl EyesPage {
             eye_swap_output: (key == "eye_swap_output").then_some(value),
             eye_invert_yaw: (key == "eye_invert_yaw").then_some(value),
             pupils: (key == "pupils").then_some(value),
+            pupil_hold_closed: (key == "pupil_hold_closed").then_some(value),
             ..SettingsPatch::default()
         };
         let spot = match key {
             "eye_gaze" => Spot::Tracking,
-            "pupils" => Spot::Pupils,
+            "pupils" | "pupil_hold_closed" => Spot::Pupils,
             _ => Spot::Output,
         };
         self.run(
@@ -528,6 +602,76 @@ impl EyesPage {
                         mono(millimetres(pupils.diameter_mm[1])),
                     ))
             });
+        let smoothing = self.pupil_smoothing.read(cx).value().start();
+        let smoothing_row = h_flex()
+            .gap(px(14.))
+            .child(
+                h_flex()
+                    .id("pupil-smoothing-label")
+                    .flex_none()
+                    .gap_1p5()
+                    .text_size(px(13.))
+                    .text_color(palette::text_2())
+                    .child(t!("eyes.pupil_smoothing"))
+                    .child(
+                        div()
+                            .text_color(palette::text_4())
+                            .child(Icon::new(IconName::Info).size(px(13.))),
+                    )
+                    .tooltip(|window, cx| {
+                        Tooltip::new(SharedString::from(t!("eyes.pupil_smoothing_note")))
+                            .build(window, cx)
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Slider::new(&self.pupil_smoothing).disabled(!online || !checked)),
+            )
+            .child(
+                mono(format!("{smoothing:.0}"))
+                    .w(px(32.))
+                    .flex_none()
+                    .text_right(),
+            );
+        let hold = status.map_or(Settings::default().pupil_hold_closed, |status| {
+            status.settings.pupil_hold_closed
+        });
+        let hold_row = h_flex()
+            .items_start()
+            .gap(px(14.))
+            .child(setting_text(
+                t!("eyes.pupil_hold_closed"),
+                t!("eyes.pupil_hold_closed_hint"),
+            ))
+            .child(
+                div().flex_none().mt(px(1.)).child(
+                    Switch::new("pupil-hold-closed")
+                        .accessibility_label(t!("eyes.pupil_hold_closed"))
+                        .checked(hold)
+                        .disabled(!online || !checked)
+                        .on_change(cx.listener(|page, checked: &bool, _, cx| {
+                            page.change("pupil_hold_closed", *checked, cx)
+                        })),
+                ),
+            );
+        // Why the size isn't changing, while the eyes are closed.
+        let held = pupils
+            .filter(|pupils| checked && pupils.fresh && pupils.closed)
+            .map(|_| {
+                div()
+                    .text_xs()
+                    .text_color(palette::text_3())
+                    .child(t!("eyes.pupils_held_closed"))
+            });
+        // How the snapshot shows what is found, while snapshots come.
+        let outlined = (online && checked && snapshots).then(|| {
+            div()
+                .text_xs()
+                .text_color(palette::text_3())
+                .child(t!("eyes.pupils_outlined"))
+        });
         // Why nothing is measured yet, while it's on.
         let waiting = (online && checked && readings.is_none()).then(|| {
             div()
@@ -562,8 +706,12 @@ impl EyesPage {
                         ),
                     ),
             )
+            .child(smoothing_row)
+            .child(hold_row)
             .children(readings)
+            .children(held)
             .children(waiting)
+            .children(outlined)
             .children(self.message_at(Spot::Pupils))
             .into_any_element()
     }
@@ -726,6 +874,9 @@ impl Render for EyesPage {
                 .map(|age| (status.eye_frame_sequence.unwrap_or_default(), age))
         });
         let image = snapshot.and(self.snapshots.read(cx).image());
+        let pupils = snapshot
+            .and(self.snapshots.read(cx).pupils())
+            .filter(|_| status.is_some_and(|status| status.settings.pupils));
         let two_columns = vrft_gui_core::content_width(window) >= TWO_COLUMN_WIDTH;
         // "Per-eye · 90 Hz" while it works; otherwise the state alone.
         let pill = if reading.tone == Tone::Good && !reading.detail.is_empty() {
@@ -806,7 +957,7 @@ impl Render for EyesPage {
                             .text_color(palette::text_3())
                     })),
             )
-            .child(SnapshotView { image });
+            .child(SnapshotView { image, pupils });
 
         let left = v_flex().gap_4().child(gaze).child(cameras);
         let right = v_flex()
@@ -1063,35 +1214,46 @@ impl RenderOnce for GazeView {
                             window.paint_path(path, guide);
                         }
 
-                        // The head the eyes sit in, cut off by the bottom edge.
-                        let (rx, ry) = (24. * unit, 11. * unit);
-                        let (hx, hy) = (middle, base + ry - 3. * unit);
-                        let k = 0.5523;
-                        let mut head = PathBuilder::stroke(px(1.));
-                        head.move_to(at(hx + rx, hy));
+                        // The head seen from above, its back cut off by the
+                        // bottom edge: the eyes sit near its front, and its
+                        // nose points the way it faces.
+                        let outline = palette::text_4();
+                        let radius = 19. * unit;
+                        let (hx, hy) = (middle, base + 13. * unit);
+                        let k = 0.5523 * radius;
+                        let mut head = PathBuilder::stroke(px(1.5));
+                        head.move_to(at(hx + radius, hy));
                         head.cubic_bezier_to(
-                            at(hx, hy + ry),
-                            at(hx + rx, hy + k * ry),
-                            at(hx + k * rx, hy + ry),
+                            at(hx, hy + radius),
+                            at(hx + radius, hy + k),
+                            at(hx + k, hy + radius),
                         );
                         head.cubic_bezier_to(
-                            at(hx - rx, hy),
-                            at(hx - k * rx, hy + ry),
-                            at(hx - rx, hy + k * ry),
+                            at(hx - radius, hy),
+                            at(hx - k, hy + radius),
+                            at(hx - radius, hy + k),
                         );
                         head.cubic_bezier_to(
-                            at(hx, hy - ry),
-                            at(hx - rx, hy - k * ry),
-                            at(hx - k * rx, hy - ry),
+                            at(hx, hy - radius),
+                            at(hx - radius, hy - k),
+                            at(hx - k, hy - radius),
                         );
                         head.cubic_bezier_to(
-                            at(hx + rx, hy),
-                            at(hx + k * rx, hy - ry),
-                            at(hx + rx, hy - k * ry),
+                            at(hx + radius, hy),
+                            at(hx + k, hy - radius),
+                            at(hx + radius, hy - k),
                         );
                         head.close();
                         if let Ok(path) = head.build() {
-                            window.paint_path(path, rgb(0x34343a));
+                            window.paint_path(path, outline);
+                        }
+                        let front = hy - radius;
+                        let mut nose = PathBuilder::stroke(px(1.5));
+                        nose.move_to(at(hx - 3.5 * unit, front + 0.5 * unit));
+                        nose.line_to(at(hx, front - 4.5 * unit));
+                        nose.line_to(at(hx + 3.5 * unit, front + 0.5 * unit));
+                        if let Ok(path) = nose.build() {
+                            window.paint_path(path, outline);
                         }
 
                         let eyes = [
@@ -1170,13 +1332,25 @@ impl RenderOnce for GazeView {
                 .size_full(),
             )
             .children(labels)
+            .child(
+                div()
+                    .absolute()
+                    .right(px(10.))
+                    .top(px(8.))
+                    .text_size(px(10.))
+                    .text_color(palette::text_3())
+                    .child(t!("eyes.seen_from_above")),
+            )
     }
 }
 
-/// The latest eye camera snapshot, or a placeholder when there is none.
+/// The latest eye camera snapshot, or a placeholder when there is none, with
+/// the pupils found in it outlined.
 #[derive(IntoElement)]
 struct SnapshotView {
     image: Option<Arc<RenderImage>>,
+    /// The pupils found in `image`, left view then right.
+    pupils: Option<[Option<PupilMark>; 2]>,
 }
 
 impl RenderOnce for SnapshotView {
@@ -1193,7 +1367,8 @@ impl RenderOnce for SnapshotView {
             // Camera snapshots are grayscale raster data on black.
             Some(image) => view
                 .bg(black())
-                .child(img(image).size_full().object_fit(ObjectFit::Contain)),
+                .child(img(image).size_full().object_fit(ObjectFit::Contain))
+                .children(self.pupils.map(pupil_outlines)),
             None => view.bg(palette::sunken()).child(EmptyState::new(
                 IconName::CameraOff,
                 t!("eyes.no_eye_images"),
@@ -1201,6 +1376,61 @@ impl RenderOnce for SnapshotView {
             )),
         }
     }
+}
+
+/// Line segments in a pupil's outline.
+const PUPIL_OUTLINE_STEPS: usize = 32;
+
+/// Each pupil found outlined over the snapshot, which fills its view: solid
+/// where its size is used, dashed while it waits for the other eye to agree.
+fn pupil_outlines(pupils: [Option<PupilMark>; 2]) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window, _| {
+            let scale = bounds.size.width.as_f32() / FRAME_WIDTH as f32;
+            let origin = bounds.origin;
+            let at = |x: f32, y: f32| point(origin.x + px(x), origin.y + px(y));
+            for mark in pupils.into_iter().flatten() {
+                let (sin, cos) = mark.angle.sin_cos();
+                let [a, b] = mark.axes.map(|axis| axis / 2. * scale);
+                let [x, y] = mark.centre.map(|value| value * scale);
+                let around = |turn: f32| {
+                    let (u, v) = (a * turn.cos(), b * turn.sin());
+                    at(x + u * cos - v * sin, y + u * sin + v * cos)
+                };
+                let (width, colour) = if mark.used {
+                    (px(1.5), palette::good())
+                } else {
+                    (px(1.5), palette::signal())
+                };
+                let mut outline = PathBuilder::stroke(width);
+                if !mark.used {
+                    outline = outline.dash_array(&[px(3.), px(3.)]);
+                }
+                outline.move_to(around(0.));
+                for step in 1..=PUPIL_OUTLINE_STEPS {
+                    outline.line_to(around(
+                        step as f32 * std::f32::consts::TAU / PUPIL_OUTLINE_STEPS as f32,
+                    ));
+                }
+                if let Ok(path) = outline.build() {
+                    window.paint_path(path, colour);
+                }
+                let mut centre = PathBuilder::stroke(px(1.));
+                centre.move_to(at(x - 3., y));
+                centre.line_to(at(x + 3., y));
+                centre.move_to(at(x, y - 3.));
+                centre.line_to(at(x, y + 3.));
+                if let Ok(path) = centre.build() {
+                    window.paint_path(path, colour);
+                }
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// How far ahead of the eyes, in the drawing's pixels, two gaze rays from

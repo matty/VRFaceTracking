@@ -1,6 +1,8 @@
 //! Live Quest Pro state: this extension's part of the daemon's polled status,
 //! and the camera images while a page shows them.
-use crate::daemon::{Camera, Frame, QuestProClient, Settings, Status, FRAME_HEIGHT, FRAME_WIDTH};
+use crate::daemon::{
+    Camera, Frame, PupilMark, QuestProClient, Settings, Status, FRAME_HEIGHT, FRAME_WIDTH,
+};
 use crate::summary::{Connection, Rates};
 use gpui_kit::{Context, Entity, RenderImage, Subscription, Task};
 use std::sync::Arc;
@@ -94,6 +96,8 @@ pub struct CameraFeed {
     /// never loses a texture that a frame on screen still uses.
     previous: Option<Arc<RenderImage>>,
     sequence: Option<u64>,
+    /// For eye snapshots, the pupils found in `image`.
+    pupils: Option<[Option<PupilMark>; 2]>,
     watching: bool,
     _poll: Task<()>,
 }
@@ -120,11 +124,17 @@ impl CameraFeed {
             let client = client.clone();
             let frame = cx
                 .background_executor()
-                .spawn(async move { client.frame(camera, shown).ok().flatten().map(decode) })
+                .spawn(async move {
+                    client.frame(camera, shown).ok().flatten().map(|frame| {
+                        let pupils = frame.pupils;
+                        let (sequence, image) = decode(frame);
+                        (sequence, image, pupils)
+                    })
+                })
                 .await;
-            if let Some((sequence, image)) = frame {
+            if let Some((sequence, image, pupils)) = frame {
                 if this
-                    .update(cx, |camera, cx| camera.show(sequence, image, cx))
+                    .update(cx, |camera, cx| camera.show(sequence, image, pupils, cx))
                     .is_err()
                 {
                     break;
@@ -136,12 +146,19 @@ impl CameraFeed {
             image: None,
             previous: None,
             sequence: None,
+            pupils: None,
             watching: false,
             _poll: poll,
         }
     }
 
-    fn show(&mut self, sequence: u64, image: Arc<RenderImage>, cx: &mut Context<Self>) {
+    fn show(
+        &mut self,
+        sequence: u64,
+        image: Arc<RenderImage>,
+        pupils: Option<[Option<PupilMark>; 2]>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.watching || self.sequence == Some(sequence) {
             return;
         }
@@ -150,6 +167,7 @@ impl CameraFeed {
         }
         self.previous = self.image.replace(image);
         self.sequence = Some(sequence);
+        self.pupils = pupils;
         cx.notify();
     }
 
@@ -166,12 +184,18 @@ impl CameraFeed {
                 cx.drop_image(image, None);
             }
             self.sequence = None;
+            self.pupils = None;
         }
         cx.notify();
     }
 
     pub fn image(&self) -> Option<Arc<RenderImage>> {
         self.image.clone()
+    }
+
+    /// For eye snapshots, the pupils found in the image shown.
+    pub fn pupils(&self) -> Option<[Option<PupilMark>; 2]> {
+        self.pupils
     }
 }
 

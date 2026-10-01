@@ -53,8 +53,16 @@ impl QuestProClient {
         if shown == Some(sequence) {
             return Ok(None);
         }
+        // What the pupil search found in an eye snapshot, for drawing over it.
+        let pupils = response
+            .headers()
+            .get(PUPILS_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| serde_json::from_str(value).ok());
         let pixels = response.body_mut().read_to_vec()?;
-        Frame::new(sequence, pixels).map(Some)
+        let mut frame = Frame::new(sequence, pixels)?;
+        frame.pupils = pupils;
+        Ok(Some(frame))
     }
 
     /// Changes some Quest Pro settings and returns all of them.
@@ -231,6 +239,8 @@ pub enum Camera {
 pub struct Frame {
     pub sequence: u64,
     pub pixels: Vec<u8>,
+    /// For an eye snapshot, the pupils found in it, left view then right.
+    pub pupils: Option<[Option<PupilMark>; 2]>,
 }
 
 impl Frame {
@@ -241,7 +251,11 @@ impl Frame {
                 pixels.len()
             );
         }
-        Ok(Self { sequence, pixels })
+        Ok(Self {
+            sequence,
+            pixels,
+            pupils: None,
+        })
     }
 
     /// The frame as BGRA, the pixel order GPUI images use.

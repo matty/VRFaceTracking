@@ -12,10 +12,15 @@ pub use vrft_quest_pro_protocol::{
 
 /// Settings that are safe to use, with smoothing clamped to its range.
 fn validated(mut settings: QuestProSettings) -> Result<QuestProSettings, String> {
-    if !settings.tongue_smoothing.is_finite() {
-        return Err("tongue_smoothing must be a number".into());
+    for (name, smoothing) in [
+        ("tongue_smoothing", &mut settings.tongue_smoothing),
+        ("pupil_smoothing", &mut settings.pupil_smoothing),
+    ] {
+        if !smoothing.is_finite() {
+            return Err(format!("{name} must be a number"));
+        }
+        *smoothing = smoothing.clamp(0.0, 100.0);
     }
-    settings.tongue_smoothing = settings.tongue_smoothing.clamp(0.0, 100.0);
     if let Some(offsets) = settings.eye_offsets {
         let values = offsets.left_deg.iter().chain(offsets.right_deg.iter());
         if values
@@ -179,6 +184,13 @@ mod tests {
                 .unwrap()
                 .tongue_smoothing,
             100.0
+        );
+        assert_eq!(
+            store
+                .merge(&json!({"pupil_smoothing": -5}))
+                .unwrap()
+                .pupil_smoothing,
+            0.0
         );
         fs::remove_dir_all(root).unwrap();
     }

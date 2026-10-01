@@ -53,9 +53,14 @@ rust-i18n = "4"
 sys-locale = "0.3"
 
 # The tongue model (Burn) is unusably slow unoptimised, and dev builds run
-# live tracking, so optimise dependencies and vrft-tongue even in debug.
+# live tracking, so optimise dependencies and vrft-tongue even in debug. The
+# Quest Pro pupil search runs on the thread that receives camera frames, so
+# that crate too.
 [profile.dev.package."*"]
 opt-level = 3
 
 [profile.dev.package.vrft-tongue]
+opt-level = 3
+
+[profile.dev.package.vrft-quest-pro-daemon]
 opt-level = 3

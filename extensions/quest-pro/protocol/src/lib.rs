@@ -21,6 +21,9 @@ pub const FRAME_HEIGHT: u32 = 400;
 pub const FRAME_BYTES: usize = (FRAME_WIDTH * FRAME_HEIGHT) as usize;
 /// Response header carrying a camera frame's sequence number.
 pub const FRAME_SEQUENCE_HEADER: &str = "x-frame-sequence";
+/// Response header on an eye snapshot carrying the pupils found in it, as
+/// JSON: a [`PupilMark`] or `null` for the left view, then the right.
+pub const PUPILS_HEADER: &str = "x-pupils";
 
 /// The tongue model's outputs: visibility, extension, horizontal, vertical,
 /// six shape heads, then the left and right cheek puff.
@@ -39,7 +42,8 @@ pub mod routes {
     /// [`FRAME_SEQUENCE_HEADER`](super::FRAME_SEQUENCE_HEADER); 204 before
     /// the first.
     pub const FRAME: &str = "/frame";
-    /// GET: the latest eye camera snapshot, as [`FRAME`] is sent.
+    /// GET: the latest eye camera snapshot, as [`FRAME`] is sent, with the
+    /// pupils found in it in [`PUPILS_HEADER`](super::PUPILS_HEADER).
     pub const EYE_FRAME: &str = "/eye-frame";
     /// GET [`Settings`](super::Settings); POST a
     /// [`SettingsPatch`](super::SettingsPatch), answered with them all.
@@ -259,8 +263,25 @@ pub struct PupilStatus {
     /// Each eye's pupil as sent, in millimetres, from the left then the
     /// right half of the snapshot.
     pub diameter_mm: [Option<f32>; 2],
-    /// How dilated the pupils are, 0 to 1 of the range seen so far.
+    /// How dilated the pupils are as sent, 0 to 1 of the range seen so far.
     pub dilation: Option<f32>,
+    /// Whether the size is held because the headset reports the eyes closed.
+    pub closed: bool,
+}
+
+/// A pupil found in an eye snapshot, in the whole snapshot's pixels, for
+/// drawing over it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PupilMark {
+    /// Its centre, across then down.
+    pub centre: [f32; 2],
+    /// Its widths along its longest and shortest axes.
+    pub axes: [f32; 2],
+    /// The longest axis's angle from across, in radians, towards down.
+    pub angle: f32,
+    /// Whether its size was used, rather than held back until the other eye
+    /// shows the same change.
+    pub used: bool,
 }
 
 /// The latest gaze, in degrees.
@@ -301,6 +322,12 @@ pub struct Settings {
     pub cheek_puffs: bool,
     /// Measure pupil size from the eye camera snapshots.
     pub pupils: bool,
+    /// 0 sends each pupil measurement as it comes, 100 follows them most
+    /// slowly.
+    pub pupil_smoothing: f32,
+    /// Keep the pupil size where it is while the headset reports the eyes
+    /// closed, rather than measuring the lids.
+    pub pupil_hold_closed: bool,
 }
 
 impl Default for Settings {
@@ -315,6 +342,8 @@ impl Default for Settings {
             eye_offsets: None,
             cheek_puffs: true,
             pupils: true,
+            pupil_smoothing: 40.0,
+            pupil_hold_closed: true,
         }
     }
 }
@@ -340,6 +369,10 @@ pub struct SettingsPatch {
     pub cheek_puffs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pupils: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pupil_smoothing: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pupil_hold_closed: Option<bool>,
 }
 
 /// How the camera model's visibility confidence combines with the tracking

@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use vrft_api::UnifiedTrackingData;
-use vrft_quest_pro_protocol::PupilStatus;
+use vrft_quest_pro_protocol::{PupilMark, PupilStatus};
 
 /// Snapshots come a few times a second; a measurement stays in use this long.
 pub const PUPIL_FRESH_FOR: Duration = Duration::from_millis(1500);
@@ -31,19 +31,45 @@ const VIEW: usize = vrft_quest_pro_protocol::FRAME_HEIGHT as usize;
 const STRIP: usize = vrft_quest_pro_protocol::FRAME_WIDTH as usize;
 const SCALE: usize = 2;
 const SIZE: usize = VIEW / SCALE;
-/// The pupil's darkest point is looked for this far inside the view.
+/// Candidates are looked for this far inside the view.
 const MARGIN: usize = SIZE / 10;
-/// Blur radii: a wide one finds the largest dark area, which is the pupil
-/// rather than a lash or a shadow's edge; a narrow one outlines it.
+/// A pupil found in the last `TRACK_FOR` is kept to while a candidate lies
+/// within this many half resolution pixels of it, so the search follows it
+/// rather than a clearer dark spot elsewhere, such as lashes or a shadow
+/// when the eye turns.
+const TRACK_RADIUS: usize = SIZE / 8;
+const TRACK_FOR: Duration = Duration::from_secs(1);
+/// The headset's lights reflect off the eye and its lens as bright specks,
+/// several on the pupil itself. An opening this many pixels each way (the
+/// darkest value around each pixel, then the brightest of those) removes
+/// them and leaves dark shapes whole. On real snapshots 1 missed a pupil
+/// and gave more stray widths, and 3 spread the widths further.
+const OPEN: usize = 2;
+/// Where a pupil may be: dark spots whose surroundings are brighter all
+/// round, at these radii, with anything brighter than this share of the
+/// view's pixels clipped so the lights don't count as surroundings. A large
+/// dark area, such as the black around the headset's lens, isn't one.
+const BLOB_RADII: [usize; 4] = [3, 5, 8, 12];
+const CLIP_SHARE: f32 = 0.9;
+/// Up to this many candidates are outlined, clearest first, each at least
+/// `SEPARATION` pixels from the others, while they stand out by at least
+/// `MIN_RESPONSE`.
+const CANDIDATES: usize = 12;
+const SEPARATION: usize = 10;
+const MIN_RESPONSE: f32 = 0.05;
+/// Blur radii: the darkest point this near a candidate starts its outline,
+/// which follows a narrow blur.
 const SEED_BLUR: usize = 4;
 const EDGE_BLUR: usize = 1;
-/// The pupil must be this much darker than the view's middle brightness,
-/// and at most [`MAX_RELATIVE_LEVEL`] of it: under infrared light the pupil
-/// is near black, the iris only somewhat darker than skin.
-const MIN_CONTRAST: u8 = 18;
-const MAX_RELATIVE_LEVEL: f32 = 0.45;
-/// How far from the pupil's darkest point towards the view's middle
-/// brightness its edge is taken to be.
+/// A pupil must be this much darker than the middle brightness within
+/// `LOCAL` pixels of it, and at most [`MAX_RELATIVE_LEVEL`] of it: under
+/// infrared light the pupil is near black, the iris only somewhat darker
+/// than skin, while the view as a whole can be darker than both.
+const LOCAL: usize = 20;
+const MIN_CONTRAST: f32 = 10.0;
+const MAX_RELATIVE_LEVEL: f32 = 0.6;
+/// How far from the pupil's darkest point towards the brightness around it
+/// its edge is taken to be.
 const EDGE_LEVEL: f32 = 0.4;
 /// Plausible pupil areas at half resolution, in pixels.
 const MIN_AREA: usize = 12;
@@ -53,8 +79,22 @@ const MIN_ASPECT: f32 = 0.45;
 /// How much of the ellipse its moments describe the area must fill.
 const FILL: std::ops::RangeInclusive<f32> = 0.6..=1.3;
 
-/// Smoothing of each eye's dilation.
-const SMOOTHING: Duration = Duration::from_millis(350);
+/// How long the size sent for each eye takes to come most of the way (63%)
+/// to a new measurement at a `pupil_smoothing` of 100, and in proportion
+/// below that; at 0 each measurement is sent as it comes. Pupils take about
+/// a second to narrow in bright light and longer to widen again, so the
+/// default 40, a second, keeps up with them while evening out the wobble
+/// from one snapshot to the next.
+const SLOWEST: Duration = Duration::from_millis(2500);
+/// With `pupil_hold_closed`, the eye openness the tracking module reports
+/// (1 open, 0 shut) below which an eye counts as closed. Either eye closed
+/// holds both: eyes blink together, and it needn't be known which half of
+/// the snapshot is which eye.
+const CLOSED: f32 = 0.3;
+/// A snapshot that arrives this soon after an eye was reported closed isn't
+/// measured: the openness and the snapshots come by different routes, and a
+/// lid still lifting hides part of the pupil.
+const CLOSED_WINDOW: Duration = Duration::from_millis(300);
 /// Accepted measurements further apart than this start the eye over, all
 /// but its range.
 const GAP: Duration = Duration::from_secs(2);
@@ -83,27 +123,26 @@ const JUMP_STEADY: f32 = 0.15;
 /// share as much, in ratio terms.
 const AGREE: f32 = 0.5;
 
-/// Box blur of a `SIZE` square image, `radius` pixels each way.
+/// Box blur of a `SIZE` square image, `radius` pixels each way, from
+/// running sums.
 fn blur(image: &[f32], radius: usize) -> Vec<f32> {
     let pass = |source: &[f32], horizontal: bool| {
         let mut out = vec![0f32; SIZE * SIZE];
+        let mut sums = vec![0f32; SIZE + 1];
         for a in 0..SIZE {
+            let at = |c: usize| {
+                if horizontal {
+                    a * SIZE + c
+                } else {
+                    c * SIZE + a
+                }
+            };
+            for c in 0..SIZE {
+                sums[c + 1] = sums[c] + source[at(c)];
+            }
             for b in 0..SIZE {
                 let (low, high) = (b.saturating_sub(radius), (b + radius).min(SIZE - 1));
-                let mut total = 0f32;
-                for c in low..=high {
-                    total += if horizontal {
-                        source[a * SIZE + c]
-                    } else {
-                        source[c * SIZE + a]
-                    };
-                }
-                let value = total / (high - low + 1) as f32;
-                if horizontal {
-                    out[a * SIZE + b] = value;
-                } else {
-                    out[b * SIZE + a] = value;
-                }
+                out[at(b)] = (sums[high + 1] - sums[low]) / (high - low + 1) as f32;
             }
         }
         out
@@ -111,10 +150,103 @@ fn blur(image: &[f32], radius: usize) -> Vec<f32> {
     pass(&pass(image, true), false)
 }
 
+/// The darkest value within `radius` pixels each way of each pixel, or with
+/// `brightest`, the brightest.
+fn extreme(image: &[f32], radius: usize, brightest: bool) -> Vec<f32> {
+    let pass = |source: &[f32], horizontal: bool| {
+        let mut out = vec![0f32; SIZE * SIZE];
+        for a in 0..SIZE {
+            let at = |c: usize| {
+                if horizontal {
+                    a * SIZE + c
+                } else {
+                    c * SIZE + a
+                }
+            };
+            for b in 0..SIZE {
+                let values =
+                    (b.saturating_sub(radius)..=(b + radius).min(SIZE - 1)).map(|c| source[at(c)]);
+                out[at(b)] = if brightest {
+                    values.fold(f32::MIN, f32::max)
+                } else {
+                    values.fold(f32::MAX, f32::min)
+                };
+            }
+        }
+        out
+    };
+    pass(&pass(image, true), false)
+}
+
+/// Where a pupil may be, clearest first: see [`BLOB_RADII`].
+fn candidates(image: &[f32]) -> Vec<usize> {
+    let mut sorted = image.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let cap = sorted[((sorted.len() - 1) as f32 * CLIP_SHARE) as usize];
+    let clipped: Vec<f32> = image.iter().map(|value| value.min(cap)).collect();
+    let mut response = vec![0f32; SIZE * SIZE];
+    for radius in BLOB_RADII {
+        let (spot, around) = (blur(&clipped, radius), blur(&clipped, 2 * radius));
+        for ((response, spot), around) in response.iter_mut().zip(&spot).zip(&around) {
+            // Relative, so a dim view counts as a bright one; the 8 keeps
+            // near black surroundings from standing out.
+            *response = response.max((around - spot) / (around + 8.0));
+        }
+    }
+    let inner = MARGIN..SIZE - MARGIN;
+    let mut taken = vec![false; SIZE * SIZE];
+    let mut seeds = vec![];
+    while seeds.len() < CANDIDATES {
+        let Some(best) = inner
+            .clone()
+            .flat_map(|y| inner.clone().map(move |x| y * SIZE + x))
+            .filter(|&index| !taken[index])
+            .max_by(|a, b| response[*a].total_cmp(&response[*b]))
+            .filter(|&index| response[index] > MIN_RESPONSE)
+        else {
+            break;
+        };
+        seeds.push(best);
+        let (x, y) = (best % SIZE, best / SIZE);
+        let apart =
+            |centre: usize| centre.saturating_sub(SEPARATION)..(centre + SEPARATION + 1).min(SIZE);
+        for y in apart(y) {
+            for x in apart(x) {
+                taken[y * SIZE + x] = true;
+            }
+        }
+    }
+    seeds
+}
+
+/// The middle brightness within `LOCAL` pixels of `seed`.
+fn local_level(image: &[f32], seed: usize) -> f32 {
+    let (x, y) = (seed % SIZE, seed / SIZE);
+    let span = |centre: usize| centre.saturating_sub(LOCAL)..(centre + LOCAL + 1).min(SIZE);
+    median(span(y).flat_map(|y| span(x).map(move |x| image[y * SIZE + x]))).unwrap_or_default()
+}
+
+/// A pupil found in one view, in snapshot pixels: its centre within the
+/// view, across then down, its widths along its longest and shortest axes,
+/// and the longest axis's angle from across, in radians (towards down).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fit {
+    pub centre: [f32; 2],
+    pub axes: [f32; 2],
+    pub angle: f32,
+}
+
 /// The pupil's width in snapshot pixels in `view` (0 for the left half of
 /// the strip, 1 for the right), or `None` when no pupil shows, as when the
 /// eye is closed.
+#[cfg(test)]
 pub fn measure(strip: &[u8], view: usize) -> Option<f32> {
+    find(strip, view, None).map(|fit| fit.axes[0])
+}
+
+/// The pupil in `view`, looked for first around `near`, where it was last
+/// found (in the view's pixels), when given; `None` when no pupil shows.
+pub fn find(strip: &[u8], view: usize, near: Option<[f32; 2]>) -> Option<Fit> {
     if strip.len() != STRIP * VIEW || view > 1 {
         return None;
     }
@@ -132,31 +264,31 @@ pub fn measure(strip: &[u8], view: usize) -> Option<f32> {
             image[y * SIZE + x] = total as f32 / (SCALE * SCALE) as f32;
         }
     }
-    let wide = blur(&image, SEED_BLUR);
+    let image = extreme(&extreme(&image, OPEN, false), OPEN, true);
     let edge = blur(&image, EDGE_BLUR);
-    let inner = MARGIN..SIZE - MARGIN;
-    let (mut seed, mut darkest) = (0, f32::MAX);
-    let mut levels = [0u32; 256];
-    for y in inner.clone() {
-        for x in inner.clone() {
-            let index = y * SIZE + x;
-            if wide[index] < darkest {
-                (seed, darkest) = (index, wide[index]);
-            }
-            levels[edge[index].round().clamp(0.0, 255.0) as usize] += 1;
-        }
-    }
-    let half = (inner.len() * inner.len()) as u32 / 2;
-    let mut seen = 0;
-    let middle = levels
-        .iter()
-        .position(|&count| {
-            seen += count;
-            seen >= half
-        })
-        .unwrap_or(255) as f32;
-    // The widely blurred minimum can sit on a glint; start from the darkest
-    // pixel near it instead.
+    let found: Vec<(Fit, f32)> = candidates(&image)
+        .into_iter()
+        .filter_map(|seed| outline(&edge, local_level(&edge, seed), seed))
+        .collect();
+    let clearest = |a: &&(Fit, f32), b: &&(Fit, f32)| a.1.total_cmp(&b.1);
+    // The pupil seen last, while it is still there; else the clearest.
+    let reach = (TRACK_RADIUS * SCALE) as f32;
+    let tracked = near.and_then(|[x, y]| {
+        found
+            .iter()
+            .filter(|(fit, _)| (fit.centre[0] - x).hypot(fit.centre[1] - y) <= reach)
+            .max_by(clearest)
+    });
+    tracked
+        .or_else(|| found.iter().max_by(clearest))
+        .map(|(fit, _)| *fit)
+}
+
+/// The pupil around the candidate `seed`, measured against the `middle`
+/// brightness around it, and how clearly it stands out; `None` when what is
+/// there is too faint, too large or the wrong shape to be one.
+fn outline(edge: &[f32], middle: f32, seed: usize) -> Option<(Fit, f32)> {
+    // Start from the darkest pixel near the candidate's centre.
     let (x, y) = (seed % SIZE, seed / SIZE);
     let near = |centre: usize| centre.saturating_sub(SEED_BLUR)..(centre + SEED_BLUR + 1).min(SIZE);
     let seed = near(y)
@@ -164,20 +296,32 @@ pub fn measure(strip: &[u8], view: usize) -> Option<f32> {
         .min_by(|a, b| edge[*a].total_cmp(&edge[*b]))
         .unwrap_or(seed);
     let dark = edge[seed];
-    if middle - dark < f32::from(MIN_CONTRAST) || dark > middle * MAX_RELATIVE_LEVEL {
+    if middle - dark < MIN_CONTRAST || dark > middle * MAX_RELATIVE_LEVEL {
         return None;
     }
     // A first outline, then the edge halfway between the pupil and what
     // surrounds it, which is where a blurred edge really is.
-    let rough = grow(&edge, seed, dark + (middle - dark) * EDGE_LEVEL)?;
-    let (inside, around) = levels_around(&edge, &rough);
-    let pupil = grow(&edge, seed, (inside + around) / 2.0)?;
-    let (area, major, minor) = shape(&fill_holes(&pupil))?;
-    let fill = area / (std::f32::consts::FRAC_PI_4 * major * minor);
-    if area < MIN_AREA as f32 || minor / major < MIN_ASPECT || !FILL.contains(&fill) {
+    let rough = grow(edge, seed, dark + (middle - dark) * EDGE_LEVEL)?;
+    let (inside, around) = levels_around(edge, &rough);
+    let pupil = grow(edge, seed, (inside + around) / 2.0)?;
+    let ellipse = shape(&fill_holes(&pupil))?;
+    let fill = ellipse.area / (std::f32::consts::FRAC_PI_4 * ellipse.major * ellipse.minor);
+    if ellipse.area < MIN_AREA as f32
+        || ellipse.minor / ellipse.major < MIN_ASPECT
+        || !FILL.contains(&fill)
+    {
         return None;
     }
-    Some(major * SCALE as f32)
+    // A half resolution pixel covers `SCALE` of the snapshot's each way.
+    let scale = SCALE as f32;
+    let fit = Fit {
+        centre: [(ellipse.x + 0.5) * scale, (ellipse.y + 0.5) * scale],
+        axes: [ellipse.major * scale, ellipse.minor * scale],
+        angle: ellipse.angle,
+    };
+    // Darker against its surroundings and rounder is clearer.
+    let clarity = (around - inside) / around.max(1.0) * ellipse.minor / ellipse.major;
+    Some((fit, clarity))
 }
 
 /// The pixels no brighter than `threshold` joined to `seed`, or `None` when
@@ -283,9 +427,19 @@ fn fill_holes(pixels: &[usize]) -> Vec<usize> {
         .collect()
 }
 
-/// Area, and the widths along the longest and shortest axes of the ellipse
-/// with the same second moments.
-fn shape(pixels: &[usize]) -> Option<(f32, f32, f32)> {
+/// The ellipse with the same second moments as some pixels, at half
+/// resolution: their area and centre, its widths along its longest and
+/// shortest axes, and the longest axis's angle from across.
+struct Ellipse {
+    area: f32,
+    x: f32,
+    y: f32,
+    major: f32,
+    minor: f32,
+    angle: f32,
+}
+
+fn shape(pixels: &[usize]) -> Option<Ellipse> {
     let count = pixels.len() as f64;
     if count == 0.0 {
         return None;
@@ -308,11 +462,14 @@ fn shape(pixels: &[usize]) -> Option<(f32, f32, f32)> {
     let spread = ((xx - yy).powi(2) / 4.0 + xy * xy).sqrt();
     let (major, minor) = ((xx + yy) / 2.0 + spread, (xx + yy) / 2.0 - spread);
     // A filled ellipse's variance along an axis is a quarter of its semi-axis squared.
-    Some((
-        count as f32,
-        (4.0 * major.sqrt()) as f32,
-        (4.0 * minor.max(0.0).sqrt()) as f32,
-    ))
+    Some(Ellipse {
+        area: count as f32,
+        x: mean_x as f32,
+        y: mean_y as f32,
+        major: (4.0 * major.sqrt()) as f32,
+        minor: (4.0 * minor.max(0.0).sqrt()) as f32,
+        angle: (0.5 * (2.0 * xy).atan2(xx - yy)) as f32,
+    })
 }
 
 /// The middle of `values`, the upper one of an even count.
@@ -348,7 +505,7 @@ struct EyeTrack {
     /// typical width.
     history: VecDeque<(Instant, f32)>,
     jump: Option<Jump>,
-    /// Where the eye sits in its range, 0 to 1, smoothed.
+    /// Where the eye sat in its range, 0 to 1, when last measured.
     dilation: Option<f32>,
     /// When a width was last accepted.
     last: Option<Instant>,
@@ -501,16 +658,8 @@ impl EyeTrack {
         let [low, high] = RANGE_SHARES.map(share);
         let middle = (low + high) / 2.0;
         let span = (high - low).max(MIN_SPAN * share(0.5)).max(f32::EPSILON);
-        let target = ((width - middle) / span + 0.5).clamp(0.0, 1.0);
-        let elapsed = self.last.map(|last| at.saturating_duration_since(last));
+        let dilation = ((width - middle) / span + 0.5).clamp(0.0, 1.0);
         self.last = Some(at);
-        let dilation = match (self.dilation, elapsed) {
-            (Some(previous), Some(elapsed)) => {
-                let alpha = 1.0 - (-elapsed.as_secs_f32() / SMOOTHING.as_secs_f32()).exp();
-                previous + (target - previous) * alpha
-            }
-            _ => target,
-        };
         self.dilation = Some(dilation);
         dilation
     }
@@ -547,9 +696,31 @@ struct PupilSample {
 #[derive(Default)]
 struct Shared {
     latest: Option<PupilSample>,
+    /// Each eye's dilation as last sent, smoothed, and when.
+    sent: Option<([f32; 2], Instant)>,
     /// When recent snapshots were measured, for the rate.
     measured: VecDeque<Instant>,
     missed: u64,
+    /// When an eye was last reported closed, while sizes are held then.
+    closed_at: Option<Instant>,
+}
+
+impl Shared {
+    /// The latest measurement, while it is recent or the eyes have been
+    /// closed since: it is held while they are.
+    fn fresh(&self) -> Option<PupilSample> {
+        self.latest.filter(|sample| {
+            let since = self
+                .closed_at
+                .map_or(sample.at, |closed| closed.max(sample.at));
+            since.elapsed() <= PUPIL_FRESH_FOR
+        })
+    }
+
+    fn closed(&self, at: Instant) -> bool {
+        self.closed_at
+            .is_some_and(|closed| at.saturating_duration_since(closed) <= CLOSED_WINDOW)
+    }
 }
 
 /// Pupil sizes as the stream measures them, shared with the overlay and
@@ -562,15 +733,22 @@ impl PupilState {
         PupilProcessor {
             state: self.clone(),
             eyes: Default::default(),
+            seen: [None; 2],
         }
     }
 
     fn fresh(&self) -> Option<PupilSample> {
-        self.0
-            .read()
-            .unwrap()
-            .latest
-            .filter(|sample| sample.at.elapsed() <= PUPIL_FRESH_FOR)
+        self.0.read().unwrap().fresh()
+    }
+
+    /// Notes at `at` whether an eye is closed, when the size is to be
+    /// `held` then; forgets it when not.
+    fn note_eyes(&self, closed: bool, held: bool, at: Instant) {
+        if closed {
+            self.0.write().unwrap().closed_at = Some(at);
+        } else if !held && self.0.read().unwrap().closed_at.is_some() {
+            self.0.write().unwrap().closed_at = None;
+        }
     }
 
     pub fn status(&self, settings: &QuestProSettings) -> PupilStatus {
@@ -581,18 +759,23 @@ impl PupilState {
             .iter()
             .filter(|at| cutoff.is_none_or(|cutoff| **at >= cutoff))
             .count();
-        let sample = shared
-            .latest
-            .filter(|sample| settings.pupils && sample.at.elapsed() <= PUPIL_FRESH_FOR);
+        let sample = shared.fresh().filter(|_| settings.pupils);
+        // As sent, where it is being; else as measured.
+        let dilation = sample.map(|sample| {
+            shared
+                .sent
+                .filter(|(_, at)| at.elapsed() <= PUPIL_FRESH_FOR)
+                .map_or_else(|| both(sample.dilation), |(sent, _)| sent.map(Some))
+        });
         PupilStatus {
             fresh: sample.is_some(),
             rate_hz: recent as f32 / 5.0,
             missed: shared.missed,
-            diameter_mm: sample.map_or([None; 2], |sample| {
-                let [left, right] = both(sample.dilation);
-                [left.map(millimetres), right.map(millimetres)]
+            diameter_mm: dilation.map_or([None; 2], |dilation| {
+                dilation.map(|eye| eye.map(millimetres))
             }),
-            dilation: sample.and_then(|sample| mean(both(sample.dilation))),
+            dilation: dilation.and_then(mean),
+            closed: sample.is_some() && shared.closed(Instant::now()),
         }
     }
 }
@@ -614,54 +797,122 @@ fn mean(values: [Option<f32>; 2]) -> Option<f32> {
 pub struct PupilProcessor {
     state: PupilState,
     eyes: [EyeTrack; 2],
+    /// Where each eye's pupil was last found, in its view, and when.
+    seen: [Option<([f32; 2], Instant)>; 2],
 }
 
 impl PupilProcessor {
-    pub fn process(&mut self, strip: &[u8], received_at: Instant) {
-        let widths = [measure(strip, 0), measure(strip, 1)];
+    /// Measures one snapshot and returns the pupils found in it, in the
+    /// whole strip's pixels, for drawing over it.
+    pub fn process(&mut self, strip: &[u8], received_at: Instant) -> [Option<PupilMark>; 2] {
+        let fits = [0, 1].map(|view| {
+            let near = self.seen[view]
+                .filter(|(_, at)| received_at.saturating_duration_since(*at) <= TRACK_FOR)
+                .map(|(centre, _)| centre);
+            find(strip, view, near)
+        });
+        for (seen, fit) in self.seen.iter_mut().zip(fits) {
+            if let Some(fit) = fit {
+                *seen = Some((fit.centre, received_at));
+            }
+        }
+        let widths = fits.map(|fit| fit.map(|fit| fit.axes[0]));
         let mut shared = self.state.0.write().unwrap();
         shared.measured.push_back(received_at);
         while shared.measured.len() > 64 {
             shared.measured.pop_front();
         }
-        if widths.iter().all(Option::is_none) {
-            shared.missed += 1;
-            return;
+        // With the eyes closed a lid or lashes can pass for a pupil, so
+        // nothing is measured and the size sent stays where it was.
+        if !shared.closed(received_at) {
+            if widths.iter().all(Option::is_none) {
+                shared.missed += 1;
+            } else {
+                let dilation = update_eyes(&mut self.eyes, widths, received_at);
+                if dilation.iter().any(Option::is_some) {
+                    shared.latest = Some(PupilSample {
+                        dilation,
+                        at: received_at,
+                    });
+                }
+            }
         }
-        let dilation = update_eyes(&mut self.eyes, widths, received_at);
-        if dilation.iter().any(Option::is_some) {
-            shared.latest = Some(PupilSample {
-                dilation,
-                at: received_at,
-            });
-        }
+        // A width counted when the eye took it just now, not held it back.
+        [0, 1].map(|view| {
+            fits[view].map(|fit| PupilMark {
+                centre: [fit.centre[0] + (view * VIEW) as f32, fit.centre[1]],
+                axes: fit.axes,
+                angle: fit.angle,
+                used: self.eyes[view].last == Some(received_at),
+            })
+        })
     }
+}
+
+/// `previous`, each eye's dilation as sent at its instant, moved towards
+/// `target` for the time since then, at a smoothing `strength` of 0 to 100:
+/// see [`SLOWEST`]. Snapshots come a few times a second and frames many
+/// more, so this glides between measurements rather than stepping.
+fn glide(
+    previous: Option<([f32; 2], Instant)>,
+    target: [f32; 2],
+    at: Instant,
+    strength: f32,
+) -> [f32; 2] {
+    let time = SLOWEST.as_secs_f32() * strength.clamp(0.0, 100.0) / 100.0;
+    let Some((previous, then)) = previous.filter(|_| time > 0.0) else {
+        return target;
+    };
+    let elapsed = at.saturating_duration_since(then).as_secs_f32();
+    let share = 1.0 - (-elapsed / time).exp();
+    [0, 1].map(|eye| previous[eye] + (target[eye] - previous[eye]) * share)
 }
 
 /// Puts measured pupil sizes into the frames VRFT sends.
 pub struct PupilOverlay {
     state: PupilState,
+    /// Each eye's dilation as last sent, and when.
+    sent: Option<([f32; 2], Instant)>,
 }
 
 impl PupilOverlay {
     pub fn new(state: PupilState) -> Self {
-        Self { state }
+        Self { state, sent: None }
     }
 
     pub fn is_live(&self) -> bool {
         self.state.fresh().is_some()
     }
 
-    pub fn apply(&self, data: &mut UnifiedTrackingData, settings: &QuestProSettings) {
-        if !settings.pupils {
-            return;
-        }
-        let Some(sample) = self.state.fresh() else {
+    /// Notes whether the tracking module reports either eye closed, so the
+    /// size is held then, when the settings ask for that.
+    pub fn see_eyes(&self, data: &UnifiedTrackingData, settings: &QuestProSettings) {
+        let held = settings.pupils && settings.pupil_hold_closed;
+        let closed = data.eye.left.openness < CLOSED || data.eye.right.openness < CLOSED;
+        self.state.note_eyes(held && closed, held, Instant::now());
+    }
+
+    pub fn apply(&mut self, data: &mut UnifiedTrackingData, settings: &QuestProSettings) {
+        let target = self
+            .state
+            .fresh()
+            .filter(|_| settings.pupils)
+            .and_then(|sample| match both(sample.dilation) {
+                [Some(left), Some(right)] => Some([left, right]),
+                _ => None,
+            });
+        let Some(target) = target else {
+            // The next measurement starts over, rather than gliding from an
+            // old one.
+            if self.sent.take().is_some() {
+                self.state.0.write().unwrap().sent = None;
+            }
             return;
         };
-        let [Some(left), Some(right)] = both(sample.dilation) else {
-            return;
-        };
+        let now = Instant::now();
+        let [left, right] = glide(self.sent, target, now, settings.pupil_smoothing);
+        self.sent = Some(([left, right], now));
+        self.state.0.write().unwrap().sent = self.sent;
         data.eye.left.pupil_diameter_mm = millimetres(left);
         data.eye.right.pupil_diameter_mm = millimetres(right);
         data.eye.min_dilation = MIN_MM;
@@ -712,6 +963,98 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn finds_where_the_pupil_is_and_its_shape() {
+        let strip = eye_strip([40.0, 40.0]);
+        for (view, x) in [(0, 190.0), (1, 210.0)] {
+            let fit = find(&strip, view, None).unwrap();
+            assert!((fit.centre[0] - x).abs() < 2.0, "{fit:?}");
+            assert!((fit.centre[1] - 210.0).abs() < 2.0, "{fit:?}");
+            assert!((fit.axes[0] - 40.0).abs() < 3.5 && (fit.axes[1] - 40.0).abs() < 3.5);
+        }
+    }
+
+    /// `strip` with a round blob of `value`, `diameter` across, at `at` in
+    /// the left view.
+    fn with_blob(mut strip: Vec<u8>, at: [f32; 2], diameter: f32, value: u8) -> Vec<u8> {
+        for y in 0..VIEW {
+            for x in 0..VIEW {
+                if (x as f32 - at[0]).hypot(y as f32 - at[1]) < diameter / 2.0 {
+                    strip[y * STRIP + x] = value;
+                }
+            }
+        }
+        strip
+    }
+
+    #[test]
+    fn follows_the_pupil_it_saw_rather_than_something_darker() {
+        // A darker, pupil-shaped shadow beside the eye, as lashes can cast
+        // when it turns.
+        let strip = with_blob(eye_strip([40.0, 40.0]), [320.0, 90.0], 36.0, 8);
+        let alone = find(&strip, 0, None).unwrap();
+        assert!((alone.centre[0] - 320.0).abs() < 3.0, "{alone:?}");
+        let followed = find(&strip, 0, Some([192.0, 206.0])).unwrap();
+        assert!((followed.centre[0] - 190.0).abs() < 2.0, "{followed:?}");
+        // Nothing where it was: the whole view is searched again.
+        let lost = find(&eye_strip([0.0, 0.0]), 0, Some([192.0, 206.0]));
+        assert_eq!(lost, None);
+    }
+
+    #[test]
+    fn marks_each_pupil_in_the_whole_snapshot() {
+        let mut processor = PupilState::default().processor();
+        let strip = eye_strip([40.0, 40.0]);
+        let [left, right] = processor.process(&strip, Instant::now());
+        let (left, right) = (left.unwrap(), right.unwrap());
+        assert!((left.centre[0] - 190.0).abs() < 2.0, "{left:?}");
+        // The right view is the strip's right half.
+        assert!(
+            (right.centre[0] - (VIEW as f32 + 210.0)).abs() < 2.0,
+            "{right:?}"
+        );
+        assert!(left.used && right.used);
+        // With one eye closed, only the other is marked.
+        let [left, right] = processor.process(
+            &eye_strip([40.0, 0.0]),
+            Instant::now() + Duration::from_millis(200),
+        );
+        assert!(left.is_some() && right.is_none());
+    }
+
+    #[test]
+    fn finds_the_pupil_in_a_view_mostly_darker_than_it() {
+        // As the headset's cameras see: the eye lit in a patch of a view
+        // otherwise near black, the lights' reflections dotted across it all,
+        // pupil included.
+        let (cx, cy) = (200.0, 190.0);
+        let mut strip = vec![0u8; STRIP * VIEW];
+        for y in 0..VIEW {
+            for x in 0..VIEW {
+                let distance = (x as f32 - cx).hypot(y as f32 - cy);
+                let speck = (x % 37 < 4 && y % 41 < 4)
+                    || ((x as f32 - cx - 6.0).abs() < 3.0 && (y as f32 - cy + 4.0).abs() < 2.0);
+                strip[y * STRIP + x] = if speck {
+                    250
+                } else if distance < 20.0 {
+                    12
+                } else if distance < 45.0 {
+                    40
+                } else if distance < 110.0 {
+                    70
+                } else {
+                    8
+                };
+            }
+        }
+        let fit = find(&strip, 0, None).unwrap();
+        assert!(
+            (fit.centre[0] - cx).abs() < 2.0 && (fit.centre[1] - cy).abs() < 2.0,
+            "{fit:?}"
+        );
+        assert!((fit.axes[0] - 40.0).abs() < 4.0, "{fit:?}");
     }
 
     #[test]
@@ -847,6 +1190,130 @@ mod tests {
         assert!(alone >= 0.6 * 40.0, "{alone}");
         let together = drift(true);
         assert!(together < 20.0, "{together}");
+    }
+
+    /// `glide` called every `step` for `seconds` towards `target(t)`, from
+    /// `start`; the values sent, with the time each was sent.
+    fn glided(
+        start: f32,
+        target: impl Fn(f32) -> f32,
+        step: Duration,
+        seconds: f32,
+        strength: f32,
+    ) -> Vec<(f32, f32)> {
+        let begin = Instant::now();
+        let mut sent = Some(([start; 2], begin));
+        let mut values = vec![];
+        let mut elapsed = Duration::ZERO;
+        while elapsed.as_secs_f32() < seconds {
+            elapsed += step;
+            let at = begin + elapsed;
+            let value = glide(sent, [target(elapsed.as_secs_f32()); 2], at, strength);
+            sent = Some((value, at));
+            values.push((elapsed.as_secs_f32(), value[0]));
+        }
+        values
+    }
+
+    #[test]
+    fn the_size_sent_glides_to_a_new_measurement() {
+        let frame = Duration::from_millis(11);
+        let after = |strength: f32, seconds: f32| {
+            glided(0.2, |_| 0.8, frame, seconds, strength)
+                .last()
+                .unwrap()
+                .1
+        };
+        // At the default, most of the way in a second, and there in three.
+        let default = QuestProSettings::default().pupil_smoothing;
+        assert!((after(default, 1.0) - (0.2 + 0.6 * 0.632)).abs() < 0.02);
+        assert!(after(default, 3.0) > 0.77);
+        // 0 sends each measurement as it comes.
+        assert_eq!(after(0.0, 0.011), 0.8);
+        // The same however often frames go out.
+        let slow = glided(0.2, |_| 0.8, Duration::from_millis(33), 0.99, default);
+        assert!((slow.last().unwrap().1 - after(default, 0.99)).abs() < 0.005);
+    }
+
+    #[test]
+    fn the_size_sent_evens_out_snapshot_wobble() {
+        // Measurements five a second, 0.1 either side of 0.5.
+        let wobble = |t: f32| {
+            if ((t * 5.0) as u32).is_multiple_of(2) {
+                0.4
+            } else {
+                0.6
+            }
+        };
+        let frame = Duration::from_millis(11);
+        let swing = |strength: f32| {
+            let values = glided(0.5, wobble, frame, 10.0, strength);
+            values
+                .iter()
+                .filter(|(t, _)| *t > 5.0)
+                .map(|(_, value)| (value - 0.5).abs())
+                .fold(0.0, f32::max)
+        };
+        assert!(swing(QuestProSettings::default().pupil_smoothing) < 0.02);
+        assert!(swing(0.0) > 0.09);
+    }
+
+    #[test]
+    fn closed_eyes_leave_the_size_alone() {
+        let measured = |held: bool| {
+            let state = PupilState::default();
+            let mut processor = state.processor();
+            let start = Instant::now();
+            let (open, lids) = (eye_strip([40.0; 2]), eye_strip([26.0; 2]));
+            let mut marks = [None; 2];
+            // Open for four seconds, then closed for four, with the lids
+            // passing for smaller pupils.
+            for step in 0..40 {
+                let at = start + Duration::from_millis(200 * step);
+                let closed = step >= 20;
+                state.note_eyes(closed && held, held, at);
+                marks = processor.process(if closed { &lids } else { &open }, at);
+            }
+            let dilation = state.0.read().unwrap().latest.unwrap().dilation;
+            (dilation, marks)
+        };
+        let (dilation, marks) = measured(true);
+        assert_eq!(dilation, [Some(0.5); 2]);
+        // What looks like a pupil is outlined, but not used.
+        assert!(marks.iter().all(|mark| mark.is_some_and(|mark| !mark.used)));
+        let (dilation, _) = measured(false);
+        assert!(dilation[0].unwrap() < 0.4, "{dilation:?}");
+    }
+
+    #[test]
+    fn the_size_is_kept_while_the_eyes_stay_closed() {
+        let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(5)) else {
+            return;
+        };
+        let state = PupilState::default();
+        state.0.write().unwrap().latest = Some(PupilSample {
+            dilation: [Some(0.3); 2],
+            at: long_ago,
+        });
+        let overlay = PupilOverlay::new(state.clone());
+        let settings = QuestProSettings::default();
+        let mut data = UnifiedTrackingData::default();
+        data.eye.left.openness = 0.9;
+        data.eye.right.openness = 0.9;
+        overlay.see_eyes(&data, &settings);
+        assert!(!overlay.is_live());
+        // One eye closed holds the size.
+        data.eye.right.openness = 0.1;
+        overlay.see_eyes(&data, &settings);
+        assert!(overlay.is_live());
+        assert!(state.status(&settings).closed);
+        // Unless the setting is off.
+        let settings = QuestProSettings {
+            pupil_hold_closed: false,
+            ..QuestProSettings::default()
+        };
+        overlay.see_eyes(&data, &settings);
+        assert!(!overlay.is_live());
     }
 
     #[test]

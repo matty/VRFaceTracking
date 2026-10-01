@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 use vrft_api::{UnifiedExpressions, UnifiedTrackingData};
 use vrft_extension::FrameHook;
 use vrft_quest_pro_protocol::{
-    routes, CaptureCommand, CaptureRequest, Headset, Mismatch, ModelStatus, OutputStatus, Status,
-    TongueSource, Update, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH,
+    routes, CaptureCommand, CaptureRequest, Headset, Mismatch, ModelStatus, OutputStatus,
+    PupilMark, Status, TongueSource, Update, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH,
+    PUPILS_HEADER,
 };
 use vrft_tongue::{Accelerator, Role, TongueModel, CHEEK_COLUMNS};
 
@@ -244,6 +245,7 @@ impl FrameHook for QuestProOverlay {
             .weight
             .clamp(0.0, 1.0);
         self.capture.update_native(native);
+        self.pupils.see_eyes(data, &self.settings.get());
         let now = Instant::now();
         self.native_history.push_back((now, native));
         while self
@@ -499,6 +501,8 @@ struct FeedState {
     status: String,
     latest: Option<Frame>,
     eyes: Option<Frame>,
+    /// The pupils found in `eyes`, for drawing over it.
+    eye_pupils: [Option<PupilMark>; 2],
     /// Latest `QPSTAT1` status from the headset APK.
     headset: Option<Headset>,
     source: Option<SocketAddr>,
@@ -516,6 +520,7 @@ impl FeedState {
         self.source = None;
         self.latest = None;
         self.eyes = None;
+        self.eye_pupils = [None; 2];
         self.headset = None;
     }
 }
@@ -739,8 +744,18 @@ async fn latest_frame(State(preview): State<PreviewState>) -> impl IntoResponse 
 }
 
 async fn latest_eye_frame(State(preview): State<PreviewState>) -> impl IntoResponse {
-    let frame = preview.feed.read().unwrap().eyes.clone();
-    frame_response(frame)
+    let (frame, pupils) = {
+        let feed = preview.feed.read().unwrap();
+        (feed.eyes.clone(), feed.eye_pupils)
+    };
+    let mut response = frame_response(frame);
+    if response.status() == StatusCode::OK {
+        let pupils = serde_json::to_string(&pupils).unwrap_or_default();
+        if let Ok(value) = HeaderValue::from_str(&pupils) {
+            response.headers_mut().insert(PUPILS_HEADER, value);
+        }
+    }
+    response
 }
 
 async fn get_settings(State(preview): State<PreviewState>) -> Json<QuestProSettings> {
@@ -1103,8 +1118,10 @@ fn connect_and_receive(
                 state.latest = Some(frame);
             }
             Ok(Some(Message::Eyes(frame))) => {
-                processors.pupils.process(&frame.pixels, frame.received_at);
-                shared.write().unwrap().eyes = Some(frame);
+                let pupils = processors.pupils.process(&frame.pixels, frame.received_at);
+                let mut state = shared.write().unwrap();
+                state.eyes = Some(frame);
+                state.eye_pupils = pupils;
             }
             Ok(Some(Message::Gaze(packet))) => processors.eyes.process(&packet, Instant::now()),
             Ok(Some(Message::Status(status))) => {

@@ -40,10 +40,22 @@ eyes:
     en: "Lets your avatar's eyes meet at what you look at."
   pupils:
     en: "Measure pupil size"
+  pupil_smoothing:
+    en: "Smoothing"
+  pupil_smoothing_note:
+    en: "Lower follows changes faster; higher is steadier but slower. The default is 40."
+  pupil_hold_closed:
+    en: "Hold while eyes are closed"
+  pupil_hold_closed_hint:
+    en: "Keeps the pupil size steady while the headset sees your eyes closed."
+  pupils_held_closed:
+    en: "Held while your eyes are closed."
   pupils_hint:
     en: "Sends how wide your pupils are, read from the eye cameras."
   pupils_looking:
     en: "Looking for your pupils…"
+  pupils_outlined:
+    en: "Pupils found are outlined on the snapshot, dashed until the other eye agrees."
   pupils_need_snapshots:
     en: "Needs eye camera snapshots. Turn them on in the headset app."
   dilation:
@@ -126,6 +138,8 @@ eyes:
     en: "Right eye"
   where_they_meet:
     en: "Where they meet"
+  seen_from_above:
+    en: "Seen from above"
   metres:
     en: "%{metres} m"
   no_eye_images:

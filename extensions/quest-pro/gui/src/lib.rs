@@ -88,7 +88,7 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
             cx,
         )
     });
-    let eyes = cx.new(|cx| EyesPage::new(state.clone(), eye_feed.clone(), launcher, cx));
+    let eyes = cx.new(|cx| EyesPage::new(state.clone(), eye_feed.clone(), launcher, window, cx));
     let pages = vec![
         PageEntry {
             page: pages::HEADSET,
