@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Modules built against VRCFaceTracking 5.2 and later take the module
+         base class from here, and the default load context refuses an
+         assembly older than the one a module asks for. Kept ahead of every
+         VRCFT release so any 5.x module binds. -->
+    <AssemblyVersion>5.9999.0.0</AssemblyVersion>
+    <FileVersion>5.9999.0.0</FileVersion>
+    <Version>5.9999.0</Version>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0">
+      <PrivateAssets>none</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

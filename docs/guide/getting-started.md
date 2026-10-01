@@ -36,10 +36,7 @@ vrft_d.exe
 headset-app/       ← the Quest Pro headset app this VRFT works with
 platform-tools/    ← adb, once the Headset page has downloaded it
 config.json
-plugins/
-  native/          ← place native (.dll) tracking modules here
-  dotnet/
-    modules/       ← place VRCFT .dll modules here
+plugins/           ← tracking modules, native or VRCFT (.NET), anywhere in here
   registry/        ← modules installed from the app's Modules page
 runtime/
   VrcftRuntime.exe ← runs VRCFT (.NET) modules

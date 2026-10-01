@@ -78,6 +78,14 @@ pub fn install_modules(build: &Path, modules: &Path, plugins: &Path) {
     }
 }
 
+/// The host for managed (.NET / VRCFT) modules the repository keeps, at
+/// `dotnet/publish/VrcftRuntime.exe` under `root`, for a development build,
+/// which has no `runtime/` folder as a release package does.
+pub fn dotnet_host(root: &Path) -> Option<PathBuf> {
+    let host = root.join("dotnet/publish/VrcftRuntime.exe");
+    host.is_file().then_some(host)
+}
+
 /// `fs::copy` keeps the modification time, so a copy matches its original
 /// until the original is rebuilt.
 fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {

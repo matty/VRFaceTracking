@@ -44,7 +44,6 @@ class Program
     private static ILogger _logger;
     private static dynamic _module;
     private static dynamic _unifiedTracking;
-    private static Assembly _sdkAssembly;
     
     private static MemoryMappedFile _mmf;
     private static MemoryMappedViewAccessor _accessor;
@@ -123,14 +122,18 @@ class Program
         foreach (var type in assembly.GetExportedTypes())
         {
             _logger.LogDebug("Checking type: {FullName}. BaseType: {BaseType}", type.FullName, type.BaseType?.FullName);
-            
-            // Check by name to avoid type identity issues
-            if (type.BaseType?.Name == "ExtTrackingModule")
-            {
-                if (type.IsAbstract) continue;
+            if (type.IsAbstract) continue;
 
+            // Check by name to avoid type identity issues. The module may
+            // derive from it through a base class of its own.
+            extTrackingModuleType = type.BaseType;
+            while (extTrackingModuleType != null && extTrackingModuleType.Name != "ExtTrackingModule")
+            {
+                extTrackingModuleType = extTrackingModuleType.BaseType;
+            }
+            if (extTrackingModuleType != null)
+            {
                 _logger.LogInformation("Found module type: {Type}", type.FullName);
-                extTrackingModuleType = type.BaseType;
                 
                 // Create instance using dynamic
                 _module = Activator.CreateInstance(type);
@@ -147,9 +150,16 @@ class Program
                 bool eyeSuccess = result.Item1;
                 bool exprSuccess = result.Item2;
                 _logger.LogInformation("Initialized {Module}. Eye: {Eye}, Expr: {Expr}", type.Name, eyeSuccess, exprSuccess);
-                
-                _sdkAssembly = extTrackingModuleType.Assembly;
-                var unifiedTrackingType = _sdkAssembly.GetType("VRCFaceTracking.UnifiedTracking");
+                if (!eyeSuccess && !exprSuccess)
+                {
+                    // VRCFT drops a module that starts neither; it usually
+                    // means its device or the software it talks to isn't there.
+                    throw new Exception($"{type.Name} started neither eye nor expression tracking. Is its device connected and its software running?");
+                }
+
+                // From the host's own VRCFaceTracking.Core, which modules share:
+                // since 5.2 the module base class lives in VRCFaceTracking.SDK.
+                var unifiedTrackingType = Type.GetType("VRCFaceTracking.UnifiedTracking, VRCFaceTracking.Core");
                 if (unifiedTrackingType != null)
                 {
                     var dataField = unifiedTrackingType.GetField("Data", BindingFlags.Public | BindingFlags.Static);
@@ -165,21 +175,11 @@ class Program
                     throw new Exception("Failed to get UnifiedTracking.Data from SDK assembly");
                 }
                 
-                // Set Status to Active if initialization succeeded
-                if (eyeSuccess || exprSuccess)
+                var statusField = extTrackingModuleType.GetField("Status");
+                if (statusField != null && statusField.FieldType.IsEnum)
                 {
-                    var statusField = extTrackingModuleType.GetField("Status");
-                    if (statusField != null)
-                    {
-                        // Get ModuleState.Active from the SDK's ModuleState enum
-                        var moduleStateType = _sdkAssembly.GetType("VRCFaceTracking.Core.Library.ModuleState");
-                        if (moduleStateType != null)
-                        {
-                            var activeValue = Enum.Parse(moduleStateType, "Active");
-                            statusField.SetValue(_module, activeValue);
-                            _logger.LogInformation("Module Status set to Active");
-                        }
-                    }
+                    statusField.SetValue(_module, Enum.Parse(statusField.FieldType, "Active"));
+                    _logger.LogInformation("Module Status set to Active");
                 }
                 
                 return;
@@ -237,13 +237,29 @@ class Program
 
         protected override Assembly Load(AssemblyName assemblyName)
         {
-            // System, Microsoft, and VRCFaceTracking.Core assemblies fallback to the default context (provided by the host)
-            if (assemblyName.Name.StartsWith("System.") || assemblyName.Name == "netstandard" || assemblyName.Name.StartsWith("Microsoft.") || assemblyName.Name == "VRCFaceTracking.Core")
+            // The SDK comes from the host, never a copy beside the module, so
+            // the module and the host share UnifiedTracking.Data.
+            if (assemblyName.Name == "VRCFaceTracking.Core" || assemblyName.Name == "VRCFaceTracking.SDK")
             {
                 return null;
             }
 
-            // Everything else (including VRCFaceTracking.Core) loads from module directory
+            // The framework, and the logging the SDK uses, come from the host
+            // too. A System or Microsoft package the host doesn't have, such
+            // as one a module ships for its device, comes from the module.
+            if (assemblyName.Name.StartsWith("System.") || assemblyName.Name == "netstandard" || assemblyName.Name.StartsWith("Microsoft."))
+            {
+                try
+                {
+                    return Default.LoadFromAssemblyName(assemblyName);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException || ex is FileLoadException)
+                {
+                    _logger.LogDebug("The host has no {Name}; looking beside the module", assemblyName.FullName);
+                }
+            }
+
+            // Everything else loads from the module directory
             string assemblyPath = _resolver.ResolveAssemblyToPath(assemblyName);
             if (assemblyPath != null)
             {
@@ -357,6 +373,8 @@ class Program
 
                 data.eye_max_dilation = (float)eye._maxDilation;
                 data.eye_min_dilation = (float)eye._minDilation;
+                data.eye_left_diameter = (float)eye._leftDiameter;
+                data.eye_right_diameter = (float)eye._rightDiameter;
 
                 data.head_yaw = (float)head.HeadYaw;
                 data.head_pitch = (float)head.HeadPitch;

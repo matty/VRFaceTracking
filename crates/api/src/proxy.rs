@@ -78,7 +78,12 @@ impl ProxyModule {
         self.module_dll = Some(module_dll.to_path_buf());
 
         self.spawn_child()?;
-        self.connect_shmem()?;
+        if let Err(error) = self.connect_shmem() {
+            // Otherwise a host still starting its module would keep running,
+            // holding the device, with nothing reading it.
+            self.unload();
+            return Err(error);
+        }
 
         log::info!("Successfully connected to shared memory: {}", SHMEM_NAME);
         Ok(())
@@ -111,9 +116,12 @@ impl ProxyModule {
     }
 
     fn connect_shmem(&mut self) -> Result<()> {
-        // Wait for the host to create shared memory, then open it
+        // Wait for the host to create shared memory, then open it. It does
+        // once the module's Initialize() returns, which can take a while as
+        // some wait for their device or its software; a host that fails exits,
+        // which ends the wait at once.
         let mut retry = 0;
-        let max_retries = 100; // 10 seconds total
+        let max_retries = 600; // 60 seconds total
 
         let (handle, ptr) = loop {
             match Self::open_shared_memory() {
@@ -415,5 +423,53 @@ mod tests {
         proxy.shmem_ptr = None;
         drop(unsafe { Box::from_raw(old) });
         drop(unsafe { Box::from_raw(new) });
+    }
+
+    /// Runs each VRCFT module in turn in the real .NET host, as switching
+    /// modules does, waiting for a frame from each, then checks one that
+    /// fails to start is reported and its host ended. Needs the host and
+    /// modules built, and nothing else using the host's shared memory:
+    /// `VRFT_TEST_DOTNET_HOST=<VrcftRuntime.exe>
+    /// VRFT_TEST_DOTNET_MODULE=<module.dll>[;<module.dll>...]
+    /// [VRFT_TEST_DOTNET_FAILING_MODULE=<module.dll>]
+    /// cargo test -p vrft-api --lib -- --ignored dotnet_host`.
+    #[test]
+    #[ignore]
+    fn dotnet_host_runs_a_module() {
+        use std::time::{Duration, Instant};
+        let (Some(host), Ok(modules)) = (
+            std::env::var_os("VRFT_TEST_DOTNET_HOST"),
+            std::env::var("VRFT_TEST_DOTNET_MODULE"),
+        ) else {
+            eprintln!("VRFT_TEST_DOTNET_HOST and VRFT_TEST_DOTNET_MODULE aren't set; skipped");
+            return;
+        };
+        let host = Path::new(&host);
+
+        for module in modules.split(';').filter(|module| !module.is_empty()) {
+            let mut proxy = ProxyModule::new();
+            proxy.start(host, Path::new(module)).unwrap();
+            let mut data = UnifiedTrackingData::default();
+            let started = Instant::now();
+            while proxy.update(&mut data).is_err() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "no frame from {module}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            proxy.unload();
+        }
+
+        if let Some(failing) = std::env::var_os("VRFT_TEST_DOTNET_FAILING_MODULE") {
+            let mut proxy = ProxyModule::new();
+            let started = Instant::now();
+            assert!(proxy.start(host, Path::new(&failing)).is_err());
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "a host that fails should end the wait at once"
+            );
+            assert!(proxy.child.is_none(), "the failed host is still tracked");
+        }
     }
 }

@@ -171,7 +171,8 @@ fn main() -> Result<()> {
         start_extensions(built_in, &config, &root, &running, mode, &daemon_status);
     // The host for managed (.NET / VRCFT) modules, outside the scanned
     // plugins tree so it is never mistaken for a plugin.
-    let dotnet_host = plugin_loader::find_dotnet_host(&root);
+    let dotnet_host = plugin_loader::find_dotnet_host(&root)
+        .or_else(|| dev_build.as_ref().and(dev_build::dotnet_host(&root)));
     // How the local API asks the tracking loop to load another module.
     let switch = modules::ModuleSwitch::default();
     let module_manager = modules::ModuleManager::new(

@@ -2,20 +2,27 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <AssemblyVersion>5.1.1.0</AssemblyVersion>
-    <FileVersion>5.1.1.0</FileVersion>
-    <Version>5.1.1.0</Version>
+    <!-- The default load context refuses an assembly older than the one a
+         module asks for, and modules ask for whichever VRCFaceTracking they
+         were built against (5.0 to 5.4 in the registry). Kept ahead of every
+         VRCFT release so any 5.x module binds. -->
+    <AssemblyVersion>5.9999.0.0</AssemblyVersion>
+    <FileVersion>5.9999.0.0</FileVersion>
+    <Version>5.9999.0</Version>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    
+
     <!-- Ensure dependencies are copied to output -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="7.0.0">
+    <!-- Modules take ILogger from the host, so it must be at least as new as
+         the one any module was built against (up to 10.0 in the registry). -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0">
       <PrivateAssets>none</PrivateAssets>
     </PackageReference>
+    <ProjectReference Include="..\VRCFaceTracking.SDK\VRCFaceTracking.SDK.csproj" />
   </ItemGroup>
 
 </Project>
