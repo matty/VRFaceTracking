@@ -78,12 +78,22 @@ pub fn install_modules(build: &Path, modules: &Path, plugins: &Path) {
     }
 }
 
-/// The host for managed (.NET / VRCFT) modules the repository keeps, at
-/// `dotnet/publish/VrcftRuntime.exe` under `root`, for a development build,
-/// which has no `runtime/` folder as a release package does.
+/// The host for managed (.NET / VRCFT) modules published from the
+/// repository's `dotnet/`, at `dotnet/publish/VrcftRuntime.exe` under `root`,
+/// for a development build, which has no `runtime/` folder as a release
+/// package does. CI publishes it for releases; locally, publish it yourself.
 pub fn dotnet_host(root: &Path) -> Option<PathBuf> {
     let host = root.join("dotnet/publish/VrcftRuntime.exe");
-    host.is_file().then_some(host)
+    if host.is_file() {
+        return Some(host);
+    }
+    warn!(
+        "{} isn't there, so .NET (VRCFT) modules can't run. Publish it with: dotnet publish \
+         dotnet/VrcftRuntime/VrcftRuntime/VrcftRuntime.csproj -c Release -r win-x64 \
+         --self-contained true -p:PublishSingleFile=true -o dotnet/publish",
+        host.display()
+    );
+    None
 }
 
 /// `fs::copy` keeps the modification time, so a copy matches its original

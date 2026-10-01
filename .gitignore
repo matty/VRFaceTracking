@@ -22,6 +22,7 @@ vrft_d/plugins/*.dll
 # Dotnet
 obj/
 bin/
+dotnet/publish/
 
 .local/
 models/quest-pro/*.pt
