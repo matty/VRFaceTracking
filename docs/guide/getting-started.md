@@ -108,3 +108,14 @@ Log output goes to the console. To increase verbosity, set the `RUST_LOG` enviro
 ```powershell
 $env:RUST_LOG = "info,vrft_d=debug"; .\vrft_d.exe
 ```
+
+### Logs in the desktop app
+
+When the desktop app starts tracking, `vrft_d`'s output goes to `vrft_d.log` instead of a console, and the app writes its own `vrft_app.log`, both in the data folder. Each keeps the run before it as `vrft_d.previous.log` and `vrft_app.previous.log`, so restarting after a crash doesn't lose what happened.
+
+The app's **Logs** page shows them as they're written: this run's tracking log, the last run's, or the app's own. It can show only warnings and errors, or lines containing some text; clicking a line shows its whole record, such as an error's causes, to copy. Times are in your PC's time zone.
+
+- **Detailed logging** records debug messages from both programs until the app closes. Turning it on or off restarts tracking, as `vrft_d` only reads its log level when it starts. A `RUST_LOG` you set yourself still decides the app's own level.
+- **Save report** writes one text file with the app and tracking versions, the latest status, `config.json`, and the end of every log to `reports/` in the data folder, and shows it in Explorer, ready to attach to an issue.
+
+A `vrft_d` started from a console, rather than by the app, still logs to that console.

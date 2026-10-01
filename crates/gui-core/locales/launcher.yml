@@ -23,4 +23,4 @@ launcher:
   end_and_start:
     en: "Force stop and start again"
   open_log:
-    en: Open log
+    en: Show log

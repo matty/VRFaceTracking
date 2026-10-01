@@ -6,6 +6,7 @@ mod assets;
 mod extension_switches;
 mod extensions;
 mod home;
+mod logs;
 mod modules;
 mod settings;
 mod shell;
@@ -74,7 +75,7 @@ fn main() {
     // update it or remove it, and this handles them and exits. It also
     // installs an update downloaded last time before the app opens.
     velopack::VelopackApp::build().run();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    logs::init_logging();
     choose_language();
 
     gpui_kit::application()

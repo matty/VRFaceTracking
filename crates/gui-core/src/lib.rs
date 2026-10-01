@@ -6,14 +6,16 @@
 //! - **A shared toolkit** extensions may use to look and behave like the rest
 //!   of the app: the daemon [`client`] and its polled state ([`live`]), the
 //!   [`launcher`], readings ([`summary`]), [`widgets`] and their [`palette`],
-//!   and helpers for [`paths`] and [`processes`]. [`nav`] is the app's
-//!   navigation, which extensions reach through [`extension::open_page`].
+//!   the [`logs`], and helpers for [`paths`] and [`processes`]. [`nav`] is
+//!   the app's navigation, which extensions reach through
+//!   [`extension::open_page`].
 //!
 //! [`GuiExtension`]: extension::GuiExtension
 pub mod client;
 pub mod extension;
 pub mod launcher;
 pub mod live;
+pub mod logs;
 pub mod nav;
 pub mod palette;
 pub mod paths;

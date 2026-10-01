@@ -3,7 +3,8 @@
 //! The app needs the daemon for everything it shows, so it starts the daemon
 //! when it opens, and offers to start it again whenever it isn't running. The
 //! daemon runs without a console window, with its output in `vrft_d.log` in
-//! the folder it runs in. A daemon the app started stops when the app
+//! the folder it runs in, and the last run's kept beside it (see
+//! [`crate::logs`]). A daemon the app started stops when the app
 //! closes, and by itself if the app crashes or is ended; one that was
 //! already running, such as one started from a console, is left alone.
 //!
@@ -33,7 +34,7 @@ use std::time::{Duration, Instant};
 use vrft_protocol::{DAEMON_INSTANCE, DAEMON_PID, OWNER_PID_ARG};
 
 const DAEMON_EXE: &str = "vrft_d.exe";
-const LOG_FILE: &str = "vrft_d.log";
+const LOG_FILE: &str = crate::logs::DAEMON_LOG;
 /// Loading a .NET module or the tongue runtime can take a while, but not this
 /// long.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -150,6 +151,14 @@ impl Launcher {
             .filter(|log| log.is_file())
     }
 
+    /// Whether the daemon running is one this app started, so its output is
+    /// in [`Self::log_file`]. One started from a console logs there instead.
+    pub fn started_daemon(&self) -> bool {
+        self.process
+            .as_ref()
+            .is_some_and(|daemon| daemon.started_here && !daemon.process.has_exited())
+    }
+
     /// Ends the daemon the app uses, which isn't answering, then starts a new
     /// one if `restart`. Only that process: any other `vrft_d.exe` is left
     /// alone.
@@ -166,6 +175,10 @@ impl Launcher {
             }
             return;
         };
+        log::warn!(
+            "Ending vrft_d (process {}), which isn't answering",
+            process.pid()
+        );
         self.state = LaunchState::Stopping;
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -234,6 +247,7 @@ impl Launcher {
             self.fail_start(t!("launcher.no_executable"), cx);
             return;
         };
+        log::info!("Starting {}", executable.display());
         self.state = LaunchState::Starting;
         self.stopped_by_user = false;
         // A daemon that has since exited is no longer this app's.
@@ -265,6 +279,10 @@ impl Launcher {
                 }
             };
             let spawned = child.as_ref().map(Child::id);
+            match &child {
+                Some(child) => log::info!("Started vrft_d as process {}", child.id()),
+                None => log::info!("vrft_d was already running"),
+            }
             if let Some(child) = child {
                 this.update(cx, |launcher, _| {
                     launcher.process = Some(DaemonProcess {
@@ -281,6 +299,10 @@ impl Launcher {
                     return;
                 };
                 if online {
+                    log::info!(
+                        "vrft_d is answering, {:.1}s after starting",
+                        began.elapsed().as_secs_f32()
+                    );
                     this.update(cx, |launcher, cx| launcher.finish(cx)).ok();
                     return;
                 }
@@ -338,6 +360,10 @@ impl Launcher {
         if self.is_busy() {
             return;
         }
+        log::info!(
+            "Stopping vrft_d{}",
+            if self.restart { " to restart it" } else { "" }
+        );
         self.state = LaunchState::Stopping;
         cx.notify();
         let client = self.client.clone();
@@ -377,6 +403,7 @@ impl Launcher {
                     || (exited
                         && exited_at.get_or_insert_with(Instant::now).elapsed() > GONE_GRACE);
                 if exited && seen_gone {
+                    log::info!("vrft_d has stopped");
                     this.update(cx, |launcher, cx| {
                         launcher.forget_exited();
                         let restart = std::mem::take(&mut launcher.restart);
@@ -432,10 +459,12 @@ impl Launcher {
     }
 
     fn fail(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let message = message.into();
+        log::error!("{message}");
         self.restart = false;
         self.start_failed = false;
         self.stuck = false;
-        self.state = LaunchState::Failed(message.into());
+        self.state = LaunchState::Failed(message);
         cx.notify();
     }
 
@@ -571,20 +600,24 @@ fn work_dir(executable: &Path) -> PathBuf {
 }
 
 fn spawn_daemon(executable: &Path, log: &Path) -> std::io::Result<Child> {
+    let dir = work_dir(executable);
+    // An installed copy's daemon fills the data folder as it starts, but its
+    // log goes there first.
+    fs::create_dir_all(&dir)?;
+    crate::logs::keep_previous(log);
     let command = |flags: u32| -> std::io::Result<Command> {
-        let dir = work_dir(executable);
-        // An installed copy's daemon fills the data folder as it starts, but
-        // its log goes there first.
-        fs::create_dir_all(&dir)?;
         let output = fs::File::create(log)?;
         let mut command = Command::new(executable);
         command
             .arg(OWNER_PID_ARG)
             .arg(std::process::id().to_string())
-            .current_dir(dir)
+            .current_dir(&dir)
             .stdin(Stdio::null())
             .stdout(output.try_clone()?)
             .stderr(output);
+        if let Some(filter) = crate::logs::daemon_filter() {
+            command.env("RUST_LOG", filter);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt as _;
@@ -669,7 +702,7 @@ impl RenderOnce for StartVrft {
         let state = self.launcher.read(cx).state().clone();
         let starting = state == LaunchState::Starting;
         let stuck = self.launcher.read(cx).is_stuck();
-        let log = self.launcher.read(cx).log_file();
+        let log = self.launcher.read(cx).log_file().is_some();
         let launcher = self.launcher.clone();
         let end_launcher = self.launcher.clone();
         let prominent = self.prominent;
@@ -698,13 +731,13 @@ impl RenderOnce for StartVrft {
         let buttons = h_flex()
             .gap_2()
             .child(start)
-            .when_some(log, |row, log| {
+            .when(log, |row| {
                 row.child(size(
                     Button::new("open-log")
                         .ghost()
-                        .icon(IconName::FileText)
+                        .icon(IconName::ScrollText)
                         .label(t!("launcher.open_log"))
-                        .on_click(move |_, _, cx| cx.open_with_system(&log)),
+                        .on_click(|_, _, cx| crate::nav::open_page(crate::nav::PageId::LOGS, cx)),
                 ))
             })
             .when(stuck, |row| {

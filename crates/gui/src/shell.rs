@@ -1,10 +1,10 @@
 //! The window: navigation down the left, from the top of the window, and
 //! the current page beside it under a strip that moves the window and holds
-//! its controls. Home, Modules, Tracking settings and Settings are the app's
-//! own; every other
-//! page comes from an extension.
+//! its controls. Home, Modules, Tracking settings, Logs and Settings are the
+//! app's own; every other page comes from an extension.
 use crate::extension_switches::ExtensionSwitches;
 use crate::home::HomePage;
+use crate::logs::LogsPage;
 use crate::modules::ModulesPage;
 use crate::settings::SettingsPage;
 use crate::tracking::TrackingPage;
@@ -112,6 +112,7 @@ pub struct Workspace {
     settings: Entity<SettingsPage>,
     modules: Entity<ModulesPage>,
     tracking: Entity<TrackingPage>,
+    logs: Entity<LogsPage>,
     updater: Entity<Updater>,
     /// The navigation shows only its icons.
     nav_collapsed: bool,
@@ -167,6 +168,7 @@ impl Workspace {
         let modules =
             cx.new(|cx| ModulesPage::new(daemon.clone(), launcher.clone(), switches, window, cx));
         let tracking = cx.new(|cx| TrackingPage::new(daemon.clone(), launcher.clone(), window, cx));
+        let logs = cx.new(|cx| LogsPage::new(daemon.clone(), launcher.clone(), window, cx));
         let subscriptions = vec![
             // The navigation shows how things stand, and an extension the
             // daemon stops running takes its pages with it.
@@ -195,6 +197,7 @@ impl Workspace {
                     PageId::HOME,
                     PageId::MODULES,
                     PageId::TRACKING,
+                    PageId::LOGS,
                     PageId::SETTINGS,
                 ]
                 .into_iter()
@@ -219,6 +222,7 @@ impl Workspace {
             settings,
             modules,
             tracking,
+            logs,
             updater,
             nav_collapsed: false,
             dev_scroll: std::env::var("VRFT_GUI_SCROLL")
@@ -250,6 +254,8 @@ impl Workspace {
         self.tracking.update(cx, |tracking, cx| {
             tracking.set_watching(page == PageId::TRACKING, cx)
         });
+        self.logs
+            .update(cx, |logs, cx| logs.set_watching(page == PageId::LOGS, cx));
         cx.notify();
     }
 
@@ -260,6 +266,7 @@ impl Workspace {
             || current == PageId::SETTINGS
             || current == PageId::MODULES
             || current == PageId::TRACKING
+            || current == PageId::LOGS
             || self.page_view(current, cx).is_some()
         {
             return;
@@ -516,12 +523,12 @@ impl Workspace {
             )
             .children(groups)
             .child(div().flex_1())
-            .child(v_flex().gap_0p5().child(self.nav_item(
-                IconName::Settings,
-                PageId::SETTINGS,
-                None,
-                current,
-            )))
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .child(self.nav_item(IconName::ScrollText, PageId::LOGS, None, current))
+                    .child(self.nav_item(IconName::Settings, PageId::SETTINGS, None, current)),
+            )
             .when(update_ready && !collapsed, |nav| {
                 nav.child(
                     h_flex()
@@ -561,6 +568,8 @@ impl Render for Workspace {
             self.modules.clone().into()
         } else if current == PageId::TRACKING {
             self.tracking.clone().into()
+        } else if current == PageId::LOGS {
+            self.logs.clone().into()
         } else {
             self.page_view(current, cx)
                 .unwrap_or_else(|| self.home.clone().into())

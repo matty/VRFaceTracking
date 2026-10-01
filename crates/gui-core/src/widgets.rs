@@ -201,7 +201,8 @@ impl Notice {
     }
 
     /// A failure, as `prefix` and the error's outermost message, with its
-    /// causes behind "Copy details" when it has any.
+    /// causes behind "Copy details" when it has any. The whole of it goes in
+    /// the app's log.
     pub fn error(prefix: &str, error: &anyhow::Error) -> Self {
         let brief = error.to_string();
         let full = format!("{error:#}");
@@ -210,6 +211,11 @@ impl Notice {
         } else {
             t!("widgets.error", prefix = prefix, error = brief).into()
         };
+        crate::logs::record_problem(&if prefix.is_empty() {
+            full.clone()
+        } else {
+            format!("{prefix}: {full}")
+        });
         let notice = Self::new(Tone::Problem, text);
         if full == brief {
             notice

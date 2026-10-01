@@ -59,7 +59,7 @@ home:
   choose_module:
     en: Choose a module
   open_log:
-    en: Open log
+    en: Show log
   steps_done:
     en: "%{done} of %{total}"
   getting_started:

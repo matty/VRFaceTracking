@@ -67,6 +67,14 @@ impl DaemonState {
                     self.tracking.record(Instant::now(), daemon.tracking_frames);
                 }
                 self.failures = 0;
+                if self.connection != Connection::Online {
+                    let version = status.daemon.as_ref().map(|daemon| daemon.version.as_str());
+                    log::info!(
+                        "Connected to vrft_d {} at {}",
+                        version.unwrap_or("(version unknown)"),
+                        self.client.address()
+                    );
+                }
                 self.connection = Connection::Online;
                 self.status = Some(status);
             }
@@ -75,9 +83,13 @@ impl DaemonState {
                 if self.failures < FAILURES_BEFORE_OFFLINE {
                     return;
                 }
-                self.connection = Connection::Offline {
-                    error: format!("{error:#}"),
-                };
+                let error = format!("{error:#}");
+                match &self.connection {
+                    Connection::Online => log::warn!("Lost vrft_d: {error}"),
+                    Connection::Connecting => log::info!("vrft_d isn't running: {error}"),
+                    Connection::Offline { .. } => {}
+                }
+                self.connection = Connection::Offline { error };
                 self.status = None;
                 self.tracking.clear();
             }

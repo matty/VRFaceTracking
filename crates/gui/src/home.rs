@@ -408,7 +408,7 @@ impl Render for HomePage {
         let online = connection == Connection::Online;
         let launch = self.launcher.read(cx).state().clone();
         let activity = self.launcher.read(cx).activity();
-        let log = self.launcher.read(cx).log_file();
+        let log = self.launcher.read(cx).log_file().is_some();
         let mut headline = summary::headline(&connection, status.as_ref(), &rates, &activity);
         if !rates.tracking() && self.confirm_stop {
             self.confirm_stop = false;
@@ -467,14 +467,14 @@ impl Render for HomePage {
                 h_flex()
                     .gap_2()
                     .child(button.primary().regular())
-                    .when_some(log.clone(), |row, log| {
+                    .when(log, |row| {
                         row.child(
                             Button::new("open-log")
                                 .ghost()
                                 .regular()
-                                .icon(IconName::FileText)
+                                .icon(IconName::ScrollText)
                                 .label(t!("home.open_log"))
-                                .on_click(move |_, _, cx| cx.open_with_system(&log)),
+                                .on_click(|_, _, cx| open_page(PageId::LOGS, cx)),
                         )
                     })
                     .children(self.engine_controls(false, cx))
