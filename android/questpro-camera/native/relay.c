@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -27,11 +28,17 @@
 #define SHARED_ACTIVE_UNTIL_OFFSET ((size_t)64)
 #define SHARED_REQUESTED_MAX_FPS_OFFSET ((size_t)72)
 #define CAPTURE_LEASE_NS UINT64_C(2000000000)
+#define CLIENT_CHECK_NS UINT64_C(200000000)
+#define STALL_RECHECK_NS UINT64_C(3000000000)
+#define INJECT_RECHECK_NS UINT64_C(5000000000)
+#define INJECT_FAILED_RETRY_NS UINT64_C(60000000000)
+#define INJECTOR_TIMEOUT_NS UINT64_C(30000000000)
+#define PROVIDER_NAME "vendor.oculus.hardware.sensors@1.0-service"
 #ifndef SHARED_PATH
-#define SHARED_PATH "/data/local/tmp/questpro-live-v8-shared.bin"
+#define SHARED_PATH "/data/local/tmp/questpro-live-v9-shared.bin"
 #endif
 #ifndef PID_PATH
-#define PID_PATH "/data/local/tmp/questpro-relay-v8.pid"
+#define PID_PATH "/data/local/tmp/questpro-relay-v9.pid"
 #endif
 #ifndef STREAM_PORT
 #define STREAM_PORT 27272
@@ -263,6 +270,102 @@ static int accept_client(int server) {
     return client;
 }
 
+/*
+ * The client never sends data, so a readable end-of-stream means it has gone.
+ * Checked while no frames flow: otherwise a disconnect is only noticed when a
+ * send fails, and the capture lease would be renewed forever.
+ */
+static int client_disconnected(int client) {
+    char byte;
+    ssize_t result = recv(client, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (result == 0) return 1;
+    return result < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR;
+}
+
+static pid_t find_provider_pid(void) {
+    DIR *directory = opendir("/proc");
+    if (!directory) return -1;
+    pid_t found = -1;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!is_decimal_name(entry->d_name)) continue;
+        pid_t candidate = (pid_t)strtol(entry->d_name, NULL, 10);
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%d/cmdline", candidate);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) continue;
+        char command[512];
+        ssize_t count = read(fd, command, sizeof(command) - 1);
+        close(fd);
+        if (count <= 0) continue;
+        command[count] = '\0';
+        if (strstr(command, PROVIDER_NAME)) {
+            found = candidate;
+            break;
+        }
+    }
+    closedir(directory);
+    return found;
+}
+
+/* 1 when the streamer is mapped in the sensors provider, 0 when it is not,
+ * -1 when that can't be told (no provider, or its maps are unreadable). */
+static int streamer_loaded(const char *streamer) {
+    pid_t provider = find_provider_pid();
+    if (provider <= 0) return -1;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", provider);
+    FILE *maps = fopen(path, "r");
+    if (!maps) return -1;
+    const char *name = strrchr(streamer, '/');
+    name = name ? name + 1 : streamer;
+    char line[1024];
+    int found = 0;
+    while (!found && fgets(line, sizeof(line), maps))
+        found = strstr(line, name) != NULL;
+    fclose(maps);
+    return found;
+}
+
+/*
+ * Loads the streamer into the provider again, for example after the provider
+ * restarted without it. The injector's output goes to this relay's output.
+ * A hung injector is killed after INJECTOR_TIMEOUT_NS; the provider's main
+ * thread would otherwise stay stopped.
+ */
+static int run_injector(const char *injector, const char *streamer) {
+    fflush(stdout);
+    fflush(stderr);
+    pid_t child = fork();
+    if (child < 0) {
+        fprintf(stderr, "INJECTOR_FORK_FAILED error=%s\n", strerror(errno));
+        return 0;
+    }
+    if (child == 0) {
+        execl(injector, injector, streamer, (char *)NULL);
+        dprintf(STDERR_FILENO, "INJECTOR_EXEC_FAILED error=%s\n", strerror(errno));
+        _exit(127);
+    }
+    const uint64_t deadline = monotonic_nanoseconds() + INJECTOR_TIMEOUT_NS;
+    int status = 0;
+    for (;;) {
+        pid_t waited = waitpid(child, &status, WNOHANG);
+        if (waited == child) break;
+        if (waited < 0 && errno != EINTR) {
+            fprintf(stderr, "INJECTOR_WAIT_FAILED error=%s\n", strerror(errno));
+            return 0;
+        }
+        if (monotonic_nanoseconds() >= deadline) {
+            kill(child, SIGKILL);
+            (void)waitpid(child, &status, 0);
+            fprintf(stderr, "INJECTOR_TIMEOUT\n");
+            return 0;
+        }
+        usleep(20000);
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 static int copy_stable_frame(const uint8_t *shared, uint32_t *last_generation,
                              uint64_t *sequence, uint64_t *timestamp,
                              uint8_t *frame) {
@@ -332,10 +435,13 @@ static int parse_unsigned(const char *text, unsigned maximum, unsigned *value) {
 }
 
 static int parse_arguments(int argc, char **argv, StreamMode *mode,
-                           unsigned *max_fps, unsigned *eye_fps) {
+                           unsigned *max_fps, unsigned *eye_fps,
+                           const char **injector, const char **streamer) {
     *mode = (StreamMode){"all", 0, 5, 0x1fu};
     *max_fps = 30;
     *eye_fps = 0;
+    *injector = NULL;
+    *streamer = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
             if (!parse_mode(argv[++i], mode)) return 0;
@@ -346,13 +452,18 @@ static int parse_arguments(int argc, char **argv, StreamMode *mode,
             *max_fps = (unsigned)value;
         } else if (!strcmp(argv[i], "--eye-fps") && i + 1 < argc) {
             if (!parse_unsigned(argv[++i], 10, eye_fps)) return 0;
+        } else if (!strcmp(argv[i], "--injector") && i + 1 < argc) {
+            *injector = argv[++i];
+        } else if (!strcmp(argv[i], "--streamer") && i + 1 < argc) {
+            *streamer = argv[++i];
         } else {
             return 0;
         }
     }
     /* Eye snapshots are only meaningful beside a stream without cameras 0+1. */
     if (*eye_fps && (mode->camera_mask & 0x03u)) return 0;
-    return 1;
+    /* Re-injection needs both paths. */
+    return (*injector == NULL) == (*streamer == NULL);
 }
 
 int main(int argc, char **argv) {
@@ -367,14 +478,19 @@ int main(int argc, char **argv) {
     StreamMode eye_mode;
     unsigned max_fps;
     unsigned eye_fps;
+    const char *injector;
+    const char *streamer;
     (void)parse_mode("eyes", &eye_mode);
-    if (!parse_arguments(argc, argv, &mode, &max_fps, &eye_fps)) {
+    if (!parse_arguments(argc, argv, &mode, &max_fps, &eye_fps, &injector,
+                         &streamer)) {
         fprintf(stderr,
                 "Usage: %s [--mode all|eyes|face|mouth] [--max-fps 0..120] "
-                "[--eye-fps 0..10]\n"
+                "[--eye-fps 0..10] [--injector PATH --streamer PATH]\n"
                 "       --eye-fps interleaves low-rate eye snapshots (cameras 0+1, "
                 "mask 0x03)\n"
-                "       and requires --mode face or mouth. 0 (default) disables them.\n",
+                "       and requires --mode face or mouth. 0 (default) disables them.\n"
+                "       --injector/--streamer re-inject the streamer when frames stop\n"
+                "       and it is no longer loaded in the sensors provider.\n",
                 argv[0]);
         return 1;
     }
@@ -403,8 +519,9 @@ int main(int argc, char **argv) {
     uint8_t *frame = malloc(SENSOR_BYTES);
     uint8_t *payload = malloc(SENSOR_BYTES);
     if (!frame || !payload) return 4;
-    printf("RELAY_LISTENING address=127.0.0.1 port=%d mode=%s max_fps=%u eye_fps=%u\n",
-           STREAM_PORT, mode.name, max_fps, eye_fps);
+    printf("RELAY_LISTENING address=127.0.0.1 port=%d mode=%s max_fps=%u eye_fps=%u "
+           "reinject=%s\n",
+           STREAM_PORT, mode.name, max_fps, eye_fps, injector ? "on" : "off");
 
     const uint64_t minimum_interval = max_fps
         ? UINT64_C(1000000000) / max_fps : 0;
@@ -414,20 +531,51 @@ int main(int argc, char **argv) {
         int client = accept_client(server);
         if (client < 0) continue;
         printf("CLIENT_CONNECTED\n");
-        set_capture_lease(shared, monotonic_nanoseconds() + CAPTURE_LEASE_NS);
+        uint64_t connected_at = monotonic_nanoseconds();
+        set_capture_lease(shared, connected_at + CAPTURE_LEASE_NS);
         uint32_t last_generation = 0;
         uint64_t next_send_at = 0;
         uint64_t next_eye_at = 0;
+        uint64_t next_client_check = 0;
+        uint64_t last_frame_at = connected_at;
+        uint64_t next_inject_check = connected_at + INJECT_RECHECK_NS;
         while (1) {
             set_capture_lease(shared, monotonic_nanoseconds() + CAPTURE_LEASE_NS);
             uint64_t sequence = 0;
             uint64_t timestamp = 0;
             if (!copy_stable_frame(shared, &last_generation, &sequence,
                                    &timestamp, frame)) {
+                uint64_t idle_now = monotonic_nanoseconds();
+                if (idle_now >= next_client_check) {
+                    if (client_disconnected(client)) {
+                        fprintf(stderr, "CLIENT_GONE_WHILE_IDLE\n");
+                        break;
+                    }
+                    next_client_check = idle_now + CLIENT_CHECK_NS;
+                }
+                /* No frames: the headset may be asleep, or the sensors
+                 * provider restarted without the streamer. */
+                if (injector && idle_now - last_frame_at >= STALL_RECHECK_NS &&
+                    idle_now >= next_inject_check) {
+                    next_inject_check = idle_now + INJECT_RECHECK_NS;
+                    if (streamer_loaded(streamer) == 0) {
+                        printf("STREAMER_MISSING reinjecting\n");
+                        if (run_injector(injector, streamer)) {
+                            printf("STREAMER_REINJECTED\n");
+                        } else {
+                            /* An attempt can pause the provider's threads, so
+                             * a failing one is not repeated every few seconds. */
+                            fprintf(stderr, "STREAMER_REINJECTION_FAILED\n");
+                            next_inject_check =
+                                monotonic_nanoseconds() + INJECT_FAILED_RETRY_NS;
+                        }
+                    }
+                }
                 usleep(500);
                 continue;
             }
             uint64_t now = monotonic_nanoseconds();
+            last_frame_at = now;
             if (minimum_interval && next_send_at && now < next_send_at)
                 continue;
             const uint64_t rejected_torn = __atomic_load_n(

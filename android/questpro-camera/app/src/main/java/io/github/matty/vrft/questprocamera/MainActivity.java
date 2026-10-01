@@ -475,10 +475,15 @@ public final class MainActivity extends Activity {
      * {@code am start -f 0x24000000 -n .../.MainActivity --ez eye_enabled true
      * --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true}.
      * Values go through the same validation as the on-screen controls.
+     * {@code --ez eye_alt_probe true} has no control: it picks the alternative
+     * eye probe (see the README) from the next stream start.
      */
     private void applySettingExtras(Intent intent) {
         if (intent.hasExtra("eye_enabled")) {
             Settings.setEyeEnabled(this, intent.getBooleanExtra("eye_enabled", false));
+        }
+        if (intent.hasExtra("eye_alt_probe")) {
+            Settings.setEyeAltProbe(this, intent.getBooleanExtra("eye_alt_probe", false));
         }
         if (intent.hasExtra("camera_fps")) {
             Settings.setCameraFps(this, intent.getIntExtra("camera_fps", Settings.DEFAULT_CAMERA_FPS));

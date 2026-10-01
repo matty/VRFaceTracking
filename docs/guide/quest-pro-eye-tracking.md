@@ -24,6 +24,8 @@ The trace hook is specific to the tracking-engine binary, so the APK checks it b
 
 On any other build the APK reports "Unsupported tracking-engine build" in the preview and streams the cameras without eye gaze. Treat every firmware update as unsupported until the offsets are revalidated.
 
+For `51503870024400340` the APK also has an alternative hook, from the [Qpro-Enhanced-FT-GNimrodG fork](https://github.com/GNimrodG/Qpro-Enhanced-FT), that you can choose over ADB. Neither hook has been confirmed on this build yet. The [APK README](../../android/questpro-camera/README.md#supported-engine-builds) says how to switch; the Eyes page's **Eye model setup** reads 3 while the alternative runs.
+
 ## Using it
 
 1. Start the stream. **Independent eye gaze** is ticked by default in the headset app; untick it there, or use **Per-eye gaze** on the desktop app's Headset page, to turn it off. Changing it restarts a running stream. The first start takes a few seconds longer while the tracking service restarts.

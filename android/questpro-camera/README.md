@@ -10,10 +10,10 @@ The connected development headset reports Android 14, API 34, arm64-v8a, build `
 
 On the connected Quest Pro, the foreground service obtained Magisk root, injected the native helper, started its loopback relay, and advertised the network stream through Android NSD. With Virtual Desktop in front, this PC discovered the service through mDNS and received live 800 × 400 frames. The browser preview reported advancing frame sequences. Long-duration and network-roaming behavior have not yet been tested.
 
-When the relay connects but no frame arrives, the locally rebuilt helper writes `CAMERA_MAP_STATE` to `/data/local/tmp/questpro-live-v8.log` about every five seconds. Each `slot:counter/face` entry reports the provider's hardware frame counter and whether lower-face pixels pass the source check. An already injected helper keeps running until a headset reboot, so updated native diagnostics need a reboot before they appear. Read the log with:
+When the relay connects but no frame arrives, the locally rebuilt helper writes `CAMERA_MAP_STATE` to `/data/local/tmp/questpro-live-v9.log` about every five seconds. Each `slot:counter/face` entry reports the provider's hardware frame counter and whether lower-face pixels pass the source check. The same log records `CAMERA_FRAMES_STALLED` / `CAMERA_FRAMES_RESUMED` when the provider's frames stop for over 2 s during capture, and `CAMERA_MAPS_CHANGED` when the provider rebuilt its camera buffers (see [Connection and recovery](#connection-and-recovery)). An already injected helper keeps running until a headset reboot, so updated native diagnostics need a reboot before they appear. Read the log with:
 
 ```powershell
-..\..\..\android-tools\platform-tools\adb.exe shell su -c 'tail -n 20 /data/local/tmp/questpro-live-v8.log'
+..\..\..\android-tools\platform-tools\adb.exe shell su -c 'tail -n 20 /data/local/tmp/questpro-live-v9.log'
 ```
 
 1. **Camera access:** the rooted native helper and loopback relay produce the live lower-face strip. Verified on this headset.
@@ -31,6 +31,8 @@ This project targets Android API 34 with Android Gradle Plugin 8.5.2, Gradle 8.7
 ..\..\..\android-tools\platform-tools\adb.exe install -r .\app\build\outputs\apk\debug\app-debug.apk
 ..\..\..\android-tools\platform-tools\adb.exe shell am start -n io.github.matty.vrft.questprocamera/.MainActivity
 ```
+
+The native helpers in `app/src/main/assets/native/` are committed prebuilt, so building the APK needs no NDK. After changing the C code in `native/`, rebuild them with `.\setup-toolchain.ps1 -Ndk` (once) and `.\build-native.ps1 -NdkRoot ..\..\.local\toolchain\android-sdk\ndk\26.1.10909125`, then build the APK.
 
 `.\build.ps1 -Release` builds the release APK instead. Both are signed with the repository's dev key, so either installs over the other and over the published builds; see [Versions and Releases](../../docs/internals/releasing.md#signing-the-headset-app).
 
@@ -74,10 +76,19 @@ The app's main screen has controls that are read from `SharedPreferences` and **
 The relay is launched as:
 
 ```
-questpro-camera-relay-v8 --mode mouth --max-fps <camera-fps> --eye-fps <eye-preview-fps>
+questpro-camera-relay-v9 --mode mouth --max-fps <camera-fps> --eye-fps <eye-preview-fps> --injector <injector> --streamer <streamer>
 ```
 
-`--eye-fps` accepts `0`–`10` (0 disables snapshots) and is only valid alongside `--mode mouth` or `--mode face` (a mode that does not already carry cameras 0 + 1).
+`--eye-fps` accepts `0`–`10` (0 disables snapshots) and is only valid alongside `--mode mouth` or `--mode face` (a mode that does not already carry cameras 0 + 1). `--injector` and `--streamer` go together; with them the relay can load the streamer again (see below).
+
+## Connection and recovery
+
+- **One PC at a time, newest wins.** A new connection on port 27274 replaces the current one, so a PC that vanished without closing its socket (sleep, Wi-Fi drop, daemon crash) never blocks the next session. The app also ends a connection when the PC closes it, when TCP keepalive gets no answer (probes after 10 s idle, every 3 s, 3 tries), when any write to it (frame, gaze or status) fails, and when a write takes longer than 3 s.
+- **Capture lease.** The relay renews the streamer's capture lease only while the app is connected to it. While no frames flow it checks the connection every 200 ms, so capture stops as soon as the app lets go instead of when the next frame fails to send.
+- **Relay supervision.** The app checks the relay process every 5 s and restarts it after two checks in a row find it stopped. After five restarts in one stream it gives up and shows the error; press Start again.
+- **Streamer re-injection.** When frames have stopped for 3 s, the relay checks every 5 s whether the streamer is still loaded in `vendor.oculus.hardware.sensors@1.0-service` (for example after the provider restarted) and runs the injector again if not (`STREAMER_MISSING`, `STREAMER_REINJECTED` in logcat under `Relay:`). An injection briefly pauses the provider, so after a failed attempt it waits 60 s before the next. A hung injector is killed after 30 s.
+- **Camera buffers.** The streamer identifies the provider's nine camera buffers by address and dmabuf inode. It checks them when capture starts and about once a second during capture, and finds them again if they changed, rather than reading addresses the provider may have unmapped, which would crash the provider and every tracking sensor with it. This narrows that window; it cannot close it.
+- **mDNS.** The service holds a Wi-Fi multicast lock while it runs, so the PC's mDNS queries reach the headset while Wi-Fi is idle, and retries a failed NSD registration every 30 s.
 
 ## Independent eye gaze (experimental)
 
@@ -109,10 +120,25 @@ The uprobe offset is firmware-specific, so the engine is matched by `stat -c %s`
 | --- | --- | --- | --- |
 | 1 | `51483620027600340` | 47,724,232 | offset `0xB63FE4` |
 | 2 | `51503870024400340` | 47,418,280 | offset `0xB1F3E8`; **also requires** sha256 `0fb6f54a3e190bec791d757ea18d32a8ecc1af4a861992d04b1703c93293cd03` |
+| 3 | `51503870024400340` | 47,418,280 | **opt-in** alternative to profile 2, same sha256; offset `0x9AF054` |
 
-Any other size (or a profile-2 hash mismatch) sets the eye state to `error` with the message `Unsupported tracking-engine build (<size>)` and leaves camera streaming untouched.
+Any other size sets the eye state to `error` with the message `Unsupported tracking-engine build (<size>)`, and a hash mismatch with `Tracking-engine hash mismatch for build <size>`; camera streaming carries on untouched.
 
-**Validation note:** profile 1 (`51483620027600340`) is the build the fork established convergence on. Profile 2 (`51503870024400340`, the current development headset) is **unvalidated end-to-end**: the upstream Qpro-Enhanced-FT README says eye convergence was only tested on `51483620027600340` and may not work on newer firmware, and the Fwooffy fork's release notes say the newer build was probed but a complete convergence session was not established. Treat profile 2 as experimental. This headset is not currently connected, so none of the on-device eye path in this release has been exercised on hardware.
+Profile 3 probes the same engine where it publishes the eye data, and reads both eyes' visual axes (`x23+0x300` and `x23+0x870`) from one trace line. It comes from the Qpro-Enhanced-FT-GNimrodG fork, which took it from QFTPlus; that fork says the detector outputs don't map the same way on this build. The event keeps the name `detector_output`, so the restore and the manual restore below are the same for every profile. The parser treats elements 0 and 1 as tags 0 and 1, and drops a line that repeats the previous one exactly.
+
+The APK uses profile 2 on this build unless the alternative probe is chosen over ADB. It has no on-screen control, and it applies from the next stream start:
+
+```powershell
+& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe true
+# back to profile 2:
+& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe false
+```
+
+On a build without an alternative (profile 1) the setting is ignored. The running profile shows as **Eye model setup** on the desktop app's Eyes page, and in `QPSTAT1`.
+
+For every profile the app marks a vector invalid (`QPGAZE1` flag bits 0 and 1) unless it is finite with a squared length between 0.25 and 2.25, and VRFT drops such samples.
+
+**Validation note:** profile 1 (`51483620027600340`) is the build the fork established convergence on. **Neither profile 2 nor profile 3 has been confirmed on hardware.** For profile 2, the upstream Qpro-Enhanced-FT README says eye convergence was only tested on `51483620027600340` and may not work on newer firmware, and the Fwooffy fork's release notes say the newer build was probed but a complete convergence session was not established. Profile 3 comes without any recorded validation. To compare them, run a stream with each and check in the Eyes page that samples arrive, that closing one eye doesn't move the other, and that looking near makes the eyes converge. Trying a profile costs the usual tracking-service restarts at stream start and stop. This headset is not currently connected, so none of the on-device eye path in this release has been exercised on hardware.
 
 ### Reading logs
 
@@ -120,7 +146,7 @@ All service and eye-pipeline messages are tagged `VRFTCamera`. Relay output (inc
 
 ```powershell
 ..\..\..\android-tools\platform-tools\adb.exe logcat -d -s VRFTCamera:I AndroidRuntime:E '*:S'
-..\..\..\android-tools\platform-tools\adb.exe shell su -c 'tail -n 20 /data/local/tmp/questpro-live-v8.log'
+..\..\..\android-tools\platform-tools\adb.exe shell su -c 'tail -n 20 /data/local/tmp/questpro-live-v9.log'
 ```
 
 ### Manual restore (emergency)
@@ -142,5 +168,7 @@ Rebooting the headset also clears the bind mount and any tracefs instance.
 ## Native code provenance
 
 The native arm64 assets originate from [Qpro-Enhanced-FT v0.1.10](https://github.com/n0tmast3r/Qpro-Enhanced-FT/releases/tag/v0.1.10). Release ZIP SHA-256: `db40f4b8331a50ca6c2ec37372f1ab4b44cfbe6d21e09ca04244aaaa339cb18f`. Their editable C sources are copied into `native/` from upstream commit `df52b87d282324b84ba172ae3c6354a6bda2aef6`; `build-native.ps1` rebuilds the assets with an Android NDK. The streamer asset was rebuilt locally with the camera-map diagnostic above. `native/relay.c` additionally carries the local `--eye-fps` option (interleaved mask `0x03` eye snapshots); rebuilding left the injector and streamer assets byte-identical to the previous local assets. The upstream MIT license is copied to `REFERENCE_LICENSE.txt`.
+
+Version 9 of the streamer and relay ports robustness fixes from the MIT-licensed [GNimrodG fork](https://github.com/GNimrodG/Qpro-Enhanced-FT) of Qpro-Enhanced-FT: camera-buffer revalidation and stall logging in the streamer, and the idle disconnect check and streamer re-injection in the relay (see [Connection and recovery](#connection-and-recovery)). The streamer was renamed from v8 because an injected library stays loaded until the headset reboots and the injector skips a name that is already loaded: a v8 streamer injected before the update stays in the provider, idle, until the next reboot, while the v9 one is injected beside it. The relay's shared-memory file (`questpro-live-v9-shared.bin`), PID file and the streamer log (`questpro-live-v9.log`) moved to v9 with it, and `relay --stop` still stops a v8 relay. The frame format and the relay protocol are unchanged. The injector is unchanged.
 
 The app copies those assets into its private storage, then asks Magisk to install and execute them from `/data/local/tmp/vrft-camera`. The injector loads the camera helper into the Quest Pro sensor provider. The native relay stays on headset loopback port 27273; the APK forwards complete frames on LAN port 27274. This is a compatibility path for the observed headset build, not a firmware-independent camera API.

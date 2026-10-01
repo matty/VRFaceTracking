@@ -7,7 +7,7 @@
 
 #define MAP_BYTES 0xC4000u
 #define COUNTER_OFFSET (800000u + 24u)
-#define LOG_PATH "/data/local/tmp/questpro-live-v8.log"
+#define LOG_PATH "/data/local/tmp/questpro-live-v9.log"
 
 static void *snapshot(void *unused) {
     (void)unused;

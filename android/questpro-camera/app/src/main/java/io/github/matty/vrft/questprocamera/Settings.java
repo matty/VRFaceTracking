@@ -22,6 +22,7 @@ public final class Settings {
     private static final String LEGACY_KEY_EYE_PREVIEW_FPS = "eye_preview_fps";
     private static final int LEGACY_DEFAULT_EYE_PREVIEW_FPS = 2;
     private static final String KEY_EYE_ENABLED = "eye_enabled";
+    private static final String KEY_EYE_ALT_PROBE = "eye_alt_probe";
 
     /** Camera FPS choices (relay {@code --max-fps}); default is 24. */
     public static final int[] CAMERA_FPS_CHOICES = {12, 15, 20, 24, 30, 36};
@@ -78,6 +79,19 @@ public final class Settings {
 
     public static void setEyeEnabled(Context context, boolean enabled) {
         prefs(context).edit().putBoolean(KEY_EYE_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Whether eye gaze uses the alternative probe where a build has one
+     * (engine profile 3 instead of 2). Off unless set over ADB; for testing
+     * which probe works on hardware.
+     */
+    public static boolean isEyeAltProbe(Context context) {
+        return prefs(context).getBoolean(KEY_EYE_ALT_PROBE, false);
+    }
+
+    public static void setEyeAltProbe(Context context, boolean alternative) {
+        prefs(context).edit().putBoolean(KEY_EYE_ALT_PROBE, alternative).apply();
     }
 
     private static int clampToChoices(int value, int[] choices, int fallback) {

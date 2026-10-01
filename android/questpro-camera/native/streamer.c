@@ -22,8 +22,11 @@
 #define FRAME_COUNTER_OFFSET (SENSOR_BYTES + (size_t)24)
 #define FACE_X 800
 #define MAX_CAMERA_MAPS 16
-#define LOG_PATH "/data/local/tmp/questpro-live-v8.log"
-#define SHARED_PATH "/data/local/tmp/questpro-live-v8-shared.bin"
+#define CAMERA_MAP_COUNT 9
+#define MAP_CHECK_INTERVAL_NS UINT64_C(1000000000)
+#define FRAME_STALL_NS UINT64_C(2000000000)
+#define LOG_PATH "/data/local/tmp/questpro-live-v9.log"
+#define SHARED_PATH "/data/local/tmp/questpro-live-v9-shared.bin"
 #define SHARED_HEADER_BYTES ((size_t)80)
 #define SHARED_BYTES (SHARED_HEADER_BYTES + SENSOR_BYTES)
 #define SHARED_TORN_COUNT_OFFSET ((size_t)56)
@@ -32,6 +35,7 @@
 
 typedef struct {
     uint8_t *address;
+    unsigned long long inode;
 } CameraMap;
 
 static CameraMap g_maps[MAX_CAMERA_MAPS];
@@ -70,7 +74,8 @@ static int compare_map_address(const void *left, const void *right) {
     return a->address < b->address ? -1 : a->address > b->address;
 }
 
-static int discover_camera_maps(void) {
+static int collect_camera_maps(CameraMap *found, size_t *found_count) {
+    *found_count = 0;
     FILE *maps = fopen("/proc/self/maps", "r");
     if (!maps) return 0;
     char line[1024];
@@ -84,22 +89,57 @@ static int discover_camera_maps(void) {
                             &path_offset);
         (void)offset;
         (void)device;
-        (void)inode;
         if (fields != 6 || permissions[0] != 'r' || end <= start ||
             (size_t)(end - start) != CAMERA_MAP_BYTES)
             continue;
         char *path = line + path_offset;
         while (*path == ' ' || *path == '\t') ++path;
         if (!strstr(path, "/dmabuf:dmabuf")) continue;
-        if (g_map_count >= MAX_CAMERA_MAPS) {
+        if (*found_count >= MAX_CAMERA_MAPS) {
             fclose(maps);
             return 0;
         }
-        g_maps[g_map_count++].address = (uint8_t *)(uintptr_t)start;
+        found[*found_count].address = (uint8_t *)(uintptr_t)start;
+        found[*found_count].inode = inode;
+        ++*found_count;
     }
     fclose(maps);
-    qsort(g_maps, g_map_count, sizeof(g_maps[0]), compare_map_address);
-    return g_map_count == 9;
+    qsort(found, *found_count, sizeof(found[0]), compare_map_address);
+    return *found_count == CAMERA_MAP_COUNT;
+}
+
+static int discover_camera_maps(void) {
+    return collect_camera_maps(g_maps, &g_map_count);
+}
+
+/*
+ * The provider owns these DMA mappings and may tear them down and rebuild
+ * them, for example while it recovers its camera pipeline. Reading a cached
+ * address after that faults inside the provider and takes every tracking
+ * sensor with it. Address plus dmabuf inode identifies each buffer, so a
+ * rebuilt pipeline is noticed even if it lands at the same addresses. This
+ * narrows the window to the time between a check and the next read; it
+ * cannot close it. Approach from the GNimrodG fork of Qpro-Enhanced-FT (MIT).
+ */
+static int camera_maps_unchanged(void) {
+    CameraMap current[MAX_CAMERA_MAPS];
+    size_t count = 0;
+    if (!collect_camera_maps(current, &count) || count != g_map_count) return 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (current[i].address != g_maps[i].address ||
+            current[i].inode != g_maps[i].inode)
+            return 0;
+    }
+    return 1;
+}
+
+static void wait_for_camera_maps(void) {
+    while (!discover_camera_maps()) {
+        log_line("WAITING_FOR_CAMERA_MAPS count=%zu", g_map_count);
+        g_map_count = 0;
+        sleep(1);
+    }
+    log_line("MAP_DISCOVERY_OK count=%zu", g_map_count);
 }
 
 static uint32_t frame_counter(const CameraMap *map) {
@@ -252,12 +292,7 @@ static void log_camera_state(void) {
 
 static void *stream_worker(void *unused) {
     (void)unused;
-    while (!discover_camera_maps()) {
-        log_line("WAITING_FOR_CAMERA_MAPS count=%zu", g_map_count);
-        g_map_count = 0;
-        sleep(1);
-    }
-    log_line("MAP_DISCOVERY_OK count=%zu", g_map_count);
+    wait_for_camera_maps();
     uint8_t *first = malloc(SENSOR_BYTES);
     uint8_t *second = malloc(SENSOR_BYTES);
     if (!first || !second) {
@@ -276,14 +311,27 @@ static void *stream_worker(void *unused) {
     uint32_t last_published_counter = 0;
     int was_active = 0;
     uint64_t last_diagnostic_at = 0;
+    uint64_t next_map_check_at = 0;
+    uint64_t last_new_frame_at = 0;
+    int stalled = 0;
     for (;;) {
         int active = capture_is_requested(shared);
         if (active != was_active) {
             log_line(active ? "CAPTURE_ACTIVE" : "CAPTURE_IDLE");
             if (active) {
+                /* The idle loop never touches the camera mappings, so they may
+                 * have been rebuilt since the last session. */
+                if (!camera_maps_unchanged()) {
+                    log_line("CAMERA_MAPS_CHANGED reason=activate");
+                    wait_for_camera_maps();
+                }
                 /* Discard frames accumulated while idle. The first output
                  * must carry a hardware counter newer than this baseline. */
                 last_published_counter = newest_counter();
+                uint64_t now = monotonic_nanoseconds();
+                next_map_check_at = now + MAP_CHECK_INTERVAL_NS;
+                last_new_frame_at = now;
+                stalled = 0;
             }
             was_active = active;
         }
@@ -291,6 +339,24 @@ static void *stream_worker(void *unused) {
             next_capture_at = 0;
             usleep(20000);
             continue;
+        }
+        uint64_t check_now = monotonic_nanoseconds();
+        if (check_now >= next_map_check_at) {
+            if (!camera_maps_unchanged()) {
+                log_line("CAMERA_MAPS_CHANGED reason=periodic");
+                wait_for_camera_maps();
+                last_published_counter = newest_counter();
+                next_capture_at = 0;
+                check_now = monotonic_nanoseconds();
+                last_new_frame_at = check_now;
+            }
+            next_map_check_at = check_now + MAP_CHECK_INTERVAL_NS;
+        }
+        /* Record provider-side stalls so a frozen camera pipeline can be told
+         * apart from a relay or PC-side problem in the headset log. */
+        if (!stalled && check_now - last_new_frame_at > FRAME_STALL_NS) {
+            stalled = 1;
+            log_line("CAMERA_FRAMES_STALLED counter=%u", newest_counter());
         }
         uint32_t max_fps = requested_max_fps(shared);
         if (max_fps) {
@@ -314,6 +380,11 @@ static void *stream_worker(void *unused) {
             }
             usleep(1000);
             continue;
+        }
+        last_new_frame_at = monotonic_nanoseconds();
+        if (stalled) {
+            stalled = 0;
+            log_line("CAMERA_FRAMES_RESUMED counter=%u", selected_counter);
         }
         if (!copy_stable_frame(map, selected_counter, first, second)) {
             ++rejected_torn;
@@ -342,5 +413,5 @@ __attribute__((constructor)) static void start_streamer(void) {
         return;
     }
     pthread_detach(g_worker);
-    log_line("STREAMER_STARTED version=8.0 cameras=all stability=counter-guarded-double-copy provider-cap=relay-max-fps ring-order=hardware-counter lifecycle=client-lease diagnostics=torn-count");
+    log_line("STREAMER_STARTED version=9.0 cameras=all stability=counter-guarded-double-copy provider-cap=relay-max-fps ring-order=hardware-counter lifecycle=client-lease maps=revalidated diagnostics=torn-count,stall");
 }

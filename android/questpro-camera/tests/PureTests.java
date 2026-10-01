@@ -169,11 +169,11 @@ public final class PureTests {
         check("tag0 alone yields no pair",
                 parser.parse(traceLine("1000.100000", "3f800000", "00000000", "bf800000", "0")) == null);
         TraceParser.GazePair pair = parser.parse(
-                traceLine("1000.100200", "40000000", "3f000000", "00000000", "1"));
+                traceLine("1000.100200", "3f800000", "3f000000", "00000000", "1"));
         check("in-window pair emitted", pair != null);
         if (pair != null) {
             check("tag0 vector preserved", pair.tag0[0] == 1.0f && pair.tag0[2] == -1.0f);
-            check("tag1 vector preserved", pair.tag1[0] == 2.0f && pair.tag1[1] == 0.5f);
+            check("tag1 vector preserved", pair.tag1[0] == 1.0f && pair.tag1[1] == 0.5f);
             long expectedNs = Math.round((1000.100000 + 1000.100200) / 2.0 * 1e9);
             check("kernel ns is mean of the pair", pair.kernelTimeNs == expectedNs);
             check("both valid bits set", pair.tag0Valid && pair.tag1Valid);
@@ -201,6 +201,48 @@ public final class PureTests {
 
         // non-matching line
         check("garbage line ignored", new TraceParser().parse("not a trace line") == null);
+
+        // a vector far from unit length is not a direction; the other eye stays valid
+        TraceParser length = new TraceParser();
+        length.parse(traceLine("4000.000000", "00000000", "00000000", "3ecccccd", "0"));
+        TraceParser.GazePair shortPair = length.parse(
+                traceLine("4000.000100", "00000000", "00000000", "3f800000", "1"));
+        check("short vector still pairs", shortPair != null);
+        if (shortPair != null) {
+            check("short vector invalid, other valid", !shortPair.tag0Valid && shortPair.tag1Valid);
+        }
+        check("length 1.5 is a direction",
+                TraceParser.isDirection(new float[] {0f, 0f, 1.5f}));
+        check("length 1.6 is not",
+                !TraceParser.isDirection(new float[] {0f, 0f, 1.6f}));
+        check("NaN is not",
+                !TraceParser.isDirection(new float[] {Float.NaN, 0f, 1f}));
+
+        // both eyes on one line (engine profile 3)
+        TraceParser both = new TraceParser();
+        TraceParser.GazePair first = both.parse(
+                bothLine("5000.250000", "3f800000", "00000000", "00000000",
+                        "00000000", "3f000000", "3f000000"));
+        check("both-eyes line yields a pair", first != null);
+        if (first != null) {
+            check("element 0 is tag 0", first.tag0[0] == 1.0f && first.tag0[1] == 0.0f);
+            check("element 1 is tag 1", first.tag1[1] == 0.5f && first.tag1[2] == 0.5f);
+            check("both-eyes kernel ns", first.kernelTimeNs == Math.round(5000.25 * 1e9));
+            check("both-eyes valid bits", first.tag0Valid && first.tag1Valid);
+        }
+        check("repeated both-eyes line dropped", both.parse(
+                bothLine("5000.250100", "3f800000", "00000000", "00000000",
+                        "00000000", "3f000000", "3f000000")) == null);
+        TraceParser.GazePair next = both.parse(
+                bothLine("5000.261000", "3f800000", "00000000", "00000000",
+                        "00000000", "00000000", "40000000"));
+        check("changed both-eyes line yields a pair", next != null);
+        if (next != null) {
+            check("long vector invalid", next.tag0Valid && !next.tag1Valid);
+        }
+        check("a both-eyes line needs no partner", new TraceParser().parse(
+                bothLine("5000.300000", "3f800000", "00000000", "00000000",
+                        "3f800000", "00000000", "00000000")) != null);
     }
 
     // ---- packet encoders ------------------------------------------------
@@ -286,6 +328,13 @@ public final class PureTests {
         return "          probe-1234  [000] d..1  " + time
                 + ": detector_output: (arg) x=0x" + x + " y=0x" + y
                 + " z=0x" + z + " tag=0x" + tag;
+    }
+
+    private static String bothLine(String time, String lx, String ly, String lz,
+                                   String rx, String ry, String rz) {
+        return "          probe-1234  [000] d..1  " + time
+                + ": detector_output: (arg) lx=0x" + lx + " ly=0x" + ly + " lz=0x" + lz
+                + " rx=0x" + rx + " ry=0x" + ry + " rz=0x" + rz;
     }
 
     private static boolean refuses(byte[] archive, String expectedFragment) {

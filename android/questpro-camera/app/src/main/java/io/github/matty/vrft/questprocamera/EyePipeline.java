@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Safety: every root command runs under Magisk {@code su --mount-master -c}
  * (global mount namespace) with a timeout; restore state is persisted before
  * mounting; any failure after mounting attempts a full restore; the engine is
- * matched by size (profile 2 also by sha256); paths are quoted. There is never
+ * matched by size (profiles 2 and 3 also by sha256); paths are quoted. There is never
  * a fallback to plain {@code su} for mount operations.
  */
 public final class EyePipeline {
@@ -60,31 +60,64 @@ public final class EyePipeline {
     static final String STATE_ERROR = "error";
     static final String STATE_RESTORING = "restoring";
 
-    /** Supported tracking-engine builds, selected by {@code stat -c %s}. */
+    /**
+     * Supported tracking-engine builds, selected by {@code stat -c %s} and,
+     * among the profiles for one build, by {@link Settings#isEyeAltProbe}.
+     */
     static final class Profile {
         final int id;
         final long size;
         final long offset;
         final String args;
-        final String sha256; // required only for profile 2; null otherwise
+        final String sha256; // null when the size alone identifies the build
+        /** Used only when the alternative probe is chosen; see the README. */
+        final boolean alternative;
 
-        Profile(int id, long size, long offset, String args, String sha256) {
+        Profile(int id, long size, long offset, String args, String sha256,
+                boolean alternative) {
             this.id = id;
             this.size = size;
             this.offset = offset;
             this.args = args;
             this.sha256 = sha256;
+            this.alternative = alternative;
         }
     }
+
+    private static final String ENGINE_51503870024400340_SHA256 =
+            "0fb6f54a3e190bec791d757ea18d32a8ecc1af4a861992d04b1703c93293cd03";
 
     static final Profile[] PROFILES = {
             new Profile(1, 47_724_232L, 0xB63FE4L,
                     "x=+0x30(%sp):x32 y=+0x34(%sp):x32 z=+0x38(%sp):x32 tag=+0x0(%x19):x32",
-                    null),
+                    null, false),
             new Profile(2, 47_418_280L, 0xB1F3E8L,
                     "x=+0x300(%x19):x32 y=+0x304(%x19):x32 z=+0x308(%x19):x32 tag=+0x0(%x19):x32",
-                    "0fb6f54a3e190bec791d757ea18d32a8ecc1af4a861992d04b1703c93293cd03"),
+                    ENGINE_51503870024400340_SHA256, false),
+            // The same build probed where it publishes the eye data, both eyes'
+            // visual axes on one line (Qpro-Enhanced-FT-GNimrodG, from QFTPlus).
+            // The event keeps the one name, so cleanup and the manual restore
+            // are unchanged; TraceParser tells the two line formats apart.
+            new Profile(3, 47_418_280L, 0x9AF054L,
+                    "lx=+0x300(%x23):x32 ly=+0x304(%x23):x32 lz=+0x308(%x23):x32 "
+                            + "rx=+0x870(%x23):x32 ry=+0x874(%x23):x32 rz=+0x878(%x23):x32",
+                    ENGINE_51503870024400340_SHA256, true),
     };
+
+    /**
+     * The profile for an engine of {@code size}: the alternative one when it
+     * is chosen and exists for that build, otherwise the default, or
+     * {@code null} for an unsupported build.
+     */
+    static Profile selectProfile(long size, boolean alternative) {
+        Profile fallback = null;
+        for (Profile candidate : PROFILES) {
+            if (candidate.size != size) continue;
+            if (candidate.alternative == alternative) return candidate;
+            if (!candidate.alternative) fallback = candidate;
+        }
+        return fallback;
+    }
 
     /** Immutable snapshot of the eye pipeline's status, mirrored into QPSTAT1. */
     public static final class EyeStatus {
@@ -439,12 +472,14 @@ public final class EyePipeline {
         } catch (NumberFormatException bad) {
             throw new EyeException("Could not read tracking-engine size");
         }
-        Profile profile = null;
-        for (Profile candidate : PROFILES) {
-            if (candidate.size == size) { profile = candidate; break; }
-        }
+        boolean alternative = Settings.isEyeAltProbe(context);
+        Profile profile = selectProfile(size, alternative);
         if (profile == null) {
             throw new EyeException("Unsupported tracking-engine build (" + size + ")");
+        }
+        if (alternative && !profile.alternative) {
+            Log.i(TAG, "No alternative eye probe for build " + size + "; using profile "
+                    + profile.id);
         }
         if (profile.sha256 != null) {
             String sum = firstToken(

@@ -25,9 +25,9 @@ public final class GazePackets {
     public static final int GAZE_VERSION = 1;
     public static final int STAT_VERSION = 1;
 
-    /** flag bit 0: tag 0 vector is valid (all components finite). */
+    /** flag bit 0: tag 0 vector is valid (finite, with a squared length within [0.25, 2.25]). */
     public static final int FLAG_TAG0_VALID = 0x1;
-    /** flag bit 1: tag 1 vector is valid (all components finite). */
+    /** flag bit 1: tag 1 vector is valid (finite, with a squared length within [0.25, 2.25]). */
     public static final int FLAG_TAG1_VALID = 0x2;
     /** flag bit 2: the patched independent-axes model is active. */
     public static final int FLAG_MODEL_ACTIVE = 0x4;
