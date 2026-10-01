@@ -934,16 +934,20 @@ mod tests {
     use super::*;
 
     fn test_directory() -> PathBuf {
+        // Tests run in parallel, and Windows' coarse clock can give two of
+        // them the same timestamp, so a counter keeps the names unique.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.local/tongue-tests-rust");
         fs::create_dir_all(&root).unwrap();
         let directory = root.join(format!(
-            "{}-{}",
+            "{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&directory).unwrap();
         directory
