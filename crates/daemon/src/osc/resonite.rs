@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rosc::{encoder, OscBundle, OscMessage, OscPacket, OscType};
+use rosc::{OscMessage, OscType};
 use std::net::UdpSocket;
 use vrft_common::{UnifiedExpressions, UnifiedTrackingData};
 
@@ -293,15 +293,9 @@ impl ResoniteOsc {
             return Ok(());
         }
 
-        let bundle = OscBundle {
-            timetag: rosc::OscTime::from((0, 0)),
-            content: messages.into_iter().map(OscPacket::Message).collect(),
-        };
-
-        let packet = OscPacket::Bundle(bundle);
-        let msg_buf = encoder::encode(&packet)?;
-
-        socket.send_to(&msg_buf, &self.target_addr)?;
+        for bundle in super::encode_bundles(messages)? {
+            socket.send_to(&bundle, &self.target_addr)?;
+        }
 
         Ok(())
     }

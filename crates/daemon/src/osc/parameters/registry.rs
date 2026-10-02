@@ -1,3 +1,4 @@
+use super::base_param::BoolParam;
 use super::eparam::EParam;
 use super::legacy_eye::create_legacy_eye_parameters;
 use super::legacy_lip::create_legacy_lip_parameters;
@@ -5,7 +6,212 @@ use super::native_param::create_native_parameters;
 use super::{ParamType, Parameter};
 use rosc::OscMessage;
 use std::collections::{HashMap, HashSet};
-use vrft_common::{UnifiedExpressions, UnifiedTrackingData};
+use vrft_common::{UnifiedExpressions as E, UnifiedTrackingData};
+
+// Brow Simple Shapes
+fn brow_up_right(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::BrowOuterUpRight) * 0.6 + d.weight(E::BrowInnerUpRight) * 0.4
+}
+fn brow_up_left(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::BrowOuterUpLeft) * 0.6 + d.weight(E::BrowInnerUpLeft) * 0.4
+}
+fn brow_down_right(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::BrowLowererRight) * 0.75 + d.weight(E::BrowPinchRight) * 0.25
+}
+fn brow_down_left(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::BrowLowererLeft) * 0.75 + d.weight(E::BrowPinchLeft) * 0.25
+}
+
+// Mouth Simple Shapes
+fn mouth_smile_right(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::MouthCornerPullRight) * 0.8 + d.weight(E::MouthCornerSlantRight) * 0.2
+}
+fn mouth_smile_left(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::MouthCornerPullLeft) * 0.8 + d.weight(E::MouthCornerSlantLeft) * 0.2
+}
+fn mouth_sad_right(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::MouthFrownRight)
+        .max(d.weight(E::MouthStretchRight))
+}
+fn mouth_sad_left(d: &UnifiedTrackingData) -> f32 {
+    d.weight(E::MouthFrownLeft)
+        .max(d.weight(E::MouthStretchLeft))
+}
+
+/// A shape computed from tracking data.
+type ShapeFn = fn(&UnifiedTrackingData) -> f32;
+
+/// The simple shapes above, also sent on their own.
+const SIMPLE_EXPRESSIONS: &[(&str, ShapeFn)] = &[
+    ("v2/BrowUpRight", brow_up_right),
+    ("v2/BrowUpLeft", brow_up_left),
+    ("v2/BrowDownRight", brow_down_right),
+    ("v2/BrowDownLeft", brow_down_left),
+    ("v2/MouthSmileRight", mouth_smile_right),
+    ("v2/MouthSmileLeft", mouth_smile_left),
+    ("v2/MouthSadRight", mouth_sad_right),
+    ("v2/MouthSadLeft", mouth_sad_left),
+];
+
+/// How a combined parameter is computed from the shapes.
+#[derive(Clone, Copy)]
+enum Combined {
+    /// `(a + b) / 2`
+    Average(E, E),
+    /// `a - b`
+    Difference(E, E),
+    Custom(ShapeFn),
+}
+use Combined::{Average, Custom, Difference};
+
+/// The combined v2 parameters, in registration order.
+#[rustfmt::skip]
+const COMBINED: &[(&str, Combined)] = &[
+    // Eyebrows Compacted
+    ("v2/BrowUp", Custom(|d| (brow_up_right(d) + brow_up_left(d)) * 0.5)),
+    ("v2/BrowDown", Custom(|d| (brow_down_right(d) + brow_down_left(d)) * 0.5)),
+    ("v2/BrowInnerUp", Average(E::BrowInnerUpLeft, E::BrowInnerUpRight)),
+    ("v2/BrowOuterUp", Average(E::BrowOuterUpLeft, E::BrowOuterUpRight)),
+    ("v2/BrowExpressionRight", Custom(|d| {
+        (d.weight(E::BrowInnerUpRight) * 0.5 + d.weight(E::BrowOuterUpRight) * 0.5).min(1.0)
+            - brow_down_right(d)
+    })),
+    ("v2/BrowExpressionLeft", Custom(|d| {
+        (d.weight(E::BrowInnerUpLeft) * 0.5 + d.weight(E::BrowOuterUpLeft) * 0.5).min(1.0)
+            - brow_down_left(d)
+    })),
+    ("v2/BrowExpression", Custom(|d| {
+        let right = (d.weight(E::BrowInnerUpRight) + d.weight(E::BrowOuterUpRight)) * 0.5;
+        let left = (d.weight(E::BrowInnerUpLeft) + d.weight(E::BrowOuterUpLeft)) * 0.5;
+        (right.min(1.0) - brow_down_right(d) + left.min(1.0) - brow_down_left(d)) * 0.5
+    })),
+
+    // Jaw Combined
+    ("v2/JawX", Difference(E::JawRight, E::JawLeft)),
+    ("v2/JawZ", Difference(E::JawForward, E::JawBackward)),
+
+    // Cheeks Combined
+    ("v2/CheekSquint", Average(E::CheekSquintLeft, E::CheekSquintRight)),
+    ("v2/CheekPuffSuckLeft", Difference(E::CheekPuffLeft, E::CheekSuckLeft)),
+    ("v2/CheekPuffSuckRight", Difference(E::CheekPuffRight, E::CheekSuckRight)),
+    ("v2/CheekPuffSuck", Custom(|d| {
+        (d.weight(E::CheekPuffRight) + d.weight(E::CheekPuffLeft)) / 2.0
+            - (d.weight(E::CheekSuckRight) + d.weight(E::CheekSuckLeft)) / 2.0
+    })),
+    ("v2/CheekSuck", Average(E::CheekSuckLeft, E::CheekSuckRight)),
+
+    // Mouth Direction
+    ("v2/MouthUpperX", Difference(E::MouthUpperRight, E::MouthUpperLeft)),
+    ("v2/MouthLowerX", Difference(E::MouthLowerRight, E::MouthLowerLeft)),
+    ("v2/MouthX", Custom(|d| {
+        (d.weight(E::MouthUpperRight) + d.weight(E::MouthLowerRight)) / 2.0
+            - (d.weight(E::MouthUpperLeft) + d.weight(E::MouthLowerLeft)) / 2.0
+    })),
+
+    // Lip Combined
+    ("v2/LipSuckUpper", Average(E::LipSuckUpperRight, E::LipSuckUpperLeft)),
+    ("v2/LipSuckLower", Average(E::LipSuckLowerRight, E::LipSuckLowerLeft)),
+    ("v2/LipSuck", Custom(|d| {
+        (d.weight(E::LipSuckUpperRight)
+            + d.weight(E::LipSuckUpperLeft)
+            + d.weight(E::LipSuckLowerRight)
+            + d.weight(E::LipSuckLowerLeft))
+            / 4.0
+    })),
+
+    ("v2/LipFunnelUpper", Average(E::LipFunnelUpperRight, E::LipFunnelUpperLeft)),
+    ("v2/LipFunnelLower", Average(E::LipFunnelLowerRight, E::LipFunnelLowerLeft)),
+    ("v2/LipFunnel", Custom(|d| {
+        (d.weight(E::LipFunnelUpperRight)
+            + d.weight(E::LipFunnelUpperLeft)
+            + d.weight(E::LipFunnelLowerRight)
+            + d.weight(E::LipFunnelLowerLeft))
+            / 4.0
+    })),
+
+    ("v2/LipPuckerUpper", Average(E::LipPuckerUpperRight, E::LipPuckerUpperLeft)),
+    ("v2/LipPuckerLower", Average(E::LipPuckerLowerRight, E::LipPuckerLowerLeft)),
+    ("v2/LipPuckerRight", Average(E::LipPuckerUpperRight, E::LipPuckerLowerRight)),
+    ("v2/LipPuckerLeft", Average(E::LipPuckerUpperLeft, E::LipPuckerLowerLeft)),
+    ("v2/LipPucker", Custom(|d| {
+        (d.weight(E::LipPuckerUpperRight)
+            + d.weight(E::LipPuckerUpperLeft)
+            + d.weight(E::LipPuckerLowerRight)
+            + d.weight(E::LipPuckerLowerLeft))
+            / 4.0
+    })),
+
+    // Lip Suck/Funnel compacted
+    ("v2/LipSuckFunnelUpper", Custom(|d| {
+        (d.weight(E::LipSuckUpperRight) + d.weight(E::LipSuckUpperLeft)) / 2.0
+            - (d.weight(E::LipFunnelUpperRight) + d.weight(E::LipFunnelUpperLeft)) / 2.0
+    })),
+    ("v2/LipSuckFunnelLower", Custom(|d| {
+        (d.weight(E::LipSuckLowerRight) + d.weight(E::LipSuckLowerLeft)) / 2.0
+            - (d.weight(E::LipFunnelLowerRight) + d.weight(E::LipFunnelLowerLeft)) / 2.0
+    })),
+    ("v2/LipSuckFunnelLowerLeft", Difference(E::LipSuckLowerLeft, E::LipFunnelLowerLeft)),
+    ("v2/LipSuckFunnelLowerRight", Difference(E::LipSuckLowerRight, E::LipFunnelLowerRight)),
+    ("v2/LipSuckFunnelUpperLeft", Difference(E::LipSuckUpperLeft, E::LipFunnelUpperLeft)),
+    ("v2/LipSuckFunnelUpperRight", Difference(E::LipSuckUpperRight, E::LipFunnelUpperRight)),
+
+    // Mouth Combined
+    ("v2/MouthUpperUp", Average(E::MouthUpperUpRight, E::MouthUpperUpLeft)),
+    ("v2/MouthLowerDown", Average(E::MouthLowerDownRight, E::MouthLowerDownLeft)),
+    ("v2/MouthOpen", Custom(|d| {
+        d.weight(E::MouthUpperUpRight) * 0.25
+            + d.weight(E::MouthUpperUpLeft) * 0.25
+            + d.weight(E::MouthLowerDownRight) * 0.25
+            + d.weight(E::MouthLowerDownLeft) * 0.25
+    })),
+
+    ("v2/MouthStretch", Average(E::MouthStretchRight, E::MouthStretchLeft)),
+    ("v2/MouthTightener", Average(E::MouthTightenerRight, E::MouthTightenerLeft)),
+    ("v2/MouthPress", Average(E::MouthPressRight, E::MouthPressLeft)),
+    ("v2/MouthDimple", Average(E::MouthDimpleRight, E::MouthDimpleLeft)),
+    ("v2/NoseSneer", Average(E::NoseSneerRight, E::NoseSneerLeft)),
+
+    // Mouth compacted
+    ("v2/MouthTightenerStretch", Custom(|d| {
+        (d.weight(E::MouthTightenerRight) + d.weight(E::MouthTightenerLeft)) / 2.0
+            - (d.weight(E::MouthStretchRight) + d.weight(E::MouthStretchLeft)) / 2.0
+    })),
+    ("v2/MouthTightenerStretchLeft", Difference(E::MouthTightenerLeft, E::MouthStretchLeft)),
+    ("v2/MouthTightenerStretchRight", Difference(E::MouthTightenerRight, E::MouthStretchRight)),
+
+    // Lip Corners Combined
+    ("v2/MouthCornerYLeft", Difference(E::MouthCornerSlantLeft, E::MouthFrownLeft)),
+    ("v2/MouthCornerYRight", Difference(E::MouthCornerSlantRight, E::MouthFrownRight)),
+    ("v2/MouthCornerY", Custom(|d| {
+        (d.weight(E::MouthCornerSlantLeft) - d.weight(E::MouthFrownLeft)
+            + d.weight(E::MouthCornerSlantRight)
+            - d.weight(E::MouthFrownRight))
+            * 0.5
+    })),
+
+    // SmileFrown
+    ("v2/SmileFrownRight", Custom(|d| mouth_smile_right(d) - d.weight(E::MouthFrownRight))),
+    ("v2/SmileFrownLeft", Custom(|d| mouth_smile_left(d) - d.weight(E::MouthFrownLeft))),
+    ("v2/SmileFrown", Custom(|d| {
+        mouth_smile_right(d) * 0.5 + mouth_smile_left(d) * 0.5
+            - d.weight(E::MouthFrownRight) * 0.5
+            - d.weight(E::MouthFrownLeft) * 0.5
+    })),
+
+    // SmileSad
+    ("v2/SmileSadRight", Custom(|d| mouth_smile_right(d) - mouth_sad_right(d))),
+    ("v2/SmileSadLeft", Custom(|d| mouth_smile_left(d) - mouth_sad_left(d))),
+    ("v2/SmileSad", Custom(|d| {
+        (mouth_smile_left(d) + mouth_smile_right(d)) / 2.0
+            - (mouth_sad_left(d) + mouth_sad_right(d)) / 2.0
+    })),
+
+    // Tongue Combined
+    ("v2/TongueX", Difference(E::TongueRight, E::TongueLeft)),
+    ("v2/TongueY", Difference(E::TongueUp, E::TongueDown)),
+    ("v2/TongueArchY", Difference(E::TongueCurlUp, E::TongueBendDown)),
+    ("v2/TongueShape", Difference(E::TongueFlat, E::TongueSquish)),
+];
 
 pub struct ParameterRegistry {
     parameters: Vec<Box<dyn Parameter>>,
@@ -14,11 +220,6 @@ pub struct ParameterRegistry {
 impl ParameterRegistry {
     pub fn new() -> Self {
         let mut parameters: Vec<Box<dyn Parameter>> = Vec::new();
-
-        // Helper to get shape weight
-        fn w(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
-            data.shapes[expr as usize].weight
-        }
 
         // Head Tracking
         parameters.push(Box::new(EParam::simple("v2/Head/Yaw", |d| d.head.head_yaw)));
@@ -94,420 +295,52 @@ impl ParameterRegistry {
 
         // Eye Wide
         parameters.push(Box::new(EParam::simple("v2/EyeWide", |d| {
-            w(d, UnifiedExpressions::EyeWideLeft).max(w(d, UnifiedExpressions::EyeWideRight))
+            d.weight(E::EyeWideLeft).max(d.weight(E::EyeWideRight))
         })));
 
         // Eye Lid
         parameters.push(Box::new(EParam::simple("v2/EyeLidLeft", |d| {
-            d.eye.left.openness * 0.75 + w(d, UnifiedExpressions::EyeWideLeft) * 0.25
+            d.eye.left.openness * 0.75 + d.weight(E::EyeWideLeft) * 0.25
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeLidRight", |d| {
-            d.eye.right.openness * 0.75 + w(d, UnifiedExpressions::EyeWideRight) * 0.25
+            d.eye.right.openness * 0.75 + d.weight(E::EyeWideRight) * 0.25
         })));
         parameters.push(Box::new(EParam::simple("v2/EyeLid", |d| {
             ((d.eye.left.openness + d.eye.right.openness) / 2.0) * 0.75
-                + ((w(d, UnifiedExpressions::EyeWideRight) + w(d, UnifiedExpressions::EyeWideLeft))
-                    / 2.0)
-                    * 0.25
+                + ((d.weight(E::EyeWideRight) + d.weight(E::EyeWideLeft)) / 2.0) * 0.25
         })));
 
         // Eye Squint
         parameters.push(Box::new(EParam::simple("v2/EyeSquint", |d| {
-            w(d, UnifiedExpressions::EyeSquintLeft).max(w(d, UnifiedExpressions::EyeSquintRight))
+            d.weight(E::EyeSquintLeft).max(d.weight(E::EyeSquintRight))
         })));
         parameters.push(Box::new(EParam::simple("v2/EyesSquint", |d| {
-            w(d, UnifiedExpressions::EyeSquintLeft).max(w(d, UnifiedExpressions::EyeSquintRight))
+            d.weight(E::EyeSquintLeft).max(d.weight(E::EyeSquintRight))
         })));
 
-        // Brow Simple Shapes
-        fn brow_up_right(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::BrowOuterUpRight) * 0.6
-                + w(d, UnifiedExpressions::BrowInnerUpRight) * 0.4
+        // Combined Shapes
+        for &(name, formula) in COMBINED {
+            let param = match formula {
+                Average(a, b) => EParam::simple(name, move |d| (d.weight(a) + d.weight(b)) / 2.0),
+                Difference(a, b) => EParam::simple(name, move |d| d.weight(a) - d.weight(b)),
+                Custom(get_value) => EParam::simple(name, get_value),
+            };
+            parameters.push(Box::new(param));
         }
-        fn brow_up_left(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::BrowOuterUpLeft) * 0.6
-                + w(d, UnifiedExpressions::BrowInnerUpLeft) * 0.4
-        }
-        fn brow_down_right(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::BrowLowererRight) * 0.75
-                + w(d, UnifiedExpressions::BrowPinchRight) * 0.25
-        }
-        fn brow_down_left(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::BrowLowererLeft) * 0.75
-                + w(d, UnifiedExpressions::BrowPinchLeft) * 0.25
-        }
-
-        // Eyebrows Compacted
-        parameters.push(Box::new(EParam::simple("v2/BrowUp", |d| {
-            (brow_up_right(d) + brow_up_left(d)) * 0.5
-        })));
-        parameters.push(Box::new(EParam::simple("v2/BrowDown", |d| {
-            (brow_down_right(d) + brow_down_left(d)) * 0.5
-        })));
-        parameters.push(Box::new(EParam::simple("v2/BrowInnerUp", |d| {
-            (w(d, UnifiedExpressions::BrowInnerUpLeft) + w(d, UnifiedExpressions::BrowInnerUpRight))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/BrowOuterUp", |d| {
-            (w(d, UnifiedExpressions::BrowOuterUpLeft) + w(d, UnifiedExpressions::BrowOuterUpRight))
-                / 2.0
-        })));
-
-        parameters.push(Box::new(EParam::simple("v2/BrowExpressionRight", |d| {
-            (w(d, UnifiedExpressions::BrowInnerUpRight) * 0.5
-                + w(d, UnifiedExpressions::BrowOuterUpRight) * 0.5)
-                .min(1.0)
-                - brow_down_right(d)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/BrowExpressionLeft", |d| {
-            (w(d, UnifiedExpressions::BrowInnerUpLeft) * 0.5
-                + w(d, UnifiedExpressions::BrowOuterUpLeft) * 0.5)
-                .min(1.0)
-                - brow_down_left(d)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/BrowExpression", |d| {
-            let right = (w(d, UnifiedExpressions::BrowInnerUpRight)
-                + w(d, UnifiedExpressions::BrowOuterUpRight))
-                * 0.5;
-            let left = (w(d, UnifiedExpressions::BrowInnerUpLeft)
-                + w(d, UnifiedExpressions::BrowOuterUpLeft))
-                * 0.5;
-            (right.min(1.0) - brow_down_right(d) + left.min(1.0) - brow_down_left(d)) * 0.5
-        })));
-
-        // Jaw Combined
-        parameters.push(Box::new(EParam::simple("v2/JawX", |d| {
-            w(d, UnifiedExpressions::JawRight) - w(d, UnifiedExpressions::JawLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/JawZ", |d| {
-            w(d, UnifiedExpressions::JawForward) - w(d, UnifiedExpressions::JawBackward)
-        })));
-
-        // Cheeks Combined
-        parameters.push(Box::new(EParam::simple("v2/CheekSquint", |d| {
-            (w(d, UnifiedExpressions::CheekSquintLeft) + w(d, UnifiedExpressions::CheekSquintRight))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/CheekPuffSuckLeft", |d| {
-            w(d, UnifiedExpressions::CheekPuffLeft) - w(d, UnifiedExpressions::CheekSuckLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/CheekPuffSuckRight", |d| {
-            w(d, UnifiedExpressions::CheekPuffRight) - w(d, UnifiedExpressions::CheekSuckRight)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/CheekPuffSuck", |d| {
-            (w(d, UnifiedExpressions::CheekPuffRight) + w(d, UnifiedExpressions::CheekPuffLeft))
-                / 2.0
-                - (w(d, UnifiedExpressions::CheekSuckRight)
-                    + w(d, UnifiedExpressions::CheekSuckLeft))
-                    / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/CheekSuck", |d| {
-            (w(d, UnifiedExpressions::CheekSuckLeft) + w(d, UnifiedExpressions::CheekSuckRight))
-                / 2.0
-        })));
-
-        // Mouth Direction
-        parameters.push(Box::new(EParam::simple("v2/MouthUpperX", |d| {
-            w(d, UnifiedExpressions::MouthUpperRight) - w(d, UnifiedExpressions::MouthUpperLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthLowerX", |d| {
-            w(d, UnifiedExpressions::MouthLowerRight) - w(d, UnifiedExpressions::MouthLowerLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthX", |d| {
-            (w(d, UnifiedExpressions::MouthUpperRight) + w(d, UnifiedExpressions::MouthLowerRight))
-                / 2.0
-                - (w(d, UnifiedExpressions::MouthUpperLeft)
-                    + w(d, UnifiedExpressions::MouthLowerLeft))
-                    / 2.0
-        })));
-
-        // Lip Combined
-        parameters.push(Box::new(EParam::simple("v2/LipSuckUpper", |d| {
-            (w(d, UnifiedExpressions::LipSuckUpperRight)
-                + w(d, UnifiedExpressions::LipSuckUpperLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipSuckLower", |d| {
-            (w(d, UnifiedExpressions::LipSuckLowerRight)
-                + w(d, UnifiedExpressions::LipSuckLowerLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipSuck", |d| {
-            (w(d, UnifiedExpressions::LipSuckUpperRight)
-                + w(d, UnifiedExpressions::LipSuckUpperLeft)
-                + w(d, UnifiedExpressions::LipSuckLowerRight)
-                + w(d, UnifiedExpressions::LipSuckLowerLeft))
-                / 4.0
-        })));
-
-        parameters.push(Box::new(EParam::simple("v2/LipFunnelUpper", |d| {
-            (w(d, UnifiedExpressions::LipFunnelUpperRight)
-                + w(d, UnifiedExpressions::LipFunnelUpperLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipFunnelLower", |d| {
-            (w(d, UnifiedExpressions::LipFunnelLowerRight)
-                + w(d, UnifiedExpressions::LipFunnelLowerLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipFunnel", |d| {
-            (w(d, UnifiedExpressions::LipFunnelUpperRight)
-                + w(d, UnifiedExpressions::LipFunnelUpperLeft)
-                + w(d, UnifiedExpressions::LipFunnelLowerRight)
-                + w(d, UnifiedExpressions::LipFunnelLowerLeft))
-                / 4.0
-        })));
-
-        parameters.push(Box::new(EParam::simple("v2/LipPuckerUpper", |d| {
-            (w(d, UnifiedExpressions::LipPuckerUpperRight)
-                + w(d, UnifiedExpressions::LipPuckerUpperLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipPuckerLower", |d| {
-            (w(d, UnifiedExpressions::LipPuckerLowerRight)
-                + w(d, UnifiedExpressions::LipPuckerLowerLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipPuckerRight", |d| {
-            (w(d, UnifiedExpressions::LipPuckerUpperRight)
-                + w(d, UnifiedExpressions::LipPuckerLowerRight))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipPuckerLeft", |d| {
-            (w(d, UnifiedExpressions::LipPuckerUpperLeft)
-                + w(d, UnifiedExpressions::LipPuckerLowerLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipPucker", |d| {
-            (w(d, UnifiedExpressions::LipPuckerUpperRight)
-                + w(d, UnifiedExpressions::LipPuckerUpperLeft)
-                + w(d, UnifiedExpressions::LipPuckerLowerRight)
-                + w(d, UnifiedExpressions::LipPuckerLowerLeft))
-                / 4.0
-        })));
-
-        // Lip Suck/Funnel compacted
-        parameters.push(Box::new(EParam::simple("v2/LipSuckFunnelUpper", |d| {
-            (w(d, UnifiedExpressions::LipSuckUpperRight)
-                + w(d, UnifiedExpressions::LipSuckUpperLeft))
-                / 2.0
-                - (w(d, UnifiedExpressions::LipFunnelUpperRight)
-                    + w(d, UnifiedExpressions::LipFunnelUpperLeft))
-                    / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipSuckFunnelLower", |d| {
-            (w(d, UnifiedExpressions::LipSuckLowerRight)
-                + w(d, UnifiedExpressions::LipSuckLowerLeft))
-                / 2.0
-                - (w(d, UnifiedExpressions::LipFunnelLowerRight)
-                    + w(d, UnifiedExpressions::LipFunnelLowerLeft))
-                    / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/LipSuckFunnelLowerLeft", |d| {
-            w(d, UnifiedExpressions::LipSuckLowerLeft)
-                - w(d, UnifiedExpressions::LipFunnelLowerLeft)
-        })));
-        parameters.push(Box::new(EParam::simple(
-            "v2/LipSuckFunnelLowerRight",
-            |d| {
-                w(d, UnifiedExpressions::LipSuckLowerRight)
-                    - w(d, UnifiedExpressions::LipFunnelLowerRight)
-            },
-        )));
-        parameters.push(Box::new(EParam::simple("v2/LipSuckFunnelUpperLeft", |d| {
-            w(d, UnifiedExpressions::LipSuckUpperLeft)
-                - w(d, UnifiedExpressions::LipFunnelUpperLeft)
-        })));
-        parameters.push(Box::new(EParam::simple(
-            "v2/LipSuckFunnelUpperRight",
-            |d| {
-                w(d, UnifiedExpressions::LipSuckUpperRight)
-                    - w(d, UnifiedExpressions::LipFunnelUpperRight)
-            },
-        )));
-
-        // Mouth Combined
-        parameters.push(Box::new(EParam::simple("v2/MouthUpperUp", |d| {
-            w(d, UnifiedExpressions::MouthUpperUpRight) * 0.5
-                + w(d, UnifiedExpressions::MouthUpperUpLeft) * 0.5
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthLowerDown", |d| {
-            w(d, UnifiedExpressions::MouthLowerDownRight) * 0.5
-                + w(d, UnifiedExpressions::MouthLowerDownLeft) * 0.5
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthOpen", |d| {
-            w(d, UnifiedExpressions::MouthUpperUpRight) * 0.25
-                + w(d, UnifiedExpressions::MouthUpperUpLeft) * 0.25
-                + w(d, UnifiedExpressions::MouthLowerDownRight) * 0.25
-                + w(d, UnifiedExpressions::MouthLowerDownLeft) * 0.25
-        })));
-
-        parameters.push(Box::new(EParam::simple("v2/MouthStretch", |d| {
-            (w(d, UnifiedExpressions::MouthStretchRight)
-                + w(d, UnifiedExpressions::MouthStretchLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthTightener", |d| {
-            (w(d, UnifiedExpressions::MouthTightenerRight)
-                + w(d, UnifiedExpressions::MouthTightenerLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthPress", |d| {
-            (w(d, UnifiedExpressions::MouthPressRight) + w(d, UnifiedExpressions::MouthPressLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthDimple", |d| {
-            (w(d, UnifiedExpressions::MouthDimpleRight) + w(d, UnifiedExpressions::MouthDimpleLeft))
-                / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple("v2/NoseSneer", |d| {
-            (w(d, UnifiedExpressions::NoseSneerRight) + w(d, UnifiedExpressions::NoseSneerLeft))
-                / 2.0
-        })));
-
-        // Mouth compacted
-        parameters.push(Box::new(EParam::simple("v2/MouthTightenerStretch", |d| {
-            (w(d, UnifiedExpressions::MouthTightenerRight)
-                + w(d, UnifiedExpressions::MouthTightenerLeft))
-                / 2.0
-                - (w(d, UnifiedExpressions::MouthStretchRight)
-                    + w(d, UnifiedExpressions::MouthStretchLeft))
-                    / 2.0
-        })));
-        parameters.push(Box::new(EParam::simple(
-            "v2/MouthTightenerStretchLeft",
-            |d| {
-                w(d, UnifiedExpressions::MouthTightenerLeft)
-                    - w(d, UnifiedExpressions::MouthStretchLeft)
-            },
-        )));
-        parameters.push(Box::new(EParam::simple(
-            "v2/MouthTightenerStretchRight",
-            |d| {
-                w(d, UnifiedExpressions::MouthTightenerRight)
-                    - w(d, UnifiedExpressions::MouthStretchRight)
-            },
-        )));
-
-        // Lip Corners Combined
-        parameters.push(Box::new(EParam::simple("v2/MouthCornerYLeft", |d| {
-            w(d, UnifiedExpressions::MouthCornerSlantLeft)
-                - w(d, UnifiedExpressions::MouthFrownLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthCornerYRight", |d| {
-            w(d, UnifiedExpressions::MouthCornerSlantRight)
-                - w(d, UnifiedExpressions::MouthFrownRight)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/MouthCornerY", |d| {
-            (w(d, UnifiedExpressions::MouthCornerSlantLeft)
-                - w(d, UnifiedExpressions::MouthFrownLeft)
-                + w(d, UnifiedExpressions::MouthCornerSlantRight)
-                - w(d, UnifiedExpressions::MouthFrownRight))
-                * 0.5
-        })));
-
-        // SmileFrown
-        fn mouth_smile_right(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::MouthCornerPullRight) * 0.8
-                + w(d, UnifiedExpressions::MouthCornerSlantRight) * 0.2
-        }
-        fn mouth_smile_left(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::MouthCornerPullLeft) * 0.8
-                + w(d, UnifiedExpressions::MouthCornerSlantLeft) * 0.2
-        }
-        fn mouth_sad_right(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::MouthFrownRight)
-                .max(w(d, UnifiedExpressions::MouthStretchRight))
-        }
-        fn mouth_sad_left(d: &UnifiedTrackingData) -> f32 {
-            w(d, UnifiedExpressions::MouthFrownLeft).max(w(d, UnifiedExpressions::MouthStretchLeft))
-        }
-
-        parameters.push(Box::new(EParam::simple("v2/SmileFrownRight", |d| {
-            mouth_smile_right(d) - w(d, UnifiedExpressions::MouthFrownRight)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/SmileFrownLeft", |d| {
-            mouth_smile_left(d) - w(d, UnifiedExpressions::MouthFrownLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/SmileFrown", |d| {
-            mouth_smile_right(d) * 0.5 + mouth_smile_left(d) * 0.5
-                - w(d, UnifiedExpressions::MouthFrownRight) * 0.5
-                - w(d, UnifiedExpressions::MouthFrownLeft) * 0.5
-        })));
-
-        // SmileSad
-        parameters.push(Box::new(EParam::simple("v2/SmileSadRight", |d| {
-            mouth_smile_right(d) - mouth_sad_right(d)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/SmileSadLeft", |d| {
-            mouth_smile_left(d) - mouth_sad_left(d)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/SmileSad", |d| {
-            (mouth_smile_left(d) + mouth_smile_right(d)) / 2.0
-                - (mouth_sad_left(d) + mouth_sad_right(d)) / 2.0
-        })));
-
-        // Tongue Combined
-        parameters.push(Box::new(EParam::simple("v2/TongueX", |d| {
-            w(d, UnifiedExpressions::TongueRight) - w(d, UnifiedExpressions::TongueLeft)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/TongueY", |d| {
-            w(d, UnifiedExpressions::TongueUp) - w(d, UnifiedExpressions::TongueDown)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/TongueArchY", |d| {
-            w(d, UnifiedExpressions::TongueCurlUp) - w(d, UnifiedExpressions::TongueBendDown)
-        })));
-        parameters.push(Box::new(EParam::simple("v2/TongueShape", |d| {
-            w(d, UnifiedExpressions::TongueFlat) - w(d, UnifiedExpressions::TongueSquish)
-        })));
 
         // All Base Expressions (v2/{ExpressionName})
         // Generate EParam for each UnifiedExpression
-        for i in 0..UnifiedExpressions::Max as usize {
-            if let Ok(expr) = UnifiedExpressions::try_from(i) {
-                if expr != UnifiedExpressions::Max {
-                    let name = format!("v2/{:?}", expr);
-                    // Capture i for the closure
-                    let idx = i;
-                    parameters.push(Box::new(EParam::expression(&name, move |d| {
-                        d.shapes[idx].weight
-                    })));
-                }
-            }
+        for expr in (0..E::Max as usize).filter_map(|i| E::try_from(i).ok()) {
+            parameters.push(Box::new(EParam::expression(
+                &format!("v2/{:?}", expr),
+                move |d| d.weight(expr),
+            )));
         }
 
         // v2/ Simple Expressions (threshold 0.0 per reference — bool always false)
-        parameters.push(Box::new(EParam::expression("v2/BrowUpRight", |d| {
-            w(d, UnifiedExpressions::BrowOuterUpRight) * 0.6
-                + w(d, UnifiedExpressions::BrowInnerUpRight) * 0.4
-        })));
-        parameters.push(Box::new(EParam::expression("v2/BrowUpLeft", |d| {
-            w(d, UnifiedExpressions::BrowOuterUpLeft) * 0.6
-                + w(d, UnifiedExpressions::BrowInnerUpLeft) * 0.4
-        })));
-        parameters.push(Box::new(EParam::expression("v2/BrowDownRight", |d| {
-            w(d, UnifiedExpressions::BrowLowererRight) * 0.75
-                + w(d, UnifiedExpressions::BrowPinchRight) * 0.25
-        })));
-        parameters.push(Box::new(EParam::expression("v2/BrowDownLeft", |d| {
-            w(d, UnifiedExpressions::BrowLowererLeft) * 0.75
-                + w(d, UnifiedExpressions::BrowPinchLeft) * 0.25
-        })));
-        parameters.push(Box::new(EParam::expression("v2/MouthSmileRight", |d| {
-            w(d, UnifiedExpressions::MouthCornerPullRight) * 0.8
-                + w(d, UnifiedExpressions::MouthCornerSlantRight) * 0.2
-        })));
-        parameters.push(Box::new(EParam::expression("v2/MouthSmileLeft", |d| {
-            w(d, UnifiedExpressions::MouthCornerPullLeft) * 0.8
-                + w(d, UnifiedExpressions::MouthCornerSlantLeft) * 0.2
-        })));
-        parameters.push(Box::new(EParam::expression("v2/MouthSadRight", |d| {
-            w(d, UnifiedExpressions::MouthFrownRight)
-                .max(w(d, UnifiedExpressions::MouthStretchRight))
-        })));
-        parameters.push(Box::new(EParam::expression("v2/MouthSadLeft", |d| {
-            w(d, UnifiedExpressions::MouthFrownLeft).max(w(d, UnifiedExpressions::MouthStretchLeft))
-        })));
+        for &(name, get_value) in SIMPLE_EXPRESSIONS {
+            parameters.push(Box::new(EParam::expression(name, get_value)));
+        }
 
         // Legacy Eye Parameters
         parameters.extend(create_legacy_eye_parameters());
@@ -519,50 +352,42 @@ impl ParameterRegistry {
         parameters.extend(create_native_parameters());
 
         // Status Indicators
-        // These are sent on avatar load to communicate tracking state
-        use super::base_param::BoolParam;
+        // Like every parameter, these send on the first frame after an avatar
+        // loads, so the avatar learns the tracking state straight away.
 
         // Eye tracking active: true if we have valid gaze data
         // Check if gaze values are non-zero or pupil has valid diameter
-        parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "EyeTrackingActive",
-            |d| {
-                // Consider eye tracking active if we have any non-default gaze or pupil data
-                d.eye.left.gaze.x != 0.0
-                    || d.eye.left.gaze.y != 0.0
-                    || d.eye.right.gaze.x != 0.0
-                    || d.eye.right.gaze.y != 0.0
-                    || d.eye.left.pupil_diameter_mm > 0.1
-                    || d.eye.right.pupil_diameter_mm > 0.1
-            },
-        )));
+        parameters.push(Box::new(BoolParam::new("EyeTrackingActive", |d| {
+            // Consider eye tracking active if we have any non-default gaze or pupil data
+            d.eye.left.gaze.x != 0.0
+                || d.eye.left.gaze.y != 0.0
+                || d.eye.right.gaze.x != 0.0
+                || d.eye.right.gaze.y != 0.0
+                || d.eye.left.pupil_diameter_mm > 0.1
+                || d.eye.right.pupil_diameter_mm > 0.1
+        })));
 
         // Expression tracking active: true if any expression weights are active
-        parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "ExpressionTrackingActive",
-            |d| {
-                // Check if any expression weight is above threshold
-                d.shapes.iter().any(|s| s.weight > 0.01)
-            },
-        )));
+        parameters.push(Box::new(BoolParam::new("ExpressionTrackingActive", |d| {
+            // Check if any expression weight is above threshold
+            d.shapes.iter().any(|s| s.weight > 0.01)
+        })));
 
         // Lip tracking active: based on mouth-related expression activity
-        parameters.push(Box::new(BoolParam::new_with_send_on_load(
-            "LipTrackingActive",
-            |d| {
-                // Check mouth/jaw expressions specifically
-                let mouth_exprs = [
-                    UnifiedExpressions::JawOpen,
-                    UnifiedExpressions::MouthClosed,
-                    UnifiedExpressions::MouthCornerPullLeft,
-                    UnifiedExpressions::MouthCornerPullRight,
-                    UnifiedExpressions::MouthFrownLeft,
-                    UnifiedExpressions::MouthFrownRight,
-                    UnifiedExpressions::TongueOut,
-                ];
-                mouth_exprs.iter().any(|e| w(d, *e) > 0.01)
-            },
-        )));
+        parameters.push(Box::new(BoolParam::new("LipTrackingActive", |d| {
+            // Check mouth/jaw expressions specifically
+            [
+                E::JawOpen,
+                E::MouthClosed,
+                E::MouthCornerPullLeft,
+                E::MouthCornerPullRight,
+                E::MouthFrownLeft,
+                E::MouthFrownRight,
+                E::TongueOut,
+            ]
+            .into_iter()
+            .any(|e| d.weight(e) > 0.01)
+        })));
 
         log::info!(
             "Parameter Registry initialized with {} parameters",

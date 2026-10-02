@@ -50,1126 +50,329 @@ pub enum SRanipalLipShape {
     Max,
 }
 
-// Helper to get shape weight from UnifiedTrackingData
-fn w(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
-    data.shapes[expr as usize].weight
+impl SRanipalLipShape {
+    /// Every shape except the `Max` sentinel, in declaration order
+    pub const ALL: [Self; Self::Max as usize] = [
+        Self::JawRight,
+        Self::JawLeft,
+        Self::JawForward,
+        Self::JawOpen,
+        Self::MouthApeShape,
+        Self::MouthUpperRight,
+        Self::MouthUpperLeft,
+        Self::MouthLowerRight,
+        Self::MouthLowerLeft,
+        Self::MouthUpperOverturn,
+        Self::MouthLowerOverturn,
+        Self::MouthPout,
+        Self::MouthSmileRight,
+        Self::MouthSmileLeft,
+        Self::MouthSadRight,
+        Self::MouthSadLeft,
+        Self::CheekPuffRight,
+        Self::CheekPuffLeft,
+        Self::CheekSuck,
+        Self::MouthUpperUpRight,
+        Self::MouthUpperUpLeft,
+        Self::MouthLowerDownRight,
+        Self::MouthLowerDownLeft,
+        Self::MouthUpperInside,
+        Self::MouthLowerInside,
+        Self::MouthLowerOverlay,
+        Self::TongueLongStep1,
+        Self::TongueLongStep2,
+        Self::TongueDown,
+        Self::TongueUp,
+        Self::TongueRight,
+        Self::TongueLeft,
+        Self::TongueRoll,
+        Self::TongueUpLeftMorph,
+        Self::TongueUpRightMorph,
+        Self::TongueDownLeftMorph,
+        Self::TongueDownRightMorph,
+    ];
 }
 
 /// Maps SRanipal lip shapes to Unified Expressions
 fn get_sranipal_shape(shape: SRanipalLipShape, data: &UnifiedTrackingData) -> f32 {
     match shape {
-        SRanipalLipShape::JawRight => w(data, UnifiedExpressions::JawRight),
-        SRanipalLipShape::JawLeft => w(data, UnifiedExpressions::JawLeft),
-        SRanipalLipShape::JawForward => w(data, UnifiedExpressions::JawForward),
-        SRanipalLipShape::JawOpen => (w(data, UnifiedExpressions::JawOpen)
-            - w(data, UnifiedExpressions::MouthClosed))
+        SRanipalLipShape::JawRight => data.weight(UnifiedExpressions::JawRight),
+        SRanipalLipShape::JawLeft => data.weight(UnifiedExpressions::JawLeft),
+        SRanipalLipShape::JawForward => data.weight(UnifiedExpressions::JawForward),
+        SRanipalLipShape::JawOpen => (data.weight(UnifiedExpressions::JawOpen)
+            - data.weight(UnifiedExpressions::MouthClosed))
         .clamp(0.0, 1.0),
-        SRanipalLipShape::MouthApeShape => w(data, UnifiedExpressions::MouthClosed),
-        SRanipalLipShape::MouthUpperRight => w(data, UnifiedExpressions::MouthUpperRight),
-        SRanipalLipShape::MouthUpperLeft => w(data, UnifiedExpressions::MouthUpperLeft),
-        SRanipalLipShape::MouthLowerRight => w(data, UnifiedExpressions::MouthLowerRight),
-        SRanipalLipShape::MouthLowerLeft => w(data, UnifiedExpressions::MouthLowerLeft),
+        SRanipalLipShape::MouthApeShape => data.weight(UnifiedExpressions::MouthClosed),
+        SRanipalLipShape::MouthUpperRight => data.weight(UnifiedExpressions::MouthUpperRight),
+        SRanipalLipShape::MouthUpperLeft => data.weight(UnifiedExpressions::MouthUpperLeft),
+        SRanipalLipShape::MouthLowerRight => data.weight(UnifiedExpressions::MouthLowerRight),
+        SRanipalLipShape::MouthLowerLeft => data.weight(UnifiedExpressions::MouthLowerLeft),
         SRanipalLipShape::MouthUpperOverturn => {
-            (w(data, UnifiedExpressions::LipFunnelUpperLeft)
-                + w(data, UnifiedExpressions::LipFunnelUpperRight))
+            (data.weight(UnifiedExpressions::LipFunnelUpperLeft)
+                + data.weight(UnifiedExpressions::LipFunnelUpperRight))
                 / 2.0
         }
         SRanipalLipShape::MouthLowerOverturn => {
-            (w(data, UnifiedExpressions::LipFunnelLowerLeft)
-                + w(data, UnifiedExpressions::LipFunnelLowerRight))
+            (data.weight(UnifiedExpressions::LipFunnelLowerLeft)
+                + data.weight(UnifiedExpressions::LipFunnelLowerRight))
                 / 2.0
         }
         SRanipalLipShape::MouthPout => {
-            (w(data, UnifiedExpressions::LipPuckerUpperLeft)
-                + w(data, UnifiedExpressions::LipPuckerUpperRight)
-                + w(data, UnifiedExpressions::LipPuckerLowerLeft)
-                + w(data, UnifiedExpressions::LipPuckerLowerRight))
+            (data.weight(UnifiedExpressions::LipPuckerUpperLeft)
+                + data.weight(UnifiedExpressions::LipPuckerUpperRight)
+                + data.weight(UnifiedExpressions::LipPuckerLowerLeft)
+                + data.weight(UnifiedExpressions::LipPuckerLowerRight))
                 / 4.0
         }
-        SRanipalLipShape::MouthSmileRight => (w(data, UnifiedExpressions::MouthCornerPullRight)
+        SRanipalLipShape::MouthSmileRight => {
+            (data.weight(UnifiedExpressions::MouthCornerPullRight) * 0.8
+                + data.weight(UnifiedExpressions::MouthCornerSlantRight) * 0.2)
+                .max(data.weight(UnifiedExpressions::MouthDimpleRight))
+        }
+        SRanipalLipShape::MouthSmileLeft => (data.weight(UnifiedExpressions::MouthCornerPullLeft)
             * 0.8
-            + w(data, UnifiedExpressions::MouthCornerSlantRight) * 0.2)
-            .max(w(data, UnifiedExpressions::MouthDimpleRight)),
-        SRanipalLipShape::MouthSmileLeft => (w(data, UnifiedExpressions::MouthCornerPullLeft)
-            * 0.8
-            + w(data, UnifiedExpressions::MouthCornerSlantLeft) * 0.2)
-            .max(w(data, UnifiedExpressions::MouthDimpleLeft)),
+            + data.weight(UnifiedExpressions::MouthCornerSlantLeft) * 0.2)
+            .max(data.weight(UnifiedExpressions::MouthDimpleLeft)),
         SRanipalLipShape::MouthSadRight => {
-            let bilateral_frown = (w(data, UnifiedExpressions::MouthFrownRight)
-                + w(data, UnifiedExpressions::MouthFrownLeft))
+            let bilateral_frown = (data.weight(UnifiedExpressions::MouthFrownRight)
+                + data.weight(UnifiedExpressions::MouthFrownLeft))
                 / 2.0;
             let smile_right = get_sranipal_shape(SRanipalLipShape::MouthSmileRight, data);
-            (bilateral_frown.max(w(data, UnifiedExpressions::MouthStretchRight)) - smile_right)
+            (bilateral_frown.max(data.weight(UnifiedExpressions::MouthStretchRight)) - smile_right)
                 .max(0.0)
         }
         SRanipalLipShape::MouthSadLeft => {
-            let bilateral_frown = (w(data, UnifiedExpressions::MouthFrownRight)
-                + w(data, UnifiedExpressions::MouthFrownLeft))
+            let bilateral_frown = (data.weight(UnifiedExpressions::MouthFrownRight)
+                + data.weight(UnifiedExpressions::MouthFrownLeft))
                 / 2.0;
             let smile_left = get_sranipal_shape(SRanipalLipShape::MouthSmileLeft, data);
-            (bilateral_frown.max(w(data, UnifiedExpressions::MouthStretchLeft)) - smile_left)
+            (bilateral_frown.max(data.weight(UnifiedExpressions::MouthStretchLeft)) - smile_left)
                 .max(0.0)
         }
-        SRanipalLipShape::CheekPuffRight => w(data, UnifiedExpressions::CheekPuffRight),
-        SRanipalLipShape::CheekPuffLeft => w(data, UnifiedExpressions::CheekPuffLeft),
+        SRanipalLipShape::CheekPuffRight => data.weight(UnifiedExpressions::CheekPuffRight),
+        SRanipalLipShape::CheekPuffLeft => data.weight(UnifiedExpressions::CheekPuffLeft),
         SRanipalLipShape::CheekSuck => {
-            (w(data, UnifiedExpressions::CheekSuckLeft)
-                + w(data, UnifiedExpressions::CheekSuckRight))
+            (data.weight(UnifiedExpressions::CheekSuckLeft)
+                + data.weight(UnifiedExpressions::CheekSuckRight))
                 / 2.0
         }
-        SRanipalLipShape::MouthUpperUpRight => (w(data, UnifiedExpressions::MouthUpperUpRight)
-            + (1.0 - w(data, UnifiedExpressions::LipPuckerUpperRight))
-                * w(data, UnifiedExpressions::LipFunnelUpperRight))
+        SRanipalLipShape::MouthUpperUpRight => (data.weight(UnifiedExpressions::MouthUpperUpRight)
+            + (1.0 - data.weight(UnifiedExpressions::LipPuckerUpperRight))
+                * data.weight(UnifiedExpressions::LipFunnelUpperRight))
         .max(0.0),
-        SRanipalLipShape::MouthUpperUpLeft => (w(data, UnifiedExpressions::MouthUpperUpLeft)
-            + (1.0 - w(data, UnifiedExpressions::LipPuckerUpperLeft))
-                * w(data, UnifiedExpressions::LipFunnelUpperLeft))
+        SRanipalLipShape::MouthUpperUpLeft => (data.weight(UnifiedExpressions::MouthUpperUpLeft)
+            + (1.0 - data.weight(UnifiedExpressions::LipPuckerUpperLeft))
+                * data.weight(UnifiedExpressions::LipFunnelUpperLeft))
         .max(0.0),
-        SRanipalLipShape::MouthLowerDownRight => (w(data, UnifiedExpressions::MouthLowerDownRight)
-            + (1.0 - w(data, UnifiedExpressions::LipPuckerLowerRight))
-                * w(data, UnifiedExpressions::LipFunnelLowerRight))
+        SRanipalLipShape::MouthLowerDownRight => (data
+            .weight(UnifiedExpressions::MouthLowerDownRight)
+            + (1.0 - data.weight(UnifiedExpressions::LipPuckerLowerRight))
+                * data.weight(UnifiedExpressions::LipFunnelLowerRight))
         .max(0.0),
-        SRanipalLipShape::MouthLowerDownLeft => (w(data, UnifiedExpressions::MouthLowerDownLeft)
-            + (1.0 - w(data, UnifiedExpressions::LipPuckerLowerLeft))
-                * w(data, UnifiedExpressions::LipFunnelLowerLeft))
+        SRanipalLipShape::MouthLowerDownLeft => (data
+            .weight(UnifiedExpressions::MouthLowerDownLeft)
+            + (1.0 - data.weight(UnifiedExpressions::LipPuckerLowerLeft))
+                * data.weight(UnifiedExpressions::LipFunnelLowerLeft))
         .max(0.0),
         SRanipalLipShape::MouthUpperInside => {
-            (w(data, UnifiedExpressions::LipSuckUpperLeft)
-                + w(data, UnifiedExpressions::LipSuckUpperRight))
+            (data.weight(UnifiedExpressions::LipSuckUpperLeft)
+                + data.weight(UnifiedExpressions::LipSuckUpperRight))
                 / 2.0
         }
         SRanipalLipShape::MouthLowerInside => {
-            (w(data, UnifiedExpressions::LipSuckLowerLeft)
-                + w(data, UnifiedExpressions::LipSuckLowerRight))
+            (data.weight(UnifiedExpressions::LipSuckLowerLeft)
+                + data.weight(UnifiedExpressions::LipSuckLowerRight))
                 / 2.0
         }
-        SRanipalLipShape::MouthLowerOverlay => w(data, UnifiedExpressions::MouthRaiserLower),
+        SRanipalLipShape::MouthLowerOverlay => data.weight(UnifiedExpressions::MouthRaiserLower),
         SRanipalLipShape::TongueLongStep1 => {
-            (w(data, UnifiedExpressions::TongueOut) * 2.0).min(1.0)
+            (data.weight(UnifiedExpressions::TongueOut) * 2.0).min(1.0)
         }
         SRanipalLipShape::TongueLongStep2 => {
-            (w(data, UnifiedExpressions::TongueOut) * 2.0 - 1.0).clamp(0.0, 1.0)
+            (data.weight(UnifiedExpressions::TongueOut) * 2.0 - 1.0).clamp(0.0, 1.0)
         }
-        SRanipalLipShape::TongueDown => w(data, UnifiedExpressions::TongueDown),
-        SRanipalLipShape::TongueUp => w(data, UnifiedExpressions::TongueUp),
-        SRanipalLipShape::TongueRight => w(data, UnifiedExpressions::TongueRight),
-        SRanipalLipShape::TongueLeft => w(data, UnifiedExpressions::TongueLeft),
-        SRanipalLipShape::TongueRoll => w(data, UnifiedExpressions::TongueRoll),
+        SRanipalLipShape::TongueDown => data.weight(UnifiedExpressions::TongueDown),
+        SRanipalLipShape::TongueUp => data.weight(UnifiedExpressions::TongueUp),
+        SRanipalLipShape::TongueRight => data.weight(UnifiedExpressions::TongueRight),
+        SRanipalLipShape::TongueLeft => data.weight(UnifiedExpressions::TongueLeft),
+        SRanipalLipShape::TongueRoll => data.weight(UnifiedExpressions::TongueRoll),
         SRanipalLipShape::TongueUpLeftMorph => {
-            w(data, UnifiedExpressions::TongueUp) * (1.0 - w(data, UnifiedExpressions::TongueRight))
+            data.weight(UnifiedExpressions::TongueUp)
+                * (1.0 - data.weight(UnifiedExpressions::TongueRight))
         }
         SRanipalLipShape::TongueUpRightMorph => {
-            w(data, UnifiedExpressions::TongueUp) * (1.0 - w(data, UnifiedExpressions::TongueLeft))
+            data.weight(UnifiedExpressions::TongueUp)
+                * (1.0 - data.weight(UnifiedExpressions::TongueLeft))
         }
         SRanipalLipShape::TongueDownLeftMorph => {
-            w(data, UnifiedExpressions::TongueDown)
-                * (1.0 - w(data, UnifiedExpressions::TongueRight))
+            data.weight(UnifiedExpressions::TongueDown)
+                * (1.0 - data.weight(UnifiedExpressions::TongueRight))
         }
         SRanipalLipShape::TongueDownRightMorph => {
-            w(data, UnifiedExpressions::TongueDown)
-                * (1.0 - w(data, UnifiedExpressions::TongueLeft))
+            data.weight(UnifiedExpressions::TongueDown)
+                * (1.0 - data.weight(UnifiedExpressions::TongueLeft))
         }
         SRanipalLipShape::Max => 0.0,
     }
 }
 
-/// Helper for positive-negative shape blending
-fn pos_neg_shape(
-    data: &UnifiedTrackingData,
-    positive: SRanipalLipShape,
-    negative: SRanipalLipShape,
-) -> f32 {
-    get_sranipal_shape(positive, data) - get_sranipal_shape(negative, data)
+/// How [`combine`] pools several shapes into one value
+#[derive(Clone, Copy)]
+enum Pool {
+    /// Average of the shapes
+    Mean,
+    /// Largest shape, floored at 0
+    Max,
 }
 
-/// Helper for averaged positive-negative shape blending
-fn pos_neg_avg_shape(
-    data: &UnifiedTrackingData,
-    positives: &[SRanipalLipShape],
-    negatives: &[SRanipalLipShape],
-    use_max: bool,
-) -> f32 {
-    if use_max {
-        let pos_max = positives
-            .iter()
-            .map(|s| get_sranipal_shape(*s, data))
-            .fold(0.0_f32, |a, b| a.max(b));
-        let neg_max = negatives
-            .iter()
-            .map(|s| get_sranipal_shape(*s, data))
-            .fold(0.0_f32, |a, b| a.max(b));
-        pos_max - neg_max
-    } else {
-        let pos_avg = if positives.is_empty() {
-            0.0
-        } else {
-            positives
-                .iter()
-                .map(|s| get_sranipal_shape(*s, data))
-                .sum::<f32>()
-                / positives.len() as f32
-        };
-        let neg_avg = if negatives.is_empty() {
-            0.0
-        } else {
-            negatives
-                .iter()
-                .map(|s| get_sranipal_shape(*s, data))
-                .sum::<f32>()
-                / negatives.len() as f32
-        };
-        pos_avg - neg_avg
+/// Pools `shapes` into one value
+fn combine(data: &UnifiedTrackingData, shapes: &[SRanipalLipShape], pool: Pool) -> f32 {
+    let values = shapes.iter().map(|s| get_sranipal_shape(*s, data));
+    match pool {
+        Pool::Max => values.fold(0.0_f32, |a, b| a.max(b)),
+        Pool::Mean if shapes.is_empty() => 0.0,
+        Pool::Mean => values.sum::<f32>() / shapes.len() as f32,
     }
 }
+
+/// Merged shapes: name, positive shapes, negative shapes and how each side is
+/// pooled. The parameter is the positive pool minus the negative pool
+type MergedShape = (
+    &'static str,
+    &'static [SRanipalLipShape],
+    &'static [SRanipalLipShape],
+    Pool,
+);
+
+#[rustfmt::skip]
+const MERGED_SHAPES: &[MergedShape] = {
+    use SRanipalLipShape::*;
+    &[
+        // Basic Merged Shapes
+        ("JawX", &[JawRight], &[JawLeft], Pool::Mean),
+        ("MouthUpper", &[MouthUpperRight], &[MouthUpperLeft], Pool::Mean),
+        ("MouthLower", &[MouthLowerRight], &[MouthLowerLeft], Pool::Mean),
+        ("MouthX", &[MouthUpperRight, MouthLowerRight], &[MouthUpperLeft, MouthLowerLeft], Pool::Max),
+        ("SmileSadRight", &[MouthSmileRight], &[MouthSadRight], Pool::Mean),
+        ("SmileSadLeft", &[MouthSmileLeft], &[MouthSadLeft], Pool::Mean),
+        ("SmileSad", &[MouthSmileLeft, MouthSmileRight], &[MouthSadLeft, MouthSadRight], Pool::Mean),
+        ("TongueY", &[TongueUp], &[TongueDown], Pool::Mean),
+        ("TongueX", &[TongueRight], &[TongueLeft], Pool::Mean),
+        ("PuffSuckRight", &[CheekPuffRight], &[CheekSuck], Pool::Mean),
+        ("PuffSuckLeft", &[CheekPuffLeft], &[CheekSuck], Pool::Mean),
+        ("PuffSuck", &[CheekPuffLeft, CheekPuffRight], &[CheekSuck], Pool::Max),
+        // JawOpen Based
+        ("JawOpenApe", &[JawOpen], &[MouthApeShape], Pool::Mean),
+        ("JawOpenPuff", &[JawOpen], &[CheekPuffLeft, CheekPuffRight], Pool::Mean),
+        ("JawOpenPuffRight", &[JawOpen], &[CheekPuffRight], Pool::Mean),
+        ("JawOpenPuffLeft", &[JawOpen], &[CheekPuffLeft], Pool::Mean),
+        ("JawOpenSuck", &[JawOpen], &[CheekSuck], Pool::Mean),
+        ("JawOpenForward", &[JawOpen], &[JawForward], Pool::Mean),
+        ("JawOpenOverlay", &[JawOpen], &[MouthLowerOverlay], Pool::Mean),
+        // MouthUpperUp Right Based
+        ("MouthUpperUpRightUpperInside", &[MouthUpperUpRight], &[MouthUpperInside], Pool::Mean),
+        ("MouthUpperUpRightPuffRight", &[MouthUpperUpRight], &[CheekPuffRight], Pool::Mean),
+        ("MouthUpperUpRightApe", &[MouthUpperUpRight], &[MouthApeShape], Pool::Mean),
+        ("MouthUpperUpRightPout", &[MouthUpperUpRight], &[MouthPout], Pool::Mean),
+        ("MouthUpperUpRightOverlay", &[MouthUpperUpRight], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthUpperUpRightSuck", &[MouthUpperUpRight], &[CheekSuck], Pool::Mean),
+        // MouthUpperUp Left Based
+        ("MouthUpperUpLeftUpperInside", &[MouthUpperUpLeft], &[MouthUpperInside], Pool::Mean),
+        ("MouthUpperUpLeftPuffLeft", &[MouthUpperUpLeft], &[CheekPuffLeft], Pool::Mean),
+        ("MouthUpperUpLeftApe", &[MouthUpperUpLeft], &[MouthApeShape], Pool::Mean),
+        ("MouthUpperUpLeftPout", &[MouthUpperUpLeft], &[MouthPout], Pool::Mean),
+        ("MouthUpperUpLeftOverlay", &[MouthUpperUpLeft], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthUpperUpLeftSuck", &[MouthUpperUpLeft], &[CheekSuck], Pool::Mean),
+        // MouthUpperUp Combined
+        ("MouthUpperUpUpperInside", &[MouthUpperUpLeft, MouthUpperUpRight], &[MouthUpperInside], Pool::Mean),
+        ("MouthUpperUpInside", &[MouthUpperUpLeft, MouthUpperUpRight], &[MouthUpperInside, MouthLowerInside], Pool::Max),
+        ("MouthUpperUpPuff", &[MouthUpperUpLeft, MouthUpperUpRight], &[CheekPuffLeft, CheekPuffRight], Pool::Mean),
+        ("MouthUpperUpPuffLeft", &[MouthUpperUpLeft, MouthUpperUpRight], &[CheekPuffLeft], Pool::Mean),
+        ("MouthUpperUpPuffRight", &[MouthUpperUpLeft, MouthUpperUpRight], &[CheekPuffRight], Pool::Mean),
+        ("MouthUpperUpApe", &[MouthUpperUpLeft, MouthUpperUpRight], &[MouthApeShape], Pool::Mean),
+        ("MouthUpperUpPout", &[MouthUpperUpLeft, MouthUpperUpRight], &[MouthPout], Pool::Mean),
+        ("MouthUpperUpOverlay", &[MouthUpperUpLeft, MouthUpperUpRight], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthUpperUpSuck", &[MouthUpperUpLeft, MouthUpperUpRight], &[CheekSuck], Pool::Mean),
+        // MouthLowerDown Right Based
+        ("MouthLowerDownRightLowerInside", &[MouthLowerDownRight], &[MouthLowerInside], Pool::Mean),
+        ("MouthLowerDownRightPuffRight", &[MouthLowerDownRight], &[CheekPuffRight], Pool::Mean),
+        ("MouthLowerDownRightApe", &[MouthLowerDownRight], &[MouthApeShape], Pool::Mean),
+        ("MouthLowerDownRightPout", &[MouthLowerDownRight], &[MouthPout], Pool::Mean),
+        ("MouthLowerDownRightOverlay", &[MouthLowerDownRight], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthLowerDownRightSuck", &[MouthLowerDownRight], &[CheekSuck], Pool::Mean),
+        // MouthLowerDown Left Based
+        ("MouthLowerDownLeftLowerInside", &[MouthLowerDownLeft], &[MouthLowerInside], Pool::Mean),
+        ("MouthLowerDownLeftPuffLeft", &[MouthLowerDownLeft], &[CheekPuffLeft], Pool::Mean),
+        ("MouthLowerDownLeftApe", &[MouthLowerDownLeft], &[MouthApeShape], Pool::Mean),
+        ("MouthLowerDownLeftPout", &[MouthLowerDownLeft], &[MouthPout], Pool::Mean),
+        ("MouthLowerDownLeftOverlay", &[MouthLowerDownLeft], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthLowerDownLeftSuck", &[MouthLowerDownLeft], &[CheekSuck], Pool::Mean),
+        // MouthLowerDown Combined
+        ("MouthLowerDownLowerInside", &[MouthLowerDownLeft, MouthLowerDownRight], &[MouthLowerInside], Pool::Mean),
+        ("MouthLowerDownInside", &[MouthLowerDownLeft, MouthLowerDownRight], &[MouthUpperInside, MouthLowerInside], Pool::Max),
+        ("MouthLowerDownPuff", &[MouthLowerDownLeft, MouthLowerDownRight], &[CheekPuffLeft, CheekPuffRight], Pool::Mean),
+        ("MouthLowerDownPuffLeft", &[MouthLowerDownLeft, MouthLowerDownRight], &[CheekPuffLeft], Pool::Mean),
+        ("MouthLowerDownPuffRight", &[MouthLowerDownLeft, MouthLowerDownRight], &[CheekPuffRight], Pool::Mean),
+        ("MouthLowerDownApe", &[MouthLowerDownLeft, MouthLowerDownRight], &[MouthApeShape], Pool::Mean),
+        ("MouthLowerDownPout", &[MouthLowerDownLeft, MouthLowerDownRight], &[MouthPout], Pool::Mean),
+        ("MouthLowerDownOverlay", &[MouthLowerDownLeft, MouthLowerDownRight], &[MouthLowerOverlay], Pool::Mean),
+        ("MouthLowerDownSuck", &[MouthLowerDownLeft, MouthLowerDownRight], &[CheekSuck], Pool::Mean),
+        // Inside/Overturn Based
+        ("MouthUpperInsideOverturn", &[MouthUpperInside], &[MouthUpperOverturn], Pool::Mean),
+        ("MouthLowerInsideOverturn", &[MouthLowerInside], &[MouthLowerOverturn], Pool::Mean),
+        // Smile Right Based
+        ("SmileRightUpperOverturn", &[MouthSmileRight], &[MouthUpperOverturn], Pool::Mean),
+        ("SmileRightLowerOverturn", &[MouthSmileRight], &[MouthLowerOverturn], Pool::Mean),
+        ("SmileRightOverturn", &[MouthSmileRight], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Mean),
+        ("SmileRightApe", &[MouthSmileRight], &[MouthApeShape], Pool::Mean),
+        ("SmileRightOverlay", &[MouthSmileRight], &[MouthLowerOverlay], Pool::Mean),
+        ("SmileRightPout", &[MouthSmileRight], &[MouthPout], Pool::Mean),
+        // Smile Left Based
+        ("SmileLeftUpperOverturn", &[MouthSmileLeft], &[MouthUpperOverturn], Pool::Mean),
+        ("SmileLeftLowerOverturn", &[MouthSmileLeft], &[MouthLowerOverturn], Pool::Mean),
+        ("SmileLeftOverturn", &[MouthSmileLeft], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Mean),
+        ("SmileLeftApe", &[MouthSmileLeft], &[MouthApeShape], Pool::Mean),
+        ("SmileLeftOverlay", &[MouthSmileLeft], &[MouthLowerOverlay], Pool::Mean),
+        ("SmileLeftPout", &[MouthSmileLeft], &[MouthPout], Pool::Mean),
+        // Smile Combined
+        ("SmileUpperOverturn", &[MouthSmileLeft, MouthSmileRight], &[MouthUpperOverturn], Pool::Mean),
+        ("SmileLowerOverturn", &[MouthSmileLeft, MouthSmileRight], &[MouthLowerOverturn], Pool::Mean),
+        ("SmileOverturn", &[MouthSmileLeft, MouthSmileRight], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Mean),
+        ("SmileApe", &[MouthSmileLeft, MouthSmileRight], &[MouthApeShape], Pool::Mean),
+        ("SmileOverlay", &[MouthSmileLeft, MouthSmileRight], &[MouthLowerOverlay], Pool::Mean),
+        ("SmilePout", &[MouthSmileLeft, MouthSmileRight], &[MouthPout], Pool::Mean),
+        // CheekPuff Right Based
+        ("PuffRightUpperOverturn", &[CheekPuffRight], &[MouthUpperOverturn], Pool::Mean),
+        ("PuffRightLowerOverturn", &[CheekPuffRight], &[MouthLowerOverturn], Pool::Mean),
+        ("PuffRightOverturn", &[CheekPuffRight], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Max),
+        // CheekPuff Left Based
+        ("PuffLeftUpperOverturn", &[CheekPuffLeft], &[MouthUpperOverturn], Pool::Mean),
+        ("PuffLeftLowerOverturn", &[CheekPuffLeft], &[MouthLowerOverturn], Pool::Mean),
+        ("PuffLeftOverturn", &[CheekPuffLeft], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Max),
+        // CheekPuff Combined
+        ("PuffUpperOverturn", &[CheekPuffRight, CheekPuffLeft], &[MouthUpperOverturn], Pool::Mean),
+        ("PuffLowerOverturn", &[CheekPuffRight, CheekPuffLeft], &[MouthLowerOverturn], Pool::Mean),
+        ("PuffOverturn", &[CheekPuffRight, CheekPuffLeft], &[MouthUpperOverturn, MouthLowerOverturn], Pool::Max),
+    ]
+};
 
 /// Creates all legacy SRanipal lip shape parameters
 pub fn create_legacy_lip_parameters() -> Vec<Box<dyn Parameter>> {
     let mut params: Vec<Box<dyn Parameter>> = Vec::new();
 
     // All SRanipal Lip Shapes (direct mappings)
-    let sranipal_shapes = [
-        "JawRight",
-        "JawLeft",
-        "JawForward",
-        "JawOpen",
-        "MouthApeShape",
-        "MouthUpperRight",
-        "MouthUpperLeft",
-        "MouthLowerRight",
-        "MouthLowerLeft",
-        "MouthUpperOverturn",
-        "MouthLowerOverturn",
-        "MouthPout",
-        "MouthSmileRight",
-        "MouthSmileLeft",
-        "MouthSadRight",
-        "MouthSadLeft",
-        "CheekPuffRight",
-        "CheekPuffLeft",
-        "CheekSuck",
-        "MouthUpperUpRight",
-        "MouthUpperUpLeft",
-        "MouthLowerDownRight",
-        "MouthLowerDownLeft",
-        "MouthUpperInside",
-        "MouthLowerInside",
-        "MouthLowerOverlay",
-        "TongueLongStep1",
-        "TongueLongStep2",
-        "TongueDown",
-        "TongueUp",
-        "TongueRight",
-        "TongueLeft",
-        "TongueRoll",
-        "TongueUpLeftMorph",
-        "TongueUpRightMorph",
-        "TongueDownLeftMorph",
-        "TongueDownRightMorph",
-    ];
-
-    for (i, name) in sranipal_shapes.iter().enumerate() {
-        let shape_idx = i;
-        params.push(Box::new(EParam::expression(name, move |d| {
-            // Safe to convert since we iterate 0..37 and SRanipalLipShape has 38 values
-            let shape = unsafe { std::mem::transmute::<usize, SRanipalLipShape>(shape_idx) };
-            get_sranipal_shape(shape, d)
-        })));
+    for shape in SRanipalLipShape::ALL {
+        params.push(Box::new(EParam::expression(
+            &format!("{shape:?}"),
+            move |d| get_sranipal_shape(shape, d),
+        )));
     }
 
-    // Basic Merged Shapes
-    params.push(Box::new(EParam::expression("JawX", |d| {
-        pos_neg_shape(d, SRanipalLipShape::JawRight, SRanipalLipShape::JawLeft)
-    })));
-    params.push(Box::new(EParam::expression("MouthUpper", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperRight,
-            SRanipalLipShape::MouthUpperLeft,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthLower", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthLowerRight,
-            SRanipalLipShape::MouthLowerLeft,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthX", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperRight,
-                SRanipalLipShape::MouthLowerRight,
-            ],
-            &[
-                SRanipalLipShape::MouthUpperLeft,
-                SRanipalLipShape::MouthLowerLeft,
-            ],
-            true,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileSadRight", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileRight,
-            SRanipalLipShape::MouthSadRight,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileSadLeft", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileLeft,
-            SRanipalLipShape::MouthSadLeft,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileSad", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[
-                SRanipalLipShape::MouthSadLeft,
-                SRanipalLipShape::MouthSadRight,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("TongueY", |d| {
-        pos_neg_shape(d, SRanipalLipShape::TongueUp, SRanipalLipShape::TongueDown)
-    })));
-    params.push(Box::new(EParam::expression("TongueX", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::TongueRight,
-            SRanipalLipShape::TongueLeft,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffSuckRight", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::CheekPuffRight,
-            SRanipalLipShape::CheekSuck,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffSuckLeft", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::CheekPuffLeft,
-            SRanipalLipShape::CheekSuck,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffSuck", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::CheekPuffLeft,
-                SRanipalLipShape::CheekPuffRight,
-            ],
-            &[SRanipalLipShape::CheekSuck],
-            true,
-        )
-    })));
-
-    // JawOpen Based
-    params.push(Box::new(EParam::expression("JawOpenApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::JawOpen,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression("JawOpenPuff", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[SRanipalLipShape::JawOpen],
-            &[
-                SRanipalLipShape::CheekPuffLeft,
-                SRanipalLipShape::CheekPuffRight,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("JawOpenPuffRight", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::JawOpen,
-            SRanipalLipShape::CheekPuffRight,
-        )
-    })));
-    params.push(Box::new(EParam::expression("JawOpenPuffLeft", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::JawOpen,
-            SRanipalLipShape::CheekPuffLeft,
-        )
-    })));
-    params.push(Box::new(EParam::expression("JawOpenSuck", |d| {
-        pos_neg_shape(d, SRanipalLipShape::JawOpen, SRanipalLipShape::CheekSuck)
-    })));
-    params.push(Box::new(EParam::expression("JawOpenForward", |d| {
-        pos_neg_shape(d, SRanipalLipShape::JawOpen, SRanipalLipShape::JawForward)
-    })));
-    params.push(Box::new(EParam::expression("JawOpenOverlay", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::JawOpen,
-            SRanipalLipShape::MouthLowerOverlay,
-        )
-    })));
-
-    // MouthUpperUp Right Based
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpRightUpperInside",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpRight,
-                SRanipalLipShape::MouthUpperInside,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpRightPuffRight",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpRight,
-                SRanipalLipShape::CheekPuffRight,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthUpperUpRightApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpRight,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpRightPout", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpRight,
-            SRanipalLipShape::MouthPout,
-        )
-    })));
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpRightOverlay",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpRight,
-                SRanipalLipShape::MouthLowerOverlay,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthUpperUpRightSuck", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpRight,
-            SRanipalLipShape::CheekSuck,
-        )
-    })));
-
-    // MouthUpperUp Left Based
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpLeftUpperInside",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperInside,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpLeftPuffLeft",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::CheekPuffLeft,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthUpperUpLeftApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpLeft,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpLeftPout", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpLeft,
-            SRanipalLipShape::MouthPout,
-        )
-    })));
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpLeftOverlay",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthLowerOverlay,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthUpperUpLeftSuck", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthUpperUpLeft,
-            SRanipalLipShape::CheekSuck,
-        )
-    })));
-
-    // MouthUpperUp Combined
-    params.push(Box::new(EParam::expression(
-        "MouthUpperUpUpperInside",
-        |d| {
-            pos_neg_avg_shape(
-                d,
-                &[
-                    SRanipalLipShape::MouthUpperUpLeft,
-                    SRanipalLipShape::MouthUpperUpRight,
-                ],
-                &[SRanipalLipShape::MouthUpperInside],
-                false,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthUpperUpInside", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[
-                SRanipalLipShape::MouthUpperInside,
-                SRanipalLipShape::MouthLowerInside,
-            ],
-            true,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpPuff", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[
-                SRanipalLipShape::CheekPuffLeft,
-                SRanipalLipShape::CheekPuffRight,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpPuffLeft", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::CheekPuffLeft],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpPuffRight", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::CheekPuffRight],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpApe", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::MouthApeShape],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpPout", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::MouthPout],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpOverlay", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::MouthLowerOverlay],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthUpperUpSuck", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthUpperUpLeft,
-                SRanipalLipShape::MouthUpperUpRight,
-            ],
-            &[SRanipalLipShape::CheekSuck],
-            false,
-        )
-    })));
-
-    // MouthLowerDown Right Based
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightLowerInside",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::MouthLowerInside,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightPuffRight",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::CheekPuffRight,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightApe",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::MouthApeShape,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightPout",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::MouthPout,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightOverlay",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::MouthLowerOverlay,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownRightSuck",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownRight,
-                SRanipalLipShape::CheekSuck,
-            )
-        },
-    )));
-
-    // MouthLowerDown Left Based
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLeftLowerInside",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerInside,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLeftPuffLeft",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::CheekPuffLeft,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthLowerDownLeftApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthLowerDownLeft,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLeftPout",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthPout,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLeftOverlay",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerOverlay,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLeftSuck",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::CheekSuck,
-            )
-        },
-    )));
-
-    // MouthLowerDown Combined
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownLowerInside",
-        |d| {
-            pos_neg_avg_shape(
-                d,
-                &[
-                    SRanipalLipShape::MouthLowerDownLeft,
-                    SRanipalLipShape::MouthLowerDownRight,
-                ],
-                &[SRanipalLipShape::MouthLowerInside],
-                false,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthLowerDownInside", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[
-                SRanipalLipShape::MouthUpperInside,
-                SRanipalLipShape::MouthLowerInside,
-            ],
-            true,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthLowerDownPuff", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[
-                SRanipalLipShape::CheekPuffLeft,
-                SRanipalLipShape::CheekPuffRight,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownPuffLeft",
-        |d| {
-            pos_neg_avg_shape(
-                d,
-                &[
-                    SRanipalLipShape::MouthLowerDownLeft,
-                    SRanipalLipShape::MouthLowerDownRight,
-                ],
-                &[SRanipalLipShape::CheekPuffLeft],
-                false,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerDownPuffRight",
-        |d| {
-            pos_neg_avg_shape(
-                d,
-                &[
-                    SRanipalLipShape::MouthLowerDownLeft,
-                    SRanipalLipShape::MouthLowerDownRight,
-                ],
-                &[SRanipalLipShape::CheekPuffRight],
-                false,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("MouthLowerDownApe", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[SRanipalLipShape::MouthApeShape],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthLowerDownPout", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[SRanipalLipShape::MouthPout],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthLowerDownOverlay", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[SRanipalLipShape::MouthLowerOverlay],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("MouthLowerDownSuck", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthLowerDownLeft,
-                SRanipalLipShape::MouthLowerDownRight,
-            ],
-            &[SRanipalLipShape::CheekSuck],
-            false,
-        )
-    })));
-
-    // Inside/Overturn Based
-    params.push(Box::new(EParam::expression(
-        "MouthUpperInsideOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthUpperInside,
-                SRanipalLipShape::MouthUpperOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "MouthLowerInsideOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthLowerInside,
-                SRanipalLipShape::MouthLowerOverturn,
-            )
-        },
-    )));
-
-    // Smile Right Based
-    params.push(Box::new(EParam::expression(
-        "SmileRightUpperOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthSmileRight,
-                SRanipalLipShape::MouthUpperOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "SmileRightLowerOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthSmileRight,
-                SRanipalLipShape::MouthLowerOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("SmileRightOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[SRanipalLipShape::MouthSmileRight],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileRightApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileRight,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileRightOverlay", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileRight,
-            SRanipalLipShape::MouthLowerOverlay,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileRightPout", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileRight,
-            SRanipalLipShape::MouthPout,
-        )
-    })));
-
-    // Smile Left Based
-    params.push(Box::new(EParam::expression(
-        "SmileLeftUpperOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthUpperOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "SmileLeftLowerOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthLowerOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("SmileLeftOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[SRanipalLipShape::MouthSmileLeft],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileLeftApe", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileLeft,
-            SRanipalLipShape::MouthApeShape,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileLeftOverlay", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileLeft,
-            SRanipalLipShape::MouthLowerOverlay,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileLeftPout", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::MouthSmileLeft,
-            SRanipalLipShape::MouthPout,
-        )
-    })));
-
-    // Smile Combined
-    params.push(Box::new(EParam::expression("SmileUpperOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[SRanipalLipShape::MouthUpperOverturn],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileLowerOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[SRanipalLipShape::MouthLowerOverturn],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileApe", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[SRanipalLipShape::MouthApeShape],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmileOverlay", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[SRanipalLipShape::MouthLowerOverlay],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("SmilePout", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::MouthSmileLeft,
-                SRanipalLipShape::MouthSmileRight,
-            ],
-            &[SRanipalLipShape::MouthPout],
-            false,
-        )
-    })));
-
-    // CheekPuff Right Based
-    params.push(Box::new(EParam::expression(
-        "PuffRightUpperOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::CheekPuffRight,
-                SRanipalLipShape::MouthUpperOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression(
-        "PuffRightLowerOverturn",
-        |d| {
-            pos_neg_shape(
-                d,
-                SRanipalLipShape::CheekPuffRight,
-                SRanipalLipShape::MouthLowerOverturn,
-            )
-        },
-    )));
-    params.push(Box::new(EParam::expression("PuffRightOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[SRanipalLipShape::CheekPuffRight],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            true,
-        )
-    })));
-
-    // CheekPuff Left Based
-    params.push(Box::new(EParam::expression("PuffLeftUpperOverturn", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::CheekPuffLeft,
-            SRanipalLipShape::MouthUpperOverturn,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffLeftLowerOverturn", |d| {
-        pos_neg_shape(
-            d,
-            SRanipalLipShape::CheekPuffLeft,
-            SRanipalLipShape::MouthLowerOverturn,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffLeftOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[SRanipalLipShape::CheekPuffLeft],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            true,
-        )
-    })));
-
-    // CheekPuff Combined
-    params.push(Box::new(EParam::expression("PuffUpperOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::CheekPuffRight,
-                SRanipalLipShape::CheekPuffLeft,
-            ],
-            &[SRanipalLipShape::MouthUpperOverturn],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffLowerOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::CheekPuffRight,
-                SRanipalLipShape::CheekPuffLeft,
-            ],
-            &[SRanipalLipShape::MouthLowerOverturn],
-            false,
-        )
-    })));
-    params.push(Box::new(EParam::expression("PuffOverturn", |d| {
-        pos_neg_avg_shape(
-            d,
-            &[
-                SRanipalLipShape::CheekPuffRight,
-                SRanipalLipShape::CheekPuffLeft,
-            ],
-            &[
-                SRanipalLipShape::MouthUpperOverturn,
-                SRanipalLipShape::MouthLowerOverturn,
-            ],
-            true,
-        )
-    })));
+    for &(name, positives, negatives, pool) in MERGED_SHAPES {
+        params.push(Box::new(EParam::expression(name, move |d| {
+            combine(d, positives, pool) - combine(d, negatives, pool)
+        })));
+    }
 
     // TongueSteps
     // Combines TongueLongStep1 and TongueLongStep2 into a -1 to +1 range

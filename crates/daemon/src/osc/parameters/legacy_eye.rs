@@ -6,19 +6,124 @@ use super::eparam::EParam;
 use super::Parameter;
 use vrft_common::{UnifiedExpressions, UnifiedTrackingData};
 
-// Helper to get shape weight
-fn w(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
-    data.shapes[expr as usize].weight
+#[derive(Debug, Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    fn openness(self, data: &UnifiedTrackingData) -> f32 {
+        match self {
+            Side::Left => data.eye.left.openness,
+            Side::Right => data.eye.right.openness,
+        }
+    }
+
+    fn wide(self, data: &UnifiedTrackingData) -> f32 {
+        data.weight(match self {
+            Side::Left => UnifiedExpressions::EyeWideLeft,
+            Side::Right => UnifiedExpressions::EyeWideRight,
+        })
+    }
+
+    fn squint(self, data: &UnifiedTrackingData) -> f32 {
+        data.weight(match self {
+            Side::Left => UnifiedExpressions::EyeSquintLeft,
+            Side::Right => UnifiedExpressions::EyeSquintRight,
+        })
+    }
+}
+
+/// Eyelid value expanded past fully open: openness drives the first 0.8,
+/// EyeWide the remaining 0.2
+fn lid(data: &UnifiedTrackingData, side: Side) -> f32 {
+    side.wide(data) * 0.2 + side.openness(data) * 0.8
 }
 
 /// Calculate the squeeze factor for eye lid calculations
-fn squeeze(data: &UnifiedTrackingData, eye_index: usize) -> f32 {
-    if eye_index == 0 {
-        // Left eye
-        (1.0 - data.eye.left.openness.powf(0.15)) * w(data, UnifiedExpressions::EyeSquintLeft)
-    } else {
-        // Right eye
-        (1.0 - data.eye.right.openness.powf(0.15)) * w(data, UnifiedExpressions::EyeSquintRight)
+fn squeeze(data: &UnifiedTrackingData, side: Side) -> f32 {
+    // Openness is clamped first: a negative value would make powf NaN
+    (1.0 - side.openness(data).clamp(0.0, 1.0).powf(0.15)) * side.squint(data)
+}
+
+/// [`lid`] extended below closed by the squeeze factor
+fn lid_squeeze(data: &UnifiedTrackingData, side: Side) -> f32 {
+    lid(data, side) - squeeze(data, side)
+}
+
+/// Average of both eyes' [`lid_squeeze`]
+fn combined_lid_squeeze(data: &UnifiedTrackingData) -> f32 {
+    ((Side::Left.wide(data) + Side::Right.wide(data)) * 0.2
+        + (Side::Left.openness(data) + Side::Right.openness(data)) * 0.8
+        - squeeze(data, Side::Left)
+        - squeeze(data, Side::Right))
+        * 0.5
+}
+
+/// How a combined parameter merges its Left and Right values
+#[derive(Clone, Copy)]
+enum Combine {
+    Avg,
+    Max,
+}
+
+/// Combined, Left and Right parameter names, each side's shapes (averaged),
+/// and how the combined parameter merges the two sides
+type Triplet = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [UnifiedExpressions],
+    &'static [UnifiedExpressions],
+    Combine,
+);
+
+/// Quest Pro Legacy Brow Parameters
+#[rustfmt::skip]
+const BROW_TRIPLETS: &[Triplet] = {
+    use UnifiedExpressions::*;
+    &[
+        ("BrowsInnerUp", "BrowInnerUpLeft", "BrowInnerUpRight", &[BrowInnerUpLeft], &[BrowInnerUpRight], Combine::Max),
+        ("BrowsOuterUp", "BrowOuterUpLeft", "BrowOuterUpRight", &[BrowOuterUpLeft], &[BrowOuterUpRight], Combine::Max),
+        ("BrowsDown", "BrowDownLeft", "BrowDownRight", &[BrowPinchLeft, BrowLowererLeft], &[BrowPinchRight, BrowLowererRight], Combine::Max),
+    ]
+};
+
+/// Quest Pro Legacy Face Parameters with Left/Right halves
+#[rustfmt::skip]
+const FACE_TRIPLETS: &[Triplet] = {
+    use UnifiedExpressions::*;
+    &[
+        ("EyesSquint", "EyeSquintLeft", "EyeSquintRight", &[EyeSquintLeft], &[EyeSquintRight], Combine::Avg),
+        ("CheeksSquint", "CheekSquintLeft", "CheekSquintRight", &[CheekSquintLeft], &[CheekSquintRight], Combine::Avg),
+        ("MouthDimple", "MouthDimpleLeft", "MouthDimpleRight", &[MouthDimpleLeft], &[MouthDimpleRight], Combine::Avg),
+        ("MouthPress", "MouthPressLeft", "MouthPressRight", &[MouthPressLeft], &[MouthPressRight], Combine::Avg),
+        ("MouthStretch", "MouthStretchLeft", "MouthStretchRight", &[MouthStretchLeft], &[MouthStretchRight], Combine::Avg),
+        ("MouthTightener", "MouthTightenerLeft", "MouthTightenerRight", &[MouthTightenerLeft], &[MouthTightenerRight], Combine::Avg),
+        ("NoseSneer", "NoseSneerLeft", "NoseSneerRight", &[NoseSneerLeft], &[NoseSneerRight], Combine::Avg),
+    ]
+};
+
+/// Average weight of `shapes`
+fn mean(data: &UnifiedTrackingData, shapes: &[UnifiedExpressions]) -> f32 {
+    shapes.iter().map(|&e| data.weight(e)).sum::<f32>() / shapes.len() as f32
+}
+
+/// Pushes the combined, Left and Right parameter of each triplet, in that order
+fn push_triplets(params: &mut Vec<Box<dyn Parameter>>, triplets: &[Triplet]) {
+    for &(combined, left_name, right_name, left, right, combine) in triplets {
+        params.push(Box::new(EParam::simple(combined, move |d| {
+            let (l, r) = (mean(d, left), mean(d, right));
+            match combine {
+                Combine::Avg => (l + r) / 2.0,
+                Combine::Max => l.max(r),
+            }
+        })));
+        params.push(Box::new(EParam::simple(left_name, move |d| mean(d, left))));
+        params.push(Box::new(EParam::simple(right_name, move |d| {
+            mean(d, right)
+        })));
     }
 }
 
@@ -44,24 +149,24 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
 
     // Eye Widen
     params.push(Box::new(EParam::simple("LeftEyeWiden", |d| {
-        w(d, UnifiedExpressions::EyeWideLeft)
+        Side::Left.wide(d)
     })));
     params.push(Box::new(EParam::simple("RightEyeWiden", |d| {
-        w(d, UnifiedExpressions::EyeWideRight)
+        Side::Right.wide(d)
     })));
     params.push(Box::new(EParam::simple("EyeWiden", |d| {
-        (w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) / 2.0
+        (Side::Left.wide(d) + Side::Right.wide(d)) / 2.0
     })));
 
     // Eye Squeeze
     params.push(Box::new(EParam::simple("LeftEyeSqueeze", |d| {
-        w(d, UnifiedExpressions::EyeSquintLeft)
+        Side::Left.squint(d)
     })));
     params.push(Box::new(EParam::simple("RightEyeSqueeze", |d| {
-        w(d, UnifiedExpressions::EyeSquintRight)
+        Side::Right.squint(d)
     })));
     params.push(Box::new(EParam::simple("EyesSqueeze", |d| {
-        (w(d, UnifiedExpressions::EyeSquintLeft) + w(d, UnifiedExpressions::EyeSquintRight)) / 2.0
+        (Side::Left.squint(d) + Side::Right.squint(d)) / 2.0
     })));
 
     // Eye Dilation
@@ -86,20 +191,20 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
     // Eye Lid Expanded (Float + Bool, binary handled separately below)
     params.push(Box::new(EParam::new(
         "LeftEyeLidExpanded",
-        |d| w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8,
+        |d| lid(d, Side::Left),
         0.5,
         true,
     )));
     params.push(Box::new(EParam::new(
         "RightEyeLidExpanded",
-        |d| w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8,
+        |d| lid(d, Side::Right),
         0.5,
         true,
     )));
     params.push(Box::new(EParam::new(
         "EyeLidExpanded",
         |d| {
-            (w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.1
+            (Side::Left.wide(d) + Side::Right.wide(d)) * 0.1
                 + (d.eye.left.openness + d.eye.right.openness) * 0.4
         },
         0.5,
@@ -109,28 +214,19 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
     // Eye Lid Expanded Squeeze (Float + Bool, binary handled separately below)
     params.push(Box::new(EParam::new(
         "LeftEyeLidExpandedSqueeze",
-        |d| w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8 - squeeze(d, 0),
+        |d| lid_squeeze(d, Side::Left),
         0.5,
         true,
     )));
     params.push(Box::new(EParam::new(
         "RightEyeLidExpandedSqueeze",
-        |d| {
-            w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8
-                - squeeze(d, 1)
-        },
+        |d| lid_squeeze(d, Side::Right),
         0.5,
         true,
     )));
     params.push(Box::new(EParam::new(
         "EyeLidExpandedSqueeze",
-        |d| {
-            ((w(d, UnifiedExpressions::EyeWideLeft) + w(d, UnifiedExpressions::EyeWideRight)) * 0.2
-                + (d.eye.left.openness + d.eye.right.openness) * 0.8
-                - squeeze(d, 0)
-                - squeeze(d, 1))
-                * 0.5
-        },
+        combined_lid_squeeze,
         0.5,
         true,
     )));
@@ -138,34 +234,22 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
     // Eye Lid Expanded Binary
     // Uses conditional selection based on combined eyelid value:
     // If eyelid > 0.8 → return wide value; else → return openness
-    params.push(Box::new(BinaryBaseParameter::new(
-        "LeftEyeLidExpanded",
-        |d| {
-            let eyelid = w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8;
-            if eyelid > 0.8 {
-                w(d, UnifiedExpressions::EyeWideLeft)
+    for (name, side) in [
+        ("LeftEyeLidExpanded", Side::Left),
+        ("RightEyeLidExpanded", Side::Right),
+    ] {
+        params.push(Box::new(BinaryBaseParameter::new(name, move |d| {
+            if lid(d, side) > 0.8 {
+                side.wide(d)
             } else {
-                d.eye.left.openness
+                side.openness(d)
             }
-        },
-    )));
-    params.push(Box::new(BinaryBaseParameter::new(
-        "RightEyeLidExpanded",
-        |d| {
-            let eyelid = w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8;
-            if eyelid > 0.8 {
-                w(d, UnifiedExpressions::EyeWideRight)
-            } else {
-                d.eye.right.openness
-            }
-        },
-    )));
+        })));
+    }
     params.push(Box::new(BinaryBaseParameter::new(
         "CombinedEyeLidExpanded",
         |d| {
-            let avg_wide = (w(d, UnifiedExpressions::EyeWideLeft)
-                + w(d, UnifiedExpressions::EyeWideRight))
-                / 2.0;
+            let avg_wide = (Side::Left.wide(d) + Side::Right.wide(d)) / 2.0;
             // If wide avg > 0, return wide; else return openness
             if avg_wide > 0.0 {
                 avg_wide
@@ -178,208 +262,86 @@ pub fn create_legacy_eye_parameters() -> Vec<Box<dyn Parameter>> {
     // Eye Lid Expanded Squeeze Binary
     // Tri-state selection:
     // If eyelid > 0.8 → return wide; if eyelid >= 0 → return openness; else → return squeeze
-    params.push(Box::new(BinaryBaseParameter::new(
-        "LeftEyeLidExpandedSqueeze",
-        |d| {
-            let eyelid = w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8
-                - squeeze(d, 0);
+    for (name, side) in [
+        ("LeftEyeLidExpandedSqueeze", Side::Left),
+        ("RightEyeLidExpandedSqueeze", Side::Right),
+    ] {
+        params.push(Box::new(BinaryBaseParameter::new(name, move |d| {
+            let eyelid = lid_squeeze(d, side);
             if eyelid > 0.8 {
-                w(d, UnifiedExpressions::EyeWideLeft)
+                side.wide(d)
             } else if eyelid >= 0.0 {
-                d.eye.left.openness
+                side.openness(d)
             } else {
-                squeeze(d, 0)
+                squeeze(d, side)
             }
-        },
-    )));
-    params.push(Box::new(BinaryBaseParameter::new(
-        "RightEyeLidExpandedSqueeze",
-        |d| {
-            let eyelid = w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8
-                - squeeze(d, 1);
-            if eyelid > 0.8 {
-                w(d, UnifiedExpressions::EyeWideRight)
-            } else if eyelid >= 0.0 {
-                d.eye.right.openness
-            } else {
-                squeeze(d, 1)
-            }
-        },
-    )));
+        })));
+    }
     params.push(Box::new(BinaryBaseParameter::new(
         "CombinedEyeLidExpandedSqueeze",
         |d| {
-            let eyelid = ((w(d, UnifiedExpressions::EyeWideLeft)
-                + w(d, UnifiedExpressions::EyeWideRight))
-                * 0.2
-                + (d.eye.left.openness + d.eye.right.openness) * 0.8
-                - squeeze(d, 0)
-                - squeeze(d, 1))
-                * 0.5;
+            let eyelid = combined_lid_squeeze(d);
             if eyelid > 0.8 {
-                (w(d, UnifiedExpressions::EyeWideRight) + w(d, UnifiedExpressions::EyeWideLeft))
-                    * 0.5
+                (Side::Right.wide(d) + Side::Left.wide(d)) * 0.5
             } else if eyelid >= 0.0 {
                 (d.eye.left.openness + d.eye.right.openness) / 2.0
             } else {
-                (squeeze(d, 0) + squeeze(d, 1)) * 0.5
+                (squeeze(d, Side::Left) + squeeze(d, Side::Right)) * 0.5
             }
         },
     )));
 
     // Eye Toggle Parameters (Bool)
     params.push(Box::new(BoolParam::new("LeftEyeWidenToggle", |d| {
-        w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8 > 0.8
+        lid(d, Side::Left) > 0.8
     })));
     params.push(Box::new(BoolParam::new("RightEyeWidenToggle", |d| {
-        w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8 > 0.8
+        lid(d, Side::Right) > 0.8
     })));
     params.push(Box::new(BoolParam::new("EyesWidenToggle", |d| {
-        (w(d, UnifiedExpressions::EyeWideRight) * 0.2
-            + d.eye.right.openness * 0.8
-            + w(d, UnifiedExpressions::EyeWideLeft) * 0.2
-            + d.eye.left.openness * 0.8)
-            / 2.0
-            > 0.8
+        (lid(d, Side::Right) + lid(d, Side::Left)) / 2.0 > 0.8
     })));
 
     params.push(Box::new(BoolParam::new("LeftEyeSqueezeToggle", |d| {
-        w(d, UnifiedExpressions::EyeWideLeft) * 0.2 + d.eye.left.openness * 0.8 - squeeze(d, 0)
-            < 0.0
+        lid_squeeze(d, Side::Left) < 0.0
     })));
     params.push(Box::new(BoolParam::new("RightEyeSqueezeToggle", |d| {
-        w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8 - squeeze(d, 1)
-            < 0.0
+        lid_squeeze(d, Side::Right) < 0.0
     })));
     params.push(Box::new(BoolParam::new("EyesSqueezeToggle", |d| {
-        (w(d, UnifiedExpressions::EyeWideRight) * 0.2 + d.eye.right.openness * 0.8 - squeeze(d, 1)
-            + w(d, UnifiedExpressions::EyeWideLeft) * 0.2
-            + d.eye.left.openness * 0.8
-            - squeeze(d, 0))
-            / 2.0
-            < 0.0
+        (lid_squeeze(d, Side::Right) + lid_squeeze(d, Side::Left)) / 2.0 < 0.0
     })));
 
-    // Quest Pro Legacy Brow Parameters
-    params.push(Box::new(EParam::simple("BrowsInnerUp", |d| {
-        w(d, UnifiedExpressions::BrowInnerUpLeft).max(w(d, UnifiedExpressions::BrowInnerUpRight))
-    })));
-    params.push(Box::new(EParam::simple("BrowInnerUpLeft", |d| {
-        w(d, UnifiedExpressions::BrowInnerUpLeft)
-    })));
-    params.push(Box::new(EParam::simple("BrowInnerUpRight", |d| {
-        w(d, UnifiedExpressions::BrowInnerUpRight)
-    })));
-
-    params.push(Box::new(EParam::simple("BrowsOuterUp", |d| {
-        w(d, UnifiedExpressions::BrowOuterUpLeft).max(w(d, UnifiedExpressions::BrowOuterUpRight))
-    })));
-    params.push(Box::new(EParam::simple("BrowOuterUpLeft", |d| {
-        w(d, UnifiedExpressions::BrowOuterUpLeft)
-    })));
-    params.push(Box::new(EParam::simple("BrowOuterUpRight", |d| {
-        w(d, UnifiedExpressions::BrowOuterUpRight)
-    })));
-
-    params.push(Box::new(EParam::simple("BrowsDown", |d| {
-        let left = (w(d, UnifiedExpressions::BrowPinchLeft)
-            + w(d, UnifiedExpressions::BrowLowererLeft))
-            / 2.0;
-        let right = (w(d, UnifiedExpressions::BrowPinchRight)
-            + w(d, UnifiedExpressions::BrowLowererRight))
-            / 2.0;
-        left.max(right)
-    })));
-    params.push(Box::new(EParam::simple("BrowDownLeft", |d| {
-        (w(d, UnifiedExpressions::BrowPinchLeft) + w(d, UnifiedExpressions::BrowLowererLeft)) / 2.0
-    })));
-    params.push(Box::new(EParam::simple("BrowDownRight", |d| {
-        (w(d, UnifiedExpressions::BrowPinchRight) + w(d, UnifiedExpressions::BrowLowererRight))
-            / 2.0
-    })));
+    push_triplets(&mut params, BROW_TRIPLETS);
 
     // Quest Pro Legacy Face Parameters
     params.push(Box::new(EParam::simple("MouthRaiserLower", |d| {
-        w(d, UnifiedExpressions::MouthRaiserLower)
+        d.weight(UnifiedExpressions::MouthRaiserLower)
     })));
     params.push(Box::new(EParam::simple("MouthRaiserUpper", |d| {
-        w(d, UnifiedExpressions::MouthRaiserUpper)
+        d.weight(UnifiedExpressions::MouthRaiserUpper)
     })));
 
-    params.push(Box::new(EParam::simple("EyesSquint", |d| {
-        (w(d, UnifiedExpressions::EyeSquintLeft) + w(d, UnifiedExpressions::EyeSquintRight)) / 2.0
-    })));
-    params.push(Box::new(EParam::simple("EyeSquintLeft", |d| {
-        w(d, UnifiedExpressions::EyeSquintLeft)
-    })));
-    params.push(Box::new(EParam::simple("EyeSquintRight", |d| {
-        w(d, UnifiedExpressions::EyeSquintRight)
-    })));
-
-    params.push(Box::new(EParam::simple("CheeksSquint", |d| {
-        (w(d, UnifiedExpressions::CheekSquintLeft) + w(d, UnifiedExpressions::CheekSquintRight))
-            / 2.0
-    })));
-    params.push(Box::new(EParam::simple("CheekSquintLeft", |d| {
-        w(d, UnifiedExpressions::CheekSquintLeft)
-    })));
-    params.push(Box::new(EParam::simple("CheekSquintRight", |d| {
-        w(d, UnifiedExpressions::CheekSquintRight)
-    })));
-
-    params.push(Box::new(EParam::simple("MouthDimple", |d| {
-        (w(d, UnifiedExpressions::MouthDimpleLeft) + w(d, UnifiedExpressions::MouthDimpleRight))
-            / 2.0
-    })));
-    params.push(Box::new(EParam::simple("MouthDimpleLeft", |d| {
-        w(d, UnifiedExpressions::MouthDimpleLeft)
-    })));
-    params.push(Box::new(EParam::simple("MouthDimpleRight", |d| {
-        w(d, UnifiedExpressions::MouthDimpleRight)
-    })));
-
-    params.push(Box::new(EParam::simple("MouthPress", |d| {
-        (w(d, UnifiedExpressions::MouthPressLeft) + w(d, UnifiedExpressions::MouthPressRight)) / 2.0
-    })));
-    params.push(Box::new(EParam::simple("MouthPressLeft", |d| {
-        w(d, UnifiedExpressions::MouthPressLeft)
-    })));
-    params.push(Box::new(EParam::simple("MouthPressRight", |d| {
-        w(d, UnifiedExpressions::MouthPressRight)
-    })));
-
-    params.push(Box::new(EParam::simple("MouthStretch", |d| {
-        (w(d, UnifiedExpressions::MouthStretchLeft) + w(d, UnifiedExpressions::MouthStretchRight))
-            / 2.0
-    })));
-    params.push(Box::new(EParam::simple("MouthStretchLeft", |d| {
-        w(d, UnifiedExpressions::MouthStretchLeft)
-    })));
-    params.push(Box::new(EParam::simple("MouthStretchRight", |d| {
-        w(d, UnifiedExpressions::MouthStretchRight)
-    })));
-
-    params.push(Box::new(EParam::simple("MouthTightener", |d| {
-        (w(d, UnifiedExpressions::MouthTightenerLeft)
-            + w(d, UnifiedExpressions::MouthTightenerRight))
-            / 2.0
-    })));
-    params.push(Box::new(EParam::simple("MouthTightenerLeft", |d| {
-        w(d, UnifiedExpressions::MouthTightenerLeft)
-    })));
-    params.push(Box::new(EParam::simple("MouthTightenerRight", |d| {
-        w(d, UnifiedExpressions::MouthTightenerRight)
-    })));
-
-    params.push(Box::new(EParam::simple("NoseSneer", |d| {
-        (w(d, UnifiedExpressions::NoseSneerLeft) + w(d, UnifiedExpressions::NoseSneerRight)) / 2.0
-    })));
-    params.push(Box::new(EParam::simple("NoseSneerLeft", |d| {
-        w(d, UnifiedExpressions::NoseSneerLeft)
-    })));
-    params.push(Box::new(EParam::simple("NoseSneerRight", |d| {
-        w(d, UnifiedExpressions::NoseSneerRight)
-    })));
+    push_triplets(&mut params, FACE_TRIPLETS);
 
     params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_openness_squeezes_without_nan() {
+        let mut data = UnifiedTrackingData::default();
+        data.eye.left.openness = -0.25;
+        data.eye.right.openness = 0.0;
+        *data.weight_mut(UnifiedExpressions::EyeSquintLeft).unwrap() = 1.0;
+        *data.weight_mut(UnifiedExpressions::EyeSquintRight).unwrap() = 1.0;
+
+        // A negative openness squeezes like a closed eye
+        assert_eq!(squeeze(&data, Side::Left), squeeze(&data, Side::Right));
+        assert!(lid_squeeze(&data, Side::Left) < 0.0);
+        assert!(combined_lid_squeeze(&data).is_finite());
+    }
 }

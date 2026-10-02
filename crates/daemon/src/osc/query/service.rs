@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -325,6 +325,16 @@ impl Fetches {
     }
 }
 
+/// Asks VRChat's OSCQuery server, with a deadline: a VRChat that takes the
+/// connection and then stalls, as it can while loading, mustn't hold up
+/// discovery, which reads its port on the mDNS thread.
+static HTTP: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .into()
+});
+
 /// The OSC port VRChat reports in its OSCQuery `HOST_INFO`.
 fn fetch_osc_port(base: &str) -> Option<u16> {
     #[derive(Deserialize)]
@@ -333,7 +343,8 @@ fn fetch_osc_port(base: &str) -> Option<u16> {
         osc_port: Option<u16>,
     }
     let url = format!("{}/?HOST_INFO", base);
-    match ureq::get(&url)
+    match HTTP
+        .get(&url)
         .call()
         .and_then(|mut resp| resp.body_mut().read_json::<HostInfo>())
     {
@@ -346,18 +357,19 @@ fn fetch_osc_port(base: &str) -> Option<u16> {
 }
 
 fn fetch_avatar_parameters(url: &str) -> Result<Vec<OscParameterInfo>> {
-    let mut resp = ureq::get(url).call()?;
+    let mut resp = HTTP.get(url).call()?;
     let root: OscQueryNode = resp.body_mut().read_json()?;
 
+    // Every avatar has some, so a tree without them is VRChat still loading
+    // it: an error, so the read is tried again, rather than an avatar with
+    // nothing to drive.
+    let parameters_node = root
+        .contents
+        .as_ref()
+        .and_then(|contents| contents.get("parameters"))
+        .ok_or_else(|| anyhow::anyhow!("VRChat's avatar has no parameters yet"))?;
     let mut params = Vec::new();
-
-    // Navigate to /avatar/parameters
-    if let Some(contents) = &root.contents {
-        if let Some(parameters_node) = contents.get("parameters") {
-            flatten_node(parameters_node, &mut params);
-        }
-    }
-
+    flatten_node(parameters_node, &mut params);
     Ok(params)
 }
 

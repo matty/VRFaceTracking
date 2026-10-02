@@ -100,11 +100,10 @@ impl Parameter for NativeParameter {
             log::debug!("NativeParam '{}' is relevant", self.address);
         }
 
-        if self.relevant {
-            1
-        } else {
-            0
-        }
+        // Never counted: these switch on exactly when the avatar *lacks* its
+        // own eye parameters, so counting them made every avatar look like it
+        // had face tracking.
+        0
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
@@ -444,6 +443,17 @@ mod tests {
             1,
             "a moved eye must not wait for the keepalive"
         );
+    }
+
+    /// The native endpoints become relevant exactly when the avatar has no eye
+    /// parameters, so counting them would report face tracking on an avatar
+    /// that has none.
+    #[test]
+    fn native_parameters_do_not_count_as_avatar_face_tracking() {
+        for p in create_native_parameters().iter_mut() {
+            assert_eq!(p.reset(&avatar(&["JawOpen"]), &HashMap::new()), 0);
+            assert!(!p.process(&UnifiedTrackingData::default()).is_empty());
+        }
     }
 
     #[test]

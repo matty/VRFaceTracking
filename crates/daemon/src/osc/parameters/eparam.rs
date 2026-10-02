@@ -17,23 +17,20 @@ impl EParam {
     /// Create a new EParam with float getter
     pub fn new(
         name: &str,
-        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + Clone + 'static,
+        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
         min_bool_threshold: f32,
         skip_binary: bool,
     ) -> Self {
-        let get_value_arc = Arc::new(get_value.clone());
-        let get_value_arc2 = get_value_arc.clone();
+        let get_value = Arc::new(get_value);
 
-        let bool_param =
-            BoolParam::new(name, move |data| (get_value_arc)(data) < min_bool_threshold);
+        let bool_getter = get_value.clone();
+        let bool_param = BoolParam::new(name, move |data| bool_getter(data) < min_bool_threshold);
 
-        let float_param = FloatParam::new(name, move |data| (get_value_arc2)(data));
+        let float_getter = get_value.clone();
+        let float_param = FloatParam::new(name, move |data| float_getter(data));
 
-        let binary_param = if skip_binary {
-            None
-        } else {
-            Some(BinaryBaseParameter::new(name, get_value))
-        };
+        let binary_param =
+            (!skip_binary).then(|| BinaryBaseParameter::new(name, move |data| get_value(data)));
 
         Self {
             bool_param,
@@ -45,7 +42,7 @@ impl EParam {
     /// Simplified constructor with default threshold of 0.5 and binary enabled
     pub fn simple(
         name: &str,
-        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + Clone + 'static,
+        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
     ) -> Self {
         Self::new(name, get_value, 0.5, false)
     }
@@ -53,7 +50,7 @@ impl EParam {
     /// Constructor for expression-based params with 0.0 threshold
     pub fn expression(
         name: &str,
-        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + Clone + 'static,
+        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
     ) -> Self {
         Self::new(name, get_value, 0.0, false)
     }

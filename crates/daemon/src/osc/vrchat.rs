@@ -4,7 +4,7 @@ use crate::osc::query::service::{OscParamType, OscParameterInfo, OscQueryService
 use crate::osc::query::target::VrchatTarget;
 use anyhow::Result;
 use log::{error, info, warn};
-use rosc::{decoder, encoder, OscBundle, OscPacket, OscType};
+use rosc::{decoder, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,9 +22,7 @@ pub struct VRChatOsc {
     receive_port: u16,
     osc_query_service: Mutex<Option<OscQueryService>>,
     query_rx: Mutex<Receiver<Option<Vec<OscParameterInfo>>>>,
-    change_tx_avatar: Sender<String>,
     change_tx_query: Sender<String>,
-    pub change_rx: Mutex<Option<Receiver<String>>>,
     pub param_registry: Mutex<ParameterRegistry>,
     shutdown_flag: Arc<AtomicBool>,
 }
@@ -39,7 +37,6 @@ impl VRChatOsc {
             .and_then(|socket| socket.local_addr().ok())
             .map_or(receive_port, |addr| addr.port());
         let (query_tx, query_rx) = channel();
-        let (change_tx_avatar, change_rx_avatar) = channel();
         let (change_tx_query, change_rx_query) = channel();
 
         let osc_query_service = OscQueryService::new(query_tx, change_rx_query, target.clone());
@@ -51,9 +48,7 @@ impl VRChatOsc {
             receive_port,
             osc_query_service: Mutex::new(Some(osc_query_service)),
             query_rx: Mutex::new(query_rx),
-            change_tx_avatar,
             change_tx_query,
-            change_rx: Mutex::new(Some(change_rx_avatar)),
             param_registry: Mutex::new(ParameterRegistry::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -86,7 +81,6 @@ impl VRChatOsc {
         // Set socket timeout for graceful shutdown (500ms)
         recv_socket.set_read_timeout(Some(Duration::from_millis(500)))?;
 
-        let tx_avatar = self.change_tx_avatar.clone();
         let tx_query = self.change_tx_query.clone();
         let port = self.receive_port;
         let shutdown = self.shutdown_flag.clone();
@@ -101,7 +95,7 @@ impl VRChatOsc {
                 match recv_socket.recv_from(&mut buf) {
                     Ok((size, _addr)) => {
                         if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
-                            handle_packet(packet, &tx_avatar, &tx_query, &target);
+                            handle_packet(packet, &tx_query, &target);
                         }
                     }
                     Err(ref e)
@@ -147,27 +141,6 @@ impl VRChatOsc {
                         })
                         .collect();
 
-                    let bool_count = param_types
-                        .values()
-                        .filter(|t| **t == ParamType::Bool)
-                        .count();
-                    let float_count = param_types
-                        .values()
-                        .filter(|t| **t == ParamType::Float)
-                        .count();
-                    let int_count = param_types
-                        .values()
-                        .filter(|t| **t == ParamType::Int)
-                        .count();
-                    info!(
-                        "OSC Query Types: {} bool, {} float, {} int",
-                        bool_count, float_count, int_count
-                    );
-
-                    // Debug: Log sample of avatar params to verify format
-                    let sample_params: Vec<_> = avatar_params.iter().take(10).collect();
-                    log::debug!("Sample avatar params: {:?}", sample_params);
-
                     let ft_sample: Vec<_> = avatar_params
                         .iter()
                         .filter(|p| p.contains("FT") || p.contains("v2"))
@@ -197,13 +170,7 @@ impl VRChatOsc {
             return Ok(());
         }
 
-        // Encode the bundle
-        let bundle = OscBundle {
-            timetag: rosc::OscTime::from((0, 0)),
-            content: messages.into_iter().map(OscPacket::Message).collect(),
-        };
-        let packet = OscPacket::Bundle(bundle);
-        let msg_buf = encoder::encode(&packet)?;
+        let bundles = super::encode_bundles(messages)?;
 
         // Send to target address
         let mut socket_guard = self.socket.lock().unwrap();
@@ -224,17 +191,15 @@ impl VRChatOsc {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("VRChatOsc socket not available"))?;
 
-        match socket.send_to(&msg_buf, self.target.send_addr()) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                error!(
-                    "Failed to send OSC packet: {}. Attempting to reconnect...",
-                    e
-                );
+        let address = self.target.send_addr();
+        for bundle in bundles {
+            if let Err(e) = socket.send_to(&bundle, &address) {
+                // The caller logs it; the socket is made again next frame.
                 *socket_guard = None;
-                Err(anyhow::anyhow!("OSC Send failed: {}", e))
+                return Err(anyhow::anyhow!("OSC Send failed: {}", e));
             }
         }
+        Ok(())
     }
 
     /// Signal the OSC listener thread to shut down gracefully
@@ -265,12 +230,7 @@ fn bind_receive(port: u16) -> Option<UdpSocket> {
     Some(socket)
 }
 
-fn handle_packet(
-    packet: OscPacket,
-    tx_avatar: &Sender<String>,
-    tx_query: &Sender<String>,
-    target: &VrchatTarget,
-) {
+fn handle_packet(packet: OscPacket, tx_query: &Sender<String>, target: &VrchatTarget) {
     match packet {
         OscPacket::Message(msg) => {
             if msg.addr == "/avatar/change" {
@@ -285,13 +245,12 @@ fn handle_packet(
                 info!("Avatar change detected! New Avatar ID: {}", avatar_id);
                 // Not known for the new avatar until its parameters are read.
                 target.set_avatar_face_tracking(None);
-                let _ = tx_avatar.send(avatar_id.clone());
                 let _ = tx_query.send(avatar_id);
             }
         }
         OscPacket::Bundle(bundle) => {
             for packet in bundle.content {
-                handle_packet(packet, tx_avatar, tx_query, target);
+                handle_packet(packet, tx_query, target);
             }
         }
     }
@@ -324,17 +283,15 @@ mod tests {
         let target = VrchatTarget::new("127.0.0.1", 9000);
         target.found(Some(9000));
         target.set_avatar_face_tracking(Some(true));
-        let (tx_avatar, rx_avatar) = channel();
         let (tx_query, rx_query) = channel();
         let change = OscPacket::Message(OscMessage {
             addr: "/avatar/change".into(),
             args: vec![OscType::String("avtr_test".into())],
         });
 
-        handle_packet(change, &tx_avatar, &tx_query, &target);
+        handle_packet(change, &tx_query, &target);
 
         assert_eq!(target.link().avatar_face_tracking, None);
-        assert_eq!(rx_avatar.try_recv().unwrap(), "avtr_test");
         assert_eq!(rx_query.try_recv().unwrap(), "avtr_test");
     }
 }

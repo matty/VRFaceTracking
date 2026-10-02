@@ -1,12 +1,9 @@
 //! Binary parameter encoding with dynamic bit discovery and delta checking.
 
-use super::{ParamType, Parameter};
+use super::{ends_with_version_segment, ParamType, Parameter, DEFAULT_PREFIX};
 use rosc::{OscMessage, OscType};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use vrft_common::UnifiedTrackingData;
-
-const DEFAULT_PREFIX: &str = "/avatar/parameters/";
 
 /// Text following `{name}` for every way `addr` could refer to a parameter of
 /// that name, applying the prefix and nested-version rules once so that bit
@@ -32,15 +29,8 @@ pub(crate) fn name_suffixes<'a>(name: &str, addr: &'a str) -> Vec<&'a str> {
     let sep = format!("/{name}");
     if let Some(idx) = stripped.find(sep.as_str()) {
         // Reject nested version prefixes (e.g., /v1/v2/Name)
-        if idx >= 2 {
-            let before = &stripped[..idx];
-            let bytes = before.as_bytes();
-            if bytes[bytes.len() - 1].is_ascii_digit()
-                && bytes.len() >= 2
-                && bytes[bytes.len() - 2] == b'v'
-            {
-                return suffixes;
-            }
+        if ends_with_version_segment(&stripped[..idx]) {
+            return suffixes;
         }
         suffixes.push(&stripped[idx + sep.len()..]);
     }
@@ -64,14 +54,12 @@ pub fn get_binary_steps(index: u32) -> Option<usize> {
 pub struct BinaryBaseParameter {
     pub name: String,
     pub bit_params: Vec<(String, usize)>,
-    pub negative_param: Option<String>,
+    /// Every `{name}Negative` address the avatar has; each gets the sign.
+    pub negative_params: Vec<String>,
     pub max_binary_int: u32,
     pub relevant: bool,
-    get_value: Arc<dyn Fn(&UnifiedTrackingData) -> f32 + Send + Sync>,
+    get_value: Box<dyn Fn(&UnifiedTrackingData) -> f32 + Send + Sync>,
     last_bits: HashMap<String, bool>,
-    negative_relevant: bool,
-    send_on_load: bool,
-    needs_initial_send: bool,
 }
 
 impl BinaryBaseParameter {
@@ -82,33 +70,11 @@ impl BinaryBaseParameter {
         Self {
             name: name.to_string(),
             bit_params: Vec::new(),
-            negative_param: None,
+            negative_params: Vec::new(),
             max_binary_int: 0,
             relevant: false,
-            get_value: Arc::new(get_value),
+            get_value: Box::new(get_value),
             last_bits: HashMap::new(),
-            negative_relevant: false,
-            send_on_load: false,
-            needs_initial_send: false,
-        }
-    }
-
-    /// Create a parameter that sends all bit values immediately when it becomes relevant
-    pub fn new_with_send_on_load(
-        name: &str,
-        get_value: impl Fn(&UnifiedTrackingData) -> f32 + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            name: name.to_string(),
-            bit_params: Vec::new(),
-            negative_param: None,
-            max_binary_int: 0,
-            relevant: false,
-            get_value: Arc::new(get_value),
-            last_bits: HashMap::new(),
-            negative_relevant: false,
-            send_on_load: true,
-            needs_initial_send: false,
         }
     }
 
@@ -129,7 +95,7 @@ impl BinaryBaseParameter {
     fn process_binary(&self, value: f32, binary_index: usize) -> bool {
         let mut val = value;
 
-        if !self.negative_relevant && val < 0.0 {
+        if self.negative_params.is_empty() && val < 0.0 {
             return false;
         }
         val = val.abs();
@@ -149,27 +115,24 @@ impl Parameter for BinaryBaseParameter {
         avatar_params: &HashSet<String>,
         param_types: &HashMap<String, ParamType>,
     ) -> usize {
+        // Forgetting the last bits is what makes the first process() after an
+        // avatar change send every bit, whatever the value is.
         self.bit_params.clear();
         self.last_bits.clear();
-        self.negative_relevant = false;
 
-        // Find the negative param address, applying the same matching rules as
-        // bit discovery so a parameter whose name merely ends with this one
-        // cannot claim it.
-        let neg_addr = avatar_params
+        // Find the negative param addresses, applying the same matching rules
+        // as bit discovery so a parameter whose name merely ends with this one
+        // cannot claim them. An avatar can carry several (`XNegative` and
+        // `FT/XNegative`), and every one of them needs the sign.
+        self.negative_params = avatar_params
             .iter()
-            .find(|a| {
+            .filter(|a| {
                 self.matches_negative_pattern(a)
                     && param_types.get(*a).is_some_and(|t| *t == ParamType::Bool)
             })
-            .cloned();
-
-        if let Some(addr) = neg_addr {
-            self.negative_param = Some(addr);
-            self.negative_relevant = true;
-        } else {
-            self.negative_param = None;
-        }
+            .cloned()
+            .collect();
+        self.negative_params.sort();
 
         let mut params_to_create: HashMap<String, usize> = HashMap::new();
 
@@ -189,19 +152,15 @@ impl Parameter for BinaryBaseParameter {
         }
 
         if params_to_create.is_empty() {
-            if self.negative_relevant {
-                // No binary bits but negative param exists — still relevant for the negative bool
-                self.relevant = true;
-                if self.send_on_load {
-                    self.needs_initial_send = true;
-                }
-                return 1;
-            }
-            self.relevant = false;
-            return 0;
+            // No binary bits, but a negative param still makes it relevant
+            self.relevant = !self.negative_params.is_empty();
+            return self.negative_params.len();
         }
 
-        self.max_binary_int = 2u32.pow(params_to_create.len() as u32);
+        // Scale by distinct bits, not addresses: `X1` and `FT/X1` are the same
+        // bit sent twice and must not widen the range.
+        let distinct_bits: HashSet<usize> = params_to_create.values().copied().collect();
+        self.max_binary_int = 2u32.pow(distinct_bits.len() as u32);
         self.bit_params = params_to_create.into_iter().collect();
         self.bit_params.sort_by_key(|(_, shift)| *shift);
 
@@ -213,12 +172,7 @@ impl Parameter for BinaryBaseParameter {
 
         self.relevant = true;
 
-        // Mark for initial send if sendOnLoad is enabled
-        if self.send_on_load {
-            self.needs_initial_send = true;
-        }
-        // Count: number of bit params + 1 for negative param if present
-        self.bit_params.len() + if self.negative_relevant { 1 } else { 0 }
+        self.bit_params.len() + self.negative_params.len()
     }
 
     fn process(&mut self, data: &UnifiedTrackingData) -> Vec<OscMessage> {
@@ -229,42 +183,34 @@ impl Parameter for BinaryBaseParameter {
         let value = (self.get_value)(data);
         let mut messages = Vec::new();
 
-        // Force send all bits on first call after reset if sendOnLoad is enabled
-        let force_send = self.needs_initial_send;
-        if self.needs_initial_send {
-            self.needs_initial_send = false;
-        }
-
-        if let Some(neg_addr) = &self.negative_param {
-            if self.negative_relevant {
-                let is_negative = value < 0.0;
-                let last_neg = self.last_bits.get(neg_addr).copied();
-
-                if force_send || last_neg != Some(is_negative) {
-                    messages.push(OscMessage {
-                        addr: neg_addr.clone(),
-                        args: vec![OscType::Bool(is_negative)],
-                    });
-                    self.last_bits.insert(neg_addr.clone(), is_negative);
-                }
-            }
+        for addr in &self.negative_params {
+            send_if_changed(&mut self.last_bits, &mut messages, addr, value < 0.0);
         }
 
         for (addr, shift_index) in &self.bit_params {
             let bit_value = self.process_binary(value, *shift_index);
-            let last_bit = self.last_bits.get(addr).copied();
-
-            if force_send || last_bit != Some(bit_value) {
-                messages.push(OscMessage {
-                    addr: addr.clone(),
-                    args: vec![OscType::Bool(bit_value)],
-                });
-                self.last_bits.insert(addr.clone(), bit_value);
-            }
+            send_if_changed(&mut self.last_bits, &mut messages, addr, bit_value);
         }
 
         messages
     }
+}
+
+/// Queues `bit` for `addr` unless it is the value last sent there.
+fn send_if_changed(
+    last_bits: &mut HashMap<String, bool>,
+    messages: &mut Vec<OscMessage>,
+    addr: &str,
+    bit: bool,
+) {
+    if last_bits.get(addr) == Some(&bit) {
+        return;
+    }
+    last_bits.insert(addr.to_string(), bit);
+    messages.push(OscMessage {
+        addr: addr.to_string(),
+        args: vec![OscType::Bool(bit)],
+    });
 }
 
 #[cfg(test)]
@@ -305,12 +251,87 @@ mod tests {
         let mut float_types = HashMap::new();
         float_types.insert(addr.clone(), ParamType::Float);
         assert_eq!(param.reset(&avatar_params, &float_types), 0);
-        assert_eq!(param.negative_param, None);
+        assert!(param.negative_params.is_empty());
 
         let mut bool_types = HashMap::new();
         bool_types.insert(addr.clone(), ParamType::Bool);
         assert_eq!(param.reset(&avatar_params, &bool_types), 1);
-        assert_eq!(param.negative_param, Some(addr));
+        assert_eq!(param.negative_params, vec![addr]);
+    }
+
+    fn bool_avatar(addrs: &[&str]) -> (HashSet<String>, HashMap<String, ParamType>) {
+        let set: HashSet<String> = addrs
+            .iter()
+            .map(|a| format!("/avatar/parameters/{a}"))
+            .collect();
+        let types = set.iter().map(|a| (a.clone(), ParamType::Bool)).collect();
+        (set, types)
+    }
+
+    /// `X1` and `FT/X1` are one bit at two addresses. Counting addresses made
+    /// the range 2^4 instead of 2^2, so 0.5 came out as 8 and read as zero in
+    /// the two bits that exist.
+    #[test]
+    fn duplicate_addresses_do_not_widen_the_range() {
+        let mut param = BinaryBaseParameter::new("X", |_| 0.5);
+        let (set, types) = bool_avatar(&["X1", "X2", "FT/X1", "FT/X2"]);
+        assert_eq!(param.reset(&set, &types), 4);
+        assert_eq!(param.max_binary_int, 4);
+
+        // 0.5 * 4 = 2 = 0b10: bit 2 on, bit 1 off, at both addresses
+        let mut sent: Vec<(String, bool)> = param
+            .process(&UnifiedTrackingData::default())
+            .into_iter()
+            .map(|m| (m.addr, m.args[0] == OscType::Bool(true)))
+            .collect();
+        sent.sort();
+        assert_eq!(
+            sent,
+            vec![
+                ("/avatar/parameters/FT/X1".to_string(), false),
+                ("/avatar/parameters/FT/X2".to_string(), true),
+                ("/avatar/parameters/X1".to_string(), false),
+                ("/avatar/parameters/X2".to_string(), true),
+            ]
+        );
+    }
+
+    /// Only one arbitrary `Negative` address used to get the sign; an avatar
+    /// reading the other one never saw the value go negative.
+    #[test]
+    fn every_negative_address_gets_the_sign() {
+        let mut param = BinaryBaseParameter::new("X", |_| -0.5);
+        let (set, types) = bool_avatar(&["X1", "XNegative", "FT/XNegative"]);
+        assert_eq!(param.reset(&set, &types), 3);
+
+        let negatives: Vec<_> = param
+            .process(&UnifiedTrackingData::default())
+            .into_iter()
+            .filter(|m| m.addr.ends_with("Negative"))
+            .collect();
+        assert_eq!(negatives.len(), 2);
+        assert!(negatives.iter().all(|m| m.args[0] == OscType::Bool(true)));
+    }
+
+    #[test]
+    fn first_process_after_reset_sends_every_bit() {
+        let mut param = BinaryBaseParameter::new("X", |_| 0.0);
+        let (set, types) = bool_avatar(&["X1", "X2", "XNegative"]);
+        let data = UnifiedTrackingData::default();
+
+        param.reset(&set, &types);
+        assert_eq!(param.process(&data).len(), 3);
+        assert!(
+            param.process(&data).is_empty(),
+            "unchanged bits are not resent"
+        );
+
+        param.reset(&set, &types);
+        assert_eq!(
+            param.process(&data).len(),
+            3,
+            "an avatar change sends again"
+        );
     }
 
     #[test]
@@ -406,14 +427,11 @@ mod tests {
                 ("Test4".to_string(), 2),
                 ("Test8".to_string(), 3),
             ],
-            negative_param: None,
+            negative_params: Vec::new(),
             max_binary_int: 16,
             relevant: true,
-            get_value: Arc::new(|_| 0.5),
+            get_value: Box::new(|_| 0.5),
             last_bits: HashMap::new(),
-            negative_relevant: false,
-            send_on_load: false,
-            needs_initial_send: false,
         };
 
         // 0.5 * 16 = 8 = 1000 in binary
