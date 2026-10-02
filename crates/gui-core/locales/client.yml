@@ -14,5 +14,7 @@ client:
     en: "This version can't change settings here. Update, or edit config.json."
   cant_install_modules:
     en: "This version can't install modules here. Update to do so."
+  cant_trace:
+    en: "This version can't show its values here. Update to do so."
   unreachable:
     en: "Can't connect to %{address}"

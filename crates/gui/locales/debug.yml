@@ -1,0 +1,86 @@
+_version: 2
+debug:
+  title:
+    en: Debug
+  description:
+    en: Follow each value from the module, step by step, to what's sent.
+  copy:
+    en: Copy values
+  copy_hint:
+    en: Copies every value after each step, to paste into a sheet or a report.
+  pause:
+    en: Pause
+  resume:
+    en: Resume
+  start_to_see:
+    en: Start tracking to see its values.
+  extensions_only:
+    en: Only add-ons are running, so there are no tracking values to show.
+  waiting:
+    en: Waiting for a frame…
+  pipeline:
+    en: Pipeline
+  live:
+    en: Live
+  paused:
+    en: Paused
+  quiet:
+    en: No new frames from the module. Its last one repeats.
+  module:
+    en: Module
+  overrides:
+    en: Test values
+  adjustment:
+    en: Expression ranges
+  correctors:
+    en: Corrections
+  smoothing:
+    en: Smoothing
+  output:
+    en: Output
+  "off":
+    en: "Off"
+  held:
+    en: Repeating
+  sent:
+    en: Sent
+  rate:
+    en: "%{rate}/s"
+  values_count:
+    en: "%{count} values"
+  changed_count:
+    en: "%{count} changed"
+  no_change:
+    en: No change
+  step_tooltip:
+    en: Show what this step changed
+  open_page:
+    en: "Open %{page}"
+  chain_hint:
+    en: Pick a step to see what it changed, or a value to follow it.
+  showing_step:
+    en: "Showing what %{step} changed."
+  show_all:
+    en: Show all
+  following:
+    en: "Following %{name}."
+  stop_following:
+    en: Stop following
+  all:
+    en: All
+  changed:
+    en: Changed
+  search_placeholder:
+    en: Search values
+  shown:
+    en: "%{shown} of %{total}"
+  column_value:
+    en: Value
+  column_module:
+    en: From module
+  column_sent:
+    en: Sent
+  no_match:
+    en: No values match.
+  nothing_changed:
+    en: Nothing has changed these values just now.

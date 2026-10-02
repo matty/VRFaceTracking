@@ -248,13 +248,47 @@ impl UnifiedTrackingMutator {
     }
 
     pub fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
+        self.mutate_with(data, dt, |_, _| {});
+    }
+
+    /// Like [`mutate`](Self::mutate), showing `after_step` each step's name
+    /// and the values it left.
+    pub fn mutate_with(
+        &mut self,
+        data: &mut UnifiedTrackingData,
+        dt: f32,
+        mut after_step: impl FnMut(&str, &UnifiedTrackingData),
+    ) {
         if !self.config.mutator.enabled {
             return;
         }
 
         for mutation in &mut self.pipeline {
             mutation.mutate(data, dt);
+            after_step(mutation.name(), data);
         }
+    }
+
+    /// Each step in order, and whether it runs. The default pipeline lists
+    /// the steps it leaves out too, in their places, as not running.
+    pub fn steps(&self) -> Vec<(String, bool)> {
+        let enabled = self.config.mutator.enabled;
+        if self.config.mutator.pipeline.is_some() {
+            return self
+                .pipeline
+                .iter()
+                .map(|step| (step.name().to_string(), enabled))
+                .collect();
+        }
+        let mutator = &self.config.mutator;
+        [
+            ("Adjustment", mutator.adjustment.enabled),
+            ("Correctors", mutator.correctors.enabled),
+            ("Smoothing", true),
+        ]
+        .into_iter()
+        .map(|(name, on)| (name.to_string(), enabled && on))
+        .collect()
     }
 }
 
@@ -339,6 +373,34 @@ mod module_config_tests {
             step_names(&UnifiedTrackingMutator::new(cfg)),
             ["Adjustment", "Correctors", "Smoothing"]
         );
+    }
+
+    #[test]
+    fn steps_list_the_default_pipelines_steps_that_are_off() {
+        let steps = UnifiedTrackingMutator::new(MutationConfig::default()).steps();
+        assert_eq!(
+            steps,
+            [
+                ("Adjustment".to_string(), false),
+                ("Correctors".to_string(), true),
+                ("Smoothing".to_string(), true),
+            ]
+        );
+
+        let json = r#"{ "mutator": { "enabled": false } }"#;
+        let cfg: MutationConfig = serde_json::from_str(json).unwrap();
+        let steps = UnifiedTrackingMutator::new(cfg).steps();
+        assert!(steps.iter().all(|(_, runs)| !runs));
+    }
+
+    #[test]
+    fn mutate_with_shows_each_step_that_runs() {
+        let mut mutator = UnifiedTrackingMutator::new(MutationConfig::default());
+        let mut seen = Vec::new();
+        mutator.mutate_with(&mut UnifiedTrackingData::default(), 0.016, |name, _| {
+            seen.push(name.to_string())
+        });
+        assert_eq!(seen, ["Correctors", "Smoothing"]);
     }
 
     #[test]

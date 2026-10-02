@@ -28,6 +28,7 @@ impl PageId {
     pub const MODULES: PageId = PageId::translated("modules", || t!("nav.modules"));
     pub const TRACKING: PageId = PageId::translated("tracking", || t!("nav.tracking"));
     pub const LOGS: PageId = PageId::translated("logs", || t!("nav.logs"));
+    pub const DEBUG: PageId = PageId::translated("debug", || t!("nav.debug"));
 
     /// A page named `label` in every language.
     pub const fn new(id: &'static str, label: &'static str) -> Self {

@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
+mod debug;
 mod extension_switches;
 mod extensions;
 mod home;

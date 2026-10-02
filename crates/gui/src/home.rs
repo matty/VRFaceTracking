@@ -652,7 +652,7 @@ fn where_tracking_goes(output: &OutputTarget) -> (String, bool) {
     (text, done)
 }
 
-fn output_label(mode: &str) -> String {
+pub(crate) fn output_label(mode: &str) -> String {
     match mode {
         "Generic" => t!("home.generic_udp").into(),
         mode => mode.into(),

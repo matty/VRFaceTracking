@@ -10,3 +10,5 @@ nav:
     en: Tracking Settings
   logs:
     en: Logs
+  debug:
+    en: Debug

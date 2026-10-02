@@ -7,6 +7,7 @@ mod extensions;
 mod installed;
 mod lifetime;
 mod modules;
+mod pipeline_trace;
 #[cfg(test)]
 mod test_support;
 
@@ -32,6 +33,7 @@ use vrft_api::{
 };
 use vrft_common::{MutationConfig, UnifiedTrackingMutator};
 use vrft_extension::{ExtensionConfig, ExtensionReport, FrameHook, HostContext};
+use vrft_protocol::StageKind;
 
 use daemon_status::{DaemonStatus, ModuleStatus, OutputTarget, RunMode};
 
@@ -168,6 +170,9 @@ fn main() -> Result<()> {
         dotnet_host.clone(),
         (!extensions_only).then(|| switch.clone()),
     );
+    // What each stage does to a frame, recorded while the app's Debug page
+    // asks for it.
+    let tracer = Arc::new(pipeline_trace::PipelineTracer::default());
     api::start(
         daemon_status.clone(),
         running.clone(),
@@ -175,6 +180,7 @@ fn main() -> Result<()> {
         root.join(&plugins_dir),
         module_manager,
         api_extensions,
+        tracer.clone(),
     );
     if extensions_only {
         info!("Running extensions only, without tracking modules or OSC output");
@@ -297,13 +303,13 @@ fn main() -> Result<()> {
             while let Ok(loaded) = module_loaded_rx.try_recv() {
                 // Don't keep repeating the previous module's last frame.
                 last_received_data = None;
-                for hook in &mut hooks {
+                for (_, hook) in &mut hooks {
                     hook.module_loaded(loaded);
                 }
             }
             // An extension with its own live data (such as headset cameras)
             // keeps frames flowing at full rate without a tracking module.
-            let wait = if hooks.iter().any(|hook| hook.has_live_data()) {
+            let wait = if hooks.iter().any(|(_, hook)| hook.has_live_data()) {
                 live_frame_interval
             } else {
                 Duration::from_millis(100)
@@ -327,8 +333,17 @@ fn main() -> Result<()> {
                 }
             };
 
+            let mut recorder = tracer
+                .recording()
+                .then(|| pipeline_trace::FrameRecorder::new(from_module));
+            if let Some(recorder) = &mut recorder {
+                recorder.record(StageKind::Module, "Module", &received_data);
+            }
+
+            let mut overridden = false;
             if let Ok(debug) = debug_state_for_consumer.read() {
                 if !debug.is_empty() {
+                    overridden = true;
                     #[cfg(feature = "xtralog")]
                     {
                         use std::cell::Cell;
@@ -351,19 +366,41 @@ fn main() -> Result<()> {
                     apply_debug_overrides(&debug, &mut received_data);
                 }
             }
+            if let Some(recorder) = &mut recorder {
+                if overridden {
+                    recorder.record(StageKind::Overrides, "Overrides", &received_data);
+                } else {
+                    recorder.skip(StageKind::Overrides, "Overrides");
+                }
+            }
 
             let now = Instant::now();
             let dt = now.duration_since(last_frame_time).as_secs_f32();
             last_frame_time = now;
 
             if from_module {
-                for hook in &mut hooks {
+                for (_, hook) in &mut hooks {
                     hook.before_mutation(&received_data);
                 }
             }
-            mutator.mutate(&mut received_data, dt);
-            for hook in &mut hooks {
+            match &mut recorder {
+                Some(recorder) => {
+                    let mut ran = Vec::new();
+                    mutator.mutate_with(&mut received_data, dt, |_, data| {
+                        ran.push(pipeline_trace::values(data))
+                    });
+                    recorder.mutations(mutator.steps(), ran);
+                }
+                None => mutator.mutate(&mut received_data, dt),
+            }
+            for (name, hook) in &mut hooks {
                 hook.after_mutation(&mut received_data);
+                if let Some(recorder) = &mut recorder {
+                    recorder.record(StageKind::Extension, name, &received_data);
+                }
+            }
+            if let Some(recorder) = recorder {
+                tracer.publish(recorder.finish());
             }
 
             // Update shared data for OSC Query (non-blocking; host doesn't need every frame)
@@ -635,6 +672,9 @@ fn retire_module(loaded: LoadedModule, retired: &mut Vec<Library>) {
     info!("Unloaded module: {name}");
 }
 
+/// An extension's frame hook, with the extension's name.
+type NamedHook = (&'static str, Box<dyn FrameHook>);
+
 /// Starts each enabled extension, returning their frame hooks and what the
 /// local API serves for them.
 fn start_extensions(
@@ -644,7 +684,7 @@ fn start_extensions(
     running: &Arc<AtomicBool>,
     mode: RunMode,
     daemon_status: &DaemonStatus,
-) -> (Vec<Box<dyn FrameHook>>, Vec<api::ApiExtension>) {
+) -> (Vec<NamedHook>, Vec<api::ApiExtension>) {
     let mut hooks = Vec::new();
     let mut served = Vec::new();
     let mut reports = Vec::new();
@@ -672,7 +712,7 @@ fn start_extensions(
             match extension.start(host) {
                 Ok(started) => {
                     info!("✓ Started extension: {name}");
-                    hooks.extend(started.frame_hook);
+                    hooks.extend(started.frame_hook.map(|hook| (name, hook)));
                     served.push(api::ApiExtension {
                         id,
                         routes: started.routes,

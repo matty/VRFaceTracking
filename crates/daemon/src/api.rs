@@ -5,6 +5,7 @@
 use crate::config_file;
 use crate::daemon_status::DaemonStatus;
 use crate::modules::ModuleManager;
+use crate::pipeline_trace::PipelineTracer;
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
@@ -43,6 +44,7 @@ struct ApiState {
     statuses: Arc<Vec<(&'static str, StatusFn)>>,
     /// Where `/` sends a browser: the first extension page.
     home: Option<String>,
+    tracer: Arc<PipelineTracer>,
 }
 
 /// Serves the API on its own thread until the daemon exits.
@@ -53,8 +55,11 @@ pub fn start(
     plugins: PathBuf,
     modules: ModuleManager,
     extensions: Vec<ApiExtension>,
+    tracer: Arc<PipelineTracer>,
 ) {
-    let router = router(daemon, running, config, plugins, modules, extensions);
+    let router = router(
+        daemon, running, config, plugins, modules, extensions, tracer,
+    );
     let serve = move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -93,6 +98,7 @@ fn router(
     plugins: PathBuf,
     modules: ModuleManager,
     extensions: Vec<ApiExtension>,
+    tracer: Arc<PipelineTracer>,
 ) -> Router {
     let home = extensions
         .iter()
@@ -116,6 +122,7 @@ fn router(
         modules,
         statuses: Arc::new(statuses),
         home,
+        tracer,
     };
     let mut router = Router::new()
         .route("/", get(index))
@@ -128,6 +135,7 @@ fn router(
         .route(routes::MODULES_INSTALL, post(install_module))
         .route(routes::MODULES_UNINSTALL, post(uninstall_module))
         .route(routes::MODULES_USE, post(use_module))
+        .route(routes::DEBUG_PIPELINE, get(pipeline))
         .with_state(state);
     for (id, routes) in nested {
         // Nested, an extension's `/` is `/ext/<id>` without the slash.
@@ -186,6 +194,14 @@ async fn index(State(api): State<ApiState>) -> Response {
             "<!doctype html><title>VRFaceTracking</title><p>VRFaceTracking is running. Open the desktop app to see what it's doing.</p>",
         )
         .into_response(),
+    }
+}
+
+/// A recent frame's values after each stage, or 204 until one is recorded.
+async fn pipeline(State(api): State<ApiState>) -> Response {
+    match api.tracer.request() {
+        Some(trace) => Json(trace).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
     }
 }
 
@@ -382,6 +398,7 @@ mod tests {
             None,
             None,
         );
+        let tracer = Arc::new(PipelineTracer::default());
         let address = serve(router(
             daemon,
             Arc::new(AtomicBool::new(true)),
@@ -394,6 +411,7 @@ mod tests {
                 page: true,
                 status: Some(Box::new(|| json!({"live": true}))),
             }],
+            tracer.clone(),
         ));
 
         let (code, body) = fetch(format!("http://{address}/status"));
@@ -416,6 +434,17 @@ mod tests {
             );
         }
         assert_eq!(fetch(format!("http://{address}/ext/other/thing")).0, 404);
+
+        // Nothing is traced until asked for; then the latest frame is.
+        let pipeline = format!("http://{address}{}", routes::DEBUG_PIPELINE);
+        assert_eq!(fetch(pipeline.clone()).0, 204);
+        assert!(tracer.recording());
+        tracer.publish(crate::pipeline_trace::FrameRecorder::new(true).finish());
+        let (code, body) = fetch(pipeline);
+        assert_eq!(code, 200);
+        let trace: vrft_protocol::PipelineTrace = serde_json::from_str(&body).unwrap();
+        assert!(trace.fresh);
+        assert!(!trace.params.is_empty());
 
         // `localhost` is this PC too, but another name, as a page that
         // points its own at 127.0.0.1 sends, isn't.

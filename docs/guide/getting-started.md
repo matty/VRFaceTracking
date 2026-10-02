@@ -116,3 +116,14 @@ The app's **Logs** page shows them as they're written: this run's tracking log, 
 - **Save report** writes one text file with the app and tracking versions, the latest status, `config.json`, and the end of every log to `reports/` in the data folder, and shows it in Explorer, ready to attach to an issue.
 
 A `vrft_d` started from a console, rather than by the app, still logs to that console.
+
+### Seeing what each step does
+
+The app's **Debug** page draws the chain every value passes through: the tracking module, any test values set through the debug API, expression ranges, corrections, smoothing, each add-on that changes values, and the output. Steps that are turned off show dashed, in their place.
+
+- Click a **step** to list only the values it changed in the last moment, with how much.
+- Click a **value** in the list to follow it: each box in the chain then shows it after that step, and what the step did to it.
+- **Changed** lists only values some step altered; the columns between *From module* and *Sent* show each step's change.
+- **Pause** freezes the frame on screen; **Copy values** copies every value after each step as tab-separated text.
+
+The page reads `GET /debug/pipeline` from `vrft_d`'s local API (port 27275). `vrft_d` only records frames for a couple of seconds after each request, so it costs nothing while the page isn't open.

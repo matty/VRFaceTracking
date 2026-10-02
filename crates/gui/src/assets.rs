@@ -8,6 +8,7 @@ icon_assets!(
     ExtraIcons,
     [
         Activity,
+        AudioWaveform,
         Cable,
         Camera,
         CameraOff,
@@ -45,7 +46,9 @@ icon_assets!(
         Unplug,
         Usb,
         Volume2,
+        WandSparkles,
         Wifi,
+        Workflow,
     ]
 );
 

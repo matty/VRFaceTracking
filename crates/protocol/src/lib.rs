@@ -60,6 +60,10 @@ pub mod routes {
     /// without restarting VRFT. Answered with [`Modules`](super::Modules);
     /// `/status` shows it loading.
     pub const MODULES_USE: &str = "/modules/use";
+    /// GET [`PipelineTrace`](super::PipelineTrace): a recent frame's values
+    /// after each stage of the pipeline. 204 until a frame has been
+    /// recorded; the daemon records them for a few seconds after each GET.
+    pub const DEBUG_PIPELINE: &str = "/debug/pipeline";
 
     /// Where extension `id`'s routes are served, such as `/ext/quest-pro`.
     pub fn extension(id: &str) -> String {
@@ -531,6 +535,67 @@ pub struct EnableRequest {
 #[serde(default)]
 pub struct EnableResponse {
     pub restart_required: bool,
+}
+
+/// `/debug/pipeline`: one recent frame's values after each stage between the
+/// tracking module and the output, so a view can show what each stage did.
+/// The daemon only records frames while someone asks for them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PipelineTrace {
+    /// The tracking module produced this frame. Otherwise the daemon is
+    /// repeating the module's last frame, or has none to repeat.
+    pub fresh: bool,
+    /// Each value, in the order every stage's `values` lists them.
+    pub params: Vec<TraceParam>,
+    /// In the order they run.
+    pub stages: Vec<TraceStage>,
+}
+
+/// One value the pipeline carries.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceParam {
+    /// As the debug API names it, such as `JawOpen` or `EyeLeftOpenness`.
+    pub name: String,
+    /// `eyes`, `brows`, `nose`, `cheeks`, `jaw`, `mouth`, `lips`, `tongue`,
+    /// `throat` or `head`.
+    pub group: String,
+    /// The range the value is meant to stay in.
+    pub min: f32,
+    pub max: f32,
+}
+
+/// What one stage left the values as.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceStage {
+    pub kind: StageKind,
+    /// The stage's own name: the mutation's, or an extension's.
+    pub name: String,
+    /// It ran on this frame. A stage that's turned off is listed, with no
+    /// values, so a view can show it in its place.
+    pub active: bool,
+    /// After this stage, in `params` order. Empty when it didn't run.
+    pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    /// What the tracking module sent.
+    Module,
+    /// Values set through the debug API.
+    Overrides,
+    Adjustment,
+    Correctors,
+    Smoothing,
+    /// An extension changing values before they're sent.
+    Extension,
+    /// A stage this reader doesn't know.
+    #[default]
+    #[serde(other)]
+    Other,
 }
 
 #[cfg(test)]

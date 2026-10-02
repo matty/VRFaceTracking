@@ -10,8 +10,8 @@ use vrft_protocol::{routes, EnableRequest, ModuleRequest, ShutdownRequest, UseMo
 pub use vrft_protocol::{
     AdjustmentGroup, AdjustmentTuning, Config, ConfigPatch, CorrectorsTuning, DaemonReport,
     ExtensionReport, FilterTuning, InstalledModule, ModuleOperation, ModuleStatus, Modules,
-    OperationState, OutputTarget, Plugin, RegistryModule, RegistryState, RunMode, Status, Tuning,
-    VrchatLink, DEFAULT_ADDRESS,
+    OperationState, OutputTarget, PipelineTrace, Plugin, RegistryModule, RegistryState, RunMode,
+    StageKind, Status, TraceParam, TraceStage, Tuning, VrchatLink, DEFAULT_ADDRESS,
 };
 
 /// Longest the app waits for one response. The daemon is on this machine, so
@@ -156,6 +156,27 @@ impl DaemonClient {
             routes::MODULES_USE,
             Some(&UseModuleRequest { file: file.into() }),
         )
+    }
+
+    /// A recent frame's values after each stage of the pipeline, once the
+    /// daemon has recorded one. Asking keeps it recording for a while.
+    pub fn pipeline(&self) -> Result<Option<PipelineTrace>> {
+        let mut response = self
+            .agent
+            .get(self.url(routes::DEBUG_PIPELINE))
+            .call()
+            .with_context(|| self.unreachable())?;
+        match response.status().as_u16() {
+            204 => return Ok(None),
+            200..=299 => {}
+            404 => bail!("{}", t!("client.cant_trace")),
+            status => bail!("{}", t!("client.answered", status = status)),
+        }
+        response
+            .body_mut()
+            .read_json()
+            .map(Some)
+            .context(t!("client.bad_reply"))
     }
 
     /// GETs `path` as JSON. `missing` explains a 404, such as an extension

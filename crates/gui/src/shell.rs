@@ -1,7 +1,8 @@
 //! The window: navigation down the left, from the top of the window, and
 //! the current page beside it under a strip that moves the window and holds
-//! its controls. Home, Modules, Tracking settings, Logs and Settings are the
-//! app's own; every other page comes from an extension.
+//! its controls. Home, Modules, Tracking settings, Debug, Logs and Settings
+//! are the app's own; every other page comes from an extension.
+use crate::debug::DebugPage;
 use crate::extension_switches::ExtensionSwitches;
 use crate::home::HomePage;
 use crate::logs::LogsPage;
@@ -112,6 +113,7 @@ pub struct Workspace {
     settings: Entity<SettingsPage>,
     modules: Entity<ModulesPage>,
     tracking: Entity<TrackingPage>,
+    debug: Entity<DebugPage>,
     logs: Entity<LogsPage>,
     updater: Entity<Updater>,
     /// The navigation shows only its icons.
@@ -168,6 +170,7 @@ impl Workspace {
         let modules =
             cx.new(|cx| ModulesPage::new(daemon.clone(), launcher.clone(), switches, window, cx));
         let tracking = cx.new(|cx| TrackingPage::new(daemon.clone(), launcher.clone(), window, cx));
+        let debug = cx.new(|cx| DebugPage::new(daemon.clone(), launcher.clone(), window, cx));
         let logs = cx.new(|cx| LogsPage::new(daemon.clone(), launcher.clone(), window, cx));
         let subscriptions = vec![
             // The navigation shows how things stand, and an extension the
@@ -197,6 +200,7 @@ impl Workspace {
                     PageId::HOME,
                     PageId::MODULES,
                     PageId::TRACKING,
+                    PageId::DEBUG,
                     PageId::LOGS,
                     PageId::SETTINGS,
                 ]
@@ -222,6 +226,7 @@ impl Workspace {
             settings,
             modules,
             tracking,
+            debug,
             logs,
             updater,
             nav_collapsed: false,
@@ -254,6 +259,9 @@ impl Workspace {
         self.tracking.update(cx, |tracking, cx| {
             tracking.set_watching(page == PageId::TRACKING, cx)
         });
+        self.debug.update(cx, |debug, cx| {
+            debug.set_watching(page == PageId::DEBUG, cx)
+        });
         self.logs
             .update(cx, |logs, cx| logs.set_watching(page == PageId::LOGS, cx));
         cx.notify();
@@ -266,6 +274,7 @@ impl Workspace {
             || current == PageId::SETTINGS
             || current == PageId::MODULES
             || current == PageId::TRACKING
+            || current == PageId::DEBUG
             || current == PageId::LOGS
             || self.page_view(current, cx).is_some()
         {
@@ -526,6 +535,7 @@ impl Workspace {
             .child(
                 v_flex()
                     .gap_0p5()
+                    .child(self.nav_item(IconName::Workflow, PageId::DEBUG, None, current))
                     .child(self.nav_item(IconName::ScrollText, PageId::LOGS, None, current))
                     .child(self.nav_item(IconName::Settings, PageId::SETTINGS, None, current)),
             )
@@ -568,6 +578,8 @@ impl Render for Workspace {
             self.modules.clone().into()
         } else if current == PageId::TRACKING {
             self.tracking.clone().into()
+        } else if current == PageId::DEBUG {
+            self.debug.clone().into()
         } else if current == PageId::LOGS {
             self.logs.clone().into()
         } else {
