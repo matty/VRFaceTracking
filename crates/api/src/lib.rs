@@ -47,6 +47,18 @@ pub struct UnifiedSingleEyeData {
     pub openness: f32,
 }
 
+impl UnifiedSingleEyeData {
+    /// Gaze x and y, pupil diameter, then openness.
+    pub fn values_mut(&mut self) -> [&mut f32; 4] {
+        [
+            &mut self.gaze.x,
+            &mut self.gaze.y,
+            &mut self.pupil_diameter_mm,
+            &mut self.openness,
+        ]
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedEyeData {
@@ -110,6 +122,20 @@ pub struct UnifiedHeadData {
     pub head_pos_z: f32,
 }
 
+impl UnifiedHeadData {
+    /// Yaw, pitch, roll, then position x, y, z.
+    pub fn values_mut(&mut self) -> [&mut f32; 6] {
+        [
+            &mut self.head_yaw,
+            &mut self.head_pitch,
+            &mut self.head_roll,
+            &mut self.head_pos_x,
+            &mut self.head_pos_y,
+            &mut self.head_pos_z,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedTrackingData {
     pub eye: UnifiedEyeData,
@@ -124,6 +150,22 @@ impl Default for UnifiedTrackingData {
             shapes: vec![UnifiedExpressionShape::default(); UnifiedExpressions::Max as usize],
             head: UnifiedHeadData::default(),
         }
+    }
+}
+
+impl UnifiedTrackingData {
+    /// The weight of `expression`, or 0 when `shapes` doesn't reach it.
+    pub fn weight(&self, expression: UnifiedExpressions) -> f32 {
+        self.shapes
+            .get(expression as usize)
+            .map_or(0.0, |shape| shape.weight)
+    }
+
+    /// The weight of `expression`, unless `shapes` doesn't reach it.
+    pub fn weight_mut(&mut self, expression: UnifiedExpressions) -> Option<&mut f32> {
+        self.shapes
+            .get_mut(expression as usize)
+            .map(|shape| &mut shape.weight)
     }
 }
 
@@ -311,14 +353,20 @@ impl ModuleLogger {
     }
 
     fn log(&self, level: LogLevel, message: &str) {
-        let Ok(target) = std::ffi::CString::new(self.module_name.as_str()) else {
-            return;
-        };
-        let Ok(msg) = std::ffi::CString::new(message) else {
-            return;
-        };
+        let target = c_string(&self.module_name);
+        let msg = c_string(message);
         (self.callback)(level, target.as_ptr(), msg.as_ptr());
     }
+}
+
+/// `text` as a C string, without any NULs it contains, so a stray NUL in a
+/// device string doesn't drop the whole message.
+fn c_string(text: &str) -> std::ffi::CString {
+    std::ffi::CString::new(text).unwrap_or_else(|error| {
+        let mut bytes = error.into_vec();
+        bytes.retain(|&byte| byte != 0);
+        std::ffi::CString::new(bytes).expect("NULs removed")
+    })
 }
 
 pub trait TrackingModule {

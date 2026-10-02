@@ -12,10 +12,8 @@ Defined in `common/src/mutation_trait.rs`:
 
 ```rust
 pub trait Mutation: Send + Sync {
-    fn initialize(&mut self, config: &MutationConfig) -> Result<()>;
     fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32);
     fn name(&self) -> &str;
-    fn priority(&self) -> i32 { 0 }
 }
 ```
 

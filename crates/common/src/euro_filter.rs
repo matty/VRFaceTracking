@@ -1,3 +1,5 @@
+pub use vrft_protocol::DEFAULT_D_CUTOFF;
+
 #[derive(Debug, Clone, Copy)]
 pub struct EuroFilter {
     min_cutoff: f32,
@@ -15,7 +17,7 @@ impl Default for EuroFilter {
         Self {
             min_cutoff: 1.0,
             beta: 0.5,
-            d_cutoff: 1.0,
+            d_cutoff: DEFAULT_D_CUTOFF,
             hz: 10.0,
             x_prev: 0.0,
             dx_prev: 0.0,
@@ -27,14 +29,7 @@ impl Default for EuroFilter {
 
 impl EuroFilter {
     pub fn new() -> Self {
-        Self {
-            d_cutoff: 0.1,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_with_config(min_cutoff: f32, beta: f32) -> Self {
-        Self::new_with_params(min_cutoff, beta, 0.1)
+        Self::default()
     }
 
     pub fn new_with_params(min_cutoff: f32, beta: f32, d_cutoff: f32) -> Self {

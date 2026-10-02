@@ -1,7 +1,6 @@
 use crate::mutation_trait::Mutation;
 use crate::mutator::MutationConfig;
 use crate::{UnifiedExpressions as E, UnifiedHeadData, UnifiedTrackingData};
-use anyhow::Result;
 use log::warn;
 
 /// One head pose value.
@@ -336,11 +335,6 @@ impl AdjustmentMutation {
 }
 
 impl Mutation for AdjustmentMutation {
-    fn initialize(&mut self, config: &MutationConfig) -> Result<()> {
-        *self = Self::new(config);
-        Ok(())
-    }
-
     fn mutate(&mut self, data: &mut UnifiedTrackingData, _dt: f32) {
         for adjustment in &self.adjustments {
             let unit =
@@ -348,8 +342,8 @@ impl Mutation for AdjustmentMutation {
             match adjustment.target {
                 AdjustmentTarget::Shapes(shapes) => {
                     for &shape in shapes {
-                        if let Some(s) = data.shapes.get_mut(shape as usize) {
-                            s.weight = unit(s.weight).clamp(0.0, 1.0);
+                        if let Some(weight) = data.weight_mut(shape) {
+                            *weight = unit(*weight).clamp(0.0, 1.0);
                         }
                     }
                 }

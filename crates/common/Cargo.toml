@@ -10,6 +10,7 @@ name = "vrft_common"
 glam = { workspace = true }
 anyhow = { workspace = true }
 vrft-api = { workspace = true }
+vrft-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

@@ -1,20 +1,15 @@
+use crate::euro_filter::DEFAULT_D_CUTOFF;
 use crate::mutation_trait::Mutation;
 use crate::mutator::MutationConfig;
 use crate::{EuroFilter, UnifiedExpressions, UnifiedTrackingData};
-use anyhow::Result;
 use log::warn;
 
 pub struct SmoothingMutation {
     shapes: Vec<EuroFilter>,
-    gaze_left_x: EuroFilter,
-    gaze_left_y: EuroFilter,
-    gaze_right_x: EuroFilter,
-    gaze_right_y: EuroFilter,
-    pupil_left: EuroFilter,
-    pupil_right: EuroFilter,
-    openness_left: EuroFilter,
-    openness_right: EuroFilter,
-    /// Yaw, pitch, roll, then position x, y, z; `None` when head pose isn't
+    /// The left eye's, then the right's, in `UnifiedSingleEyeData::values_mut`
+    /// order.
+    eyes: [[EuroFilter; 4]; 2],
+    /// In `UnifiedHeadData::values_mut` order; `None` when head pose isn't
     /// smoothed.
     head: Option<[EuroFilter; 6]>,
 }
@@ -26,30 +21,24 @@ impl SmoothingMutation {
 
         Self {
             shapes: vec![filter; UnifiedExpressions::Max as usize],
-            gaze_left_x: filter,
-            gaze_left_y: filter,
-            gaze_right_x: filter,
-            gaze_right_y: filter,
-            pupil_left: filter,
-            pupil_right: filter,
-            openness_left: filter,
-            openness_right: filter,
+            eyes: [[filter; 4]; 2],
             head: config.mutator.filter.head.then_some([filter; 6]),
         }
     }
 
+    /// `min_cutoff` and `beta` for a `smoothness` preset. Values outside
+    /// [0, 1] are clamped: above 1, beta would go negative and the filter
+    /// would run away from fast moves.
     fn calculate_params(smoothness: f32) -> (f32, f32) {
-        let min_cutoff = if smoothness <= 0.0 {
-            10.0
+        let smoothness = if smoothness.is_nan() {
+            0.0
         } else {
-            1.0 / (smoothness * 10.0)
+            smoothness.clamp(0.0, 1.0)
         };
-        let beta = if smoothness <= 0.0 {
-            1.0
-        } else {
-            0.5 * (1.0 - smoothness)
-        };
-        (min_cutoff, beta)
+        if smoothness == 0.0 {
+            return (10.0, 1.0);
+        }
+        (1.0 / (smoothness * 10.0), 0.5 * (1.0 - smoothness))
     }
 
     /// `min_cutoff`, `beta` and `d_cutoff`: the `smoothness` preset, with any
@@ -72,46 +61,39 @@ impl SmoothingMutation {
         (
             pick("min_cutoff", filter.min_cutoff, positive, preset_cutoff),
             pick("beta", filter.beta, non_negative, preset_beta),
-            pick("d_cutoff", Some(filter.d_cutoff), positive, 0.1),
+            pick(
+                "d_cutoff",
+                Some(filter.d_cutoff),
+                positive,
+                DEFAULT_D_CUTOFF,
+            ),
         )
     }
 }
 
-impl Mutation for SmoothingMutation {
-    fn initialize(&mut self, config: &MutationConfig) -> Result<()> {
-        *self = Self::new(config);
-        Ok(())
+/// Runs each value through its own filter.
+fn filter_each<'a>(
+    filters: &mut [EuroFilter],
+    values: impl IntoIterator<Item = &'a mut f32>,
+    dt: f32,
+) {
+    for (filter, value) in filters.iter_mut().zip(values) {
+        *value = filter.filter(*value, dt);
     }
+}
 
+impl Mutation for SmoothingMutation {
     fn mutate(&mut self, data: &mut UnifiedTrackingData, dt: f32) {
-        data.eye.left.openness = self.openness_left.filter(data.eye.left.openness, dt);
-        data.eye.right.openness = self.openness_right.filter(data.eye.right.openness, dt);
-
-        data.eye.left.gaze.x = self.gaze_left_x.filter(data.eye.left.gaze.x, dt);
-        data.eye.left.gaze.y = self.gaze_left_y.filter(data.eye.left.gaze.y, dt);
-        data.eye.right.gaze.x = self.gaze_right_x.filter(data.eye.right.gaze.x, dt);
-        data.eye.right.gaze.y = self.gaze_right_y.filter(data.eye.right.gaze.y, dt);
-
-        data.eye.left.pupil_diameter_mm =
-            self.pupil_left.filter(data.eye.left.pupil_diameter_mm, dt);
-        data.eye.right.pupil_diameter_mm = self
-            .pupil_right
-            .filter(data.eye.right.pupil_diameter_mm, dt);
-
-        for i in 0..data.shapes.len() {
-            if i < self.shapes.len() {
-                data.shapes[i].weight = self.shapes[i].filter(data.shapes[i].weight, dt);
-            }
-        }
-
-        if let Some([yaw, pitch, roll, x, y, z]) = &mut self.head {
-            let head = &mut data.head;
-            head.head_yaw = yaw.filter(head.head_yaw, dt);
-            head.head_pitch = pitch.filter(head.head_pitch, dt);
-            head.head_roll = roll.filter(head.head_roll, dt);
-            head.head_pos_x = x.filter(head.head_pos_x, dt);
-            head.head_pos_y = y.filter(head.head_pos_y, dt);
-            head.head_pos_z = z.filter(head.head_pos_z, dt);
+        let [left, right] = &mut self.eyes;
+        filter_each(left, data.eye.left.values_mut(), dt);
+        filter_each(right, data.eye.right.values_mut(), dt);
+        filter_each(
+            &mut self.shapes,
+            data.shapes.iter_mut().map(|shape| &mut shape.weight),
+            dt,
+        );
+        if let Some(head) = &mut self.head {
+            filter_each(head, data.head.values_mut(), dt);
         }
     }
 
@@ -146,6 +128,13 @@ mod tests {
         config.mutator.filter.beta = Some(-1.0);
         config.mutator.filter.d_cutoff = f32::NAN;
         assert_eq!(SmoothingMutation::params(&config), (0.2, 0.25, 0.1));
+    }
+
+    #[test]
+    fn out_of_range_smoothness_is_clamped() {
+        assert_eq!(SmoothingMutation::calculate_params(2.0), (0.1, 0.0));
+        assert_eq!(SmoothingMutation::calculate_params(-1.0), (10.0, 1.0));
+        assert_eq!(SmoothingMutation::calculate_params(f32::NAN), (10.0, 1.0));
     }
 
     /// Runs a step in head yaw through smoothing and returns the yaw after it.

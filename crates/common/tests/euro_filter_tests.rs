@@ -80,14 +80,9 @@ fn test_euro_filter_survives_extreme_dt() {
 
 #[test]
 fn test_euro_filter_hz_derived_from_dt() {
-    let mut filter = EuroFilter::new();
-    filter.filter(0.5, DT_60FPS);
-    filter.filter(0.6, DT_60FPS);
-    // After filtering with 60fps dt, internal hz should be ~60
-    // We can't read hz directly, but we can verify behavior differs from 10Hz default
-    // by checking that a small step at high hz produces less smoothing (higher alpha)
-    // than the same step would at low hz
-
+    // The sample rate isn't readable, but it shows in the response: the same
+    // step moves the output less per sample at a higher rate (a smaller
+    // alpha), as more samples follow each second.
     let mut filter_fast = EuroFilter::new();
     let mut filter_slow = EuroFilter::new();
 

@@ -1,7 +1,6 @@
 use crate::mutation_trait::Mutation;
 use crate::mutator::{CorrectorsConfig, MutationConfig};
 use crate::{UnifiedExpressions as E, UnifiedTrackingData};
-use anyhow::Result;
 
 /// Pairs that the eyelid blend pulls towards each other, as (left, right).
 const BLENDED_PAIRS: [(E, E); 6] = [
@@ -36,13 +35,9 @@ impl CorrectorsMutation {
     }
 }
 
-fn weight(data: &UnifiedTrackingData, shape: E) -> f32 {
-    data.shapes.get(shape as usize).map_or(0.0, |s| s.weight)
-}
-
 fn set_weight(data: &mut UnifiedTrackingData, shape: E, value: f32) {
-    if let Some(s) = data.shapes.get_mut(shape as usize) {
-        s.weight = value;
+    if let Some(weight) = data.weight_mut(shape) {
+        *weight = value;
     }
 }
 
@@ -57,20 +52,15 @@ fn blend_pair(left: f32, right: f32, blend: f32) -> (f32, f32) {
 }
 
 impl Mutation for CorrectorsMutation {
-    fn initialize(&mut self, config: &MutationConfig) -> Result<()> {
-        *self = Self::new(config);
-        Ok(())
-    }
-
     fn mutate(&mut self, data: &mut UnifiedTrackingData, _dt: f32) {
         if self.config.mouth_closed_clamp {
-            let closed = weight(data, E::MouthClosed).min(weight(data, E::JawOpen));
+            let closed = data.weight(E::MouthClosed).min(data.weight(E::JawOpen));
             set_weight(data, E::MouthClosed, closed);
         }
 
         if self.config.lip_suck_limiter {
             for (suck, opening) in LIP_SUCK_LIMITS {
-                let limited = weight(data, suck) * (1.0 - weight(data, opening));
+                let limited = data.weight(suck) * (1.0 - data.weight(opening));
                 set_weight(data, suck, limited);
             }
         }
@@ -87,7 +77,7 @@ impl Mutation for CorrectorsMutation {
                 blend,
             );
             for (left, right) in BLENDED_PAIRS {
-                let (l, r) = blend_pair(weight(data, left), weight(data, right), blend);
+                let (l, r) = blend_pair(data.weight(left), data.weight(right), blend);
                 set_weight(data, left, l);
                 set_weight(data, right, r);
             }
@@ -119,7 +109,7 @@ mod tests {
         set_weight(&mut data, E::MouthClosed, 0.8);
         set_weight(&mut data, E::JawOpen, 0.3);
         mutation(CorrectorsConfig::default()).mutate(&mut data, 0.016);
-        assert_eq!(weight(&data, E::MouthClosed), 0.3);
+        assert_eq!(data.weight(E::MouthClosed), 0.3);
     }
 
     #[test]
@@ -129,8 +119,8 @@ mod tests {
         set_weight(&mut data, E::MouthLowerDownLeft, 0.75);
         set_weight(&mut data, E::LipSuckUpperRight, 0.5);
         mutation(CorrectorsConfig::default()).mutate(&mut data, 0.016);
-        assert_eq!(weight(&data, E::LipSuckLowerLeft), 0.25);
-        assert_eq!(weight(&data, E::LipSuckUpperRight), 0.5);
+        assert_eq!(data.weight(E::LipSuckLowerLeft), 0.25);
+        assert_eq!(data.weight(E::LipSuckUpperRight), 0.5);
     }
 
     #[test]
@@ -168,8 +158,8 @@ mod tests {
         // Pupils are in millimetres, so they must not be clamped to 0..1.
         assert_eq!(data.eye.left.pupil_diameter_mm, 4.0);
         assert_eq!(data.eye.right.pupil_diameter_mm, 4.0);
-        assert!((weight(&data, E::BrowInnerUpLeft) - 0.4).abs() < 1e-6);
-        assert!((weight(&data, E::BrowInnerUpRight) - 0.4).abs() < 1e-6);
+        assert!((data.weight(E::BrowInnerUpLeft) - 0.4).abs() < 1e-6);
+        assert!((data.weight(E::BrowInnerUpRight) - 0.4).abs() < 1e-6);
     }
 
     #[test]

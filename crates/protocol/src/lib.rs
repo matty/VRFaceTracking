@@ -224,14 +224,23 @@ pub struct Tuning {
     pub adjustment: AdjustmentTuning,
 }
 
-/// Raw smoothing settings; `None` uses the value the smoothing amount picks.
+/// The Euro filter's default cutoff frequency (Hz) for its speed estimate.
+pub const DEFAULT_D_CUTOFF: f32 = 0.1;
+
+/// `mutator.filter`: Euro filter settings. `min_cutoff` and `beta` are
+/// worked out from `mutator.smoothness` unless set here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilterTuning {
+    /// Cutoff frequency (Hz) when the value is still; lower is smoother
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_cutoff: Option<f32>,
+    /// How fast the cutoff rises with speed; higher lags less on fast moves
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub beta: Option<f32>,
+    /// Cutoff frequency (Hz) for the speed estimate itself
     pub d_cutoff: f32,
-    /// Whether head pose is smoothed too.
+    /// Whether head pose is smoothed along with the face
     pub head: bool,
 }
 
@@ -240,20 +249,26 @@ impl Default for FilterTuning {
         Self {
             min_cutoff: None,
             beta: None,
-            d_cutoff: 0.1,
+            d_cutoff: DEFAULT_D_CUTOFF,
             head: true,
         }
     }
 }
 
+/// `mutator.correctors`: VRCFaceTracking's "Unified Correctors".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CorrectorsTuning {
+    /// Whether the default pipeline runs the correctors
     pub enabled: bool,
+    /// Keep `MouthClosed` at or below `JawOpen`
     pub mouth_closed_clamp: bool,
+    /// Reduce each lip suck as the lip on that side opens
     pub lip_suck_limiter: bool,
-    /// 0 to 1.
+    /// How much each eyelid and brow follows the other side, 0 (none) to
+    /// 1 (both the average)
     pub eyelid_blend: f32,
+    /// Give both eyes the average vertical gaze
     pub eye_look_symmetrize: bool,
 }
 
@@ -269,9 +284,14 @@ impl Default for CorrectorsTuning {
     }
 }
 
+/// `mutator.adjustment`: VRCFaceTracking's "Parameter Adjustment". Each
+/// group listed in `ranges` has its `[floor, ceil]` stretched to the full
+/// range, so `"jaw": [0, 0.8]` makes 80% jaw open drive the avatar's jaw
+/// fully open.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdjustmentTuning {
+    /// Whether the default pipeline runs the adjustment
     pub enabled: bool,
     /// `[floor, ceil]` by [`AdjustmentGroup::key`]; a group that isn't here
     /// uses its full range.

@@ -114,74 +114,11 @@ impl Default for MutatorConfig {
     }
 }
 
-/// Euro filter settings. `min_cutoff` and `beta` are worked out from
-/// `mutator.smoothness` unless set here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FilterConfig {
-    /// Cutoff frequency (Hz) when the value is still; lower is smoother
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_cutoff: Option<f32>,
-    /// How fast the cutoff rises with speed; higher lags less on fast moves
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub beta: Option<f32>,
-    /// Cutoff frequency (Hz) for the speed estimate itself
-    pub d_cutoff: f32,
-    /// Whether head pose is smoothed along with the face
-    pub head: bool,
-}
-
-impl Default for FilterConfig {
-    fn default() -> Self {
-        Self {
-            min_cutoff: None,
-            beta: None,
-            d_cutoff: 0.1,
-            head: true,
-        }
-    }
-}
-
-/// VRCFaceTracking's "Unified Correctors".
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CorrectorsConfig {
-    /// Whether the default pipeline runs the correctors
-    pub enabled: bool,
-    /// Keep `MouthClosed` at or below `JawOpen`
-    pub mouth_closed_clamp: bool,
-    /// Reduce each lip suck as the lip on that side opens
-    pub lip_suck_limiter: bool,
-    /// How much each eyelid and brow follows the other side, 0 (none) to
-    /// 1 (both the average)
-    pub eyelid_blend: f32,
-    /// Give both eyes the average vertical gaze
-    pub eye_look_symmetrize: bool,
-}
-
-impl Default for CorrectorsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            mouth_closed_clamp: true,
-            lip_suck_limiter: true,
-            eyelid_blend: 0.0,
-            eye_look_symmetrize: false,
-        }
-    }
-}
-
-/// VRCFaceTracking's "Parameter Adjustment": each group listed in `ranges`
-/// has its `[floor, ceil]` stretched to the full range, so `"jaw": [0, 0.8]`
-/// makes 80% jaw open drive the avatar's jaw fully open.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AdjustmentConfig {
-    /// Whether the default pipeline runs the adjustment
-    pub enabled: bool,
-    /// `[floor, ceil]` by group key, from `mutations::ADJUSTMENT_GROUPS`
-    pub ranges: BTreeMap<String, [f32; 2]>,
-}
+// Shared with the desktop app, which shows and changes them.
+pub use vrft_protocol::{
+    AdjustmentTuning as AdjustmentConfig, CorrectorsTuning as CorrectorsConfig,
+    FilterTuning as FilterConfig,
+};
 
 /// OSC output configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +164,17 @@ pub struct MutationConfig {
 
 fn default_max_fps() -> Option<f32> {
     Some(60.0)
+}
+
+impl MutationConfig {
+    /// The time between frames `max_fps` allows, or `None` without a usable
+    /// limit. `max_fps` comes straight from user-editable config, so it may
+    /// be zero, negative or not a number.
+    pub fn frame_interval(&self) -> Option<std::time::Duration> {
+        self.max_fps
+            .filter(|fps| fps.is_finite() && *fps > 0.0)
+            .and_then(|fps| std::time::Duration::try_from_secs_f32(1.0 / fps).ok())
+    }
 }
 
 impl Default for MutationConfig {
