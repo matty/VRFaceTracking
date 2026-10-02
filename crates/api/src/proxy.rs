@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 use crate::{ModuleLogger, TrackingModule, UnifiedTrackingData};
 
@@ -13,6 +14,22 @@ const SHMEM_NAME: &str = "Local\\VRCFT_TrackingData";
 
 /// Size of the marshaled data structure (must match .NET MarshaledTrackingData).
 const SHMEM_SIZE: usize = std::mem::size_of::<MarshaledTrackingData>();
+const _: () = assert!(
+    SHMEM_SIZE == 888,
+    "must match the .NET MarshaledTrackingData"
+);
+
+/// Expression weights the shared memory holds (must match the .NET side).
+const MARSHALED_SHAPES: usize = 200;
+const _: () = assert!(crate::UnifiedExpressions::Max as usize <= MARSHALED_SHAPES);
+
+/// How long after a failed or crashed host the next restart waits, doubling
+/// each time up to the maximum, so a module that keeps failing isn't
+/// restarted every frame.
+const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
+const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
+/// A host whose heartbeat stops this long is stuck.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ProxyModule {
     child: Option<Child>,
@@ -21,7 +38,11 @@ pub struct ProxyModule {
     proxy_exe: Option<std::path::PathBuf>,
     module_dll: Option<std::path::PathBuf>,
     last_runtime_heartbeat: u64,
-    last_runtime_update: std::time::Instant,
+    last_runtime_update: Instant,
+    /// When a host that died or hung may next be restarted, and the wait
+    /// after that.
+    next_restart: Instant,
+    restart_delay: Duration,
     /// The smallest and largest pupil diameters seen, as VRCFaceTracking
     /// learns them: its modules never set a dilation range themselves.
     dilation_range: Option<(f32, f32)>,
@@ -54,7 +75,7 @@ struct MarshaledTrackingData {
     head_pos_y: f32,
     head_pos_z: f32,
 
-    shapes: [f32; 200],
+    shapes: [f32; MARSHALED_SHAPES],
     main_app_heartbeat: u64,
     runtime_heartbeat: u64,
 }
@@ -68,7 +89,9 @@ impl ProxyModule {
             proxy_exe: None,
             module_dll: None,
             last_runtime_heartbeat: 0,
-            last_runtime_update: std::time::Instant::now(),
+            last_runtime_update: Instant::now(),
+            next_restart: Instant::now(),
+            restart_delay: MIN_RESTART_DELAY,
             dilation_range: None,
         }
     }
@@ -144,7 +167,7 @@ impl ProxyModule {
                             SHMEM_NAME, max_retries
                         ));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(100));
                     retry += 1;
                 }
             }
@@ -152,7 +175,7 @@ impl ProxyModule {
 
         self.shmem_handle = Some(handle);
         self.shmem_ptr = Some(ptr);
-        self.last_runtime_update = std::time::Instant::now();
+        self.last_runtime_update = Instant::now();
         Ok(())
     }
 
@@ -226,53 +249,102 @@ impl ProxyModule {
         let Some(ptr) = self.shmem_ptr else {
             return false;
         };
-        unsafe {
-            let m_data_mut = &mut *(ptr as *mut MarshaledTrackingData);
+        // SAFETY: `ptr` maps a whole MarshaledTrackingData (align 1, being
+        // packed). The host writes it from another process as we read, so
+        // it's never reached through a reference: the heartbeat is bumped
+        // through a raw pointer and the frame copied out in one volatile read.
+        let m_data = unsafe {
+            let shared = ptr.cast::<MarshaledTrackingData>();
+            let beat = std::ptr::addr_of_mut!((*shared).main_app_heartbeat);
+            beat.write_unaligned(beat.read_unaligned().wrapping_add(1));
+            std::ptr::read_volatile(shared)
+        };
 
-            // Increment main app heartbeat
-            m_data_mut.main_app_heartbeat = m_data_mut.main_app_heartbeat.wrapping_add(1);
+        if m_data.runtime_heartbeat == self.last_runtime_heartbeat {
+            return false;
+        }
+        self.last_runtime_heartbeat = m_data.runtime_heartbeat;
+        self.last_runtime_update = Instant::now();
 
-            let m_data = &*m_data_mut;
+        // Copied across unchanged: the .NET side already stores gaze in
+        // the convention documented on UnifiedSingleEyeData::gaze, so
+        // this path must not reorder or rescale the components.
+        data.eye.left.gaze.x = m_data.left_eye_gaze_x;
+        data.eye.left.gaze.y = m_data.left_eye_gaze_y;
+        data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;
+        data.eye.left.openness = m_data.left_eye_openness;
 
-            if m_data.runtime_heartbeat == self.last_runtime_heartbeat {
-                return false;
-            }
-            self.last_runtime_heartbeat = m_data.runtime_heartbeat;
-            self.last_runtime_update = std::time::Instant::now();
+        data.eye.right.gaze.x = m_data.right_eye_gaze_x;
+        data.eye.right.gaze.y = m_data.right_eye_gaze_y;
+        data.eye.right.pupil_diameter_mm = m_data.right_eye_pupil_diameter_mm;
+        data.eye.right.openness = m_data.right_eye_openness;
 
-            // Copied across unchanged: the .NET side already stores gaze in
-            // the convention documented on UnifiedSingleEyeData::gaze, so
-            // this path must not reorder or rescale the components.
-            data.eye.left.gaze.x = m_data.left_eye_gaze_x;
-            data.eye.left.gaze.y = m_data.left_eye_gaze_y;
-            data.eye.left.pupil_diameter_mm = m_data.left_eye_pupil_diameter_mm;
-            data.eye.left.openness = m_data.left_eye_openness;
+        data.eye.max_dilation = m_data.eye_max_dilation;
+        data.eye.min_dilation = m_data.eye_min_dilation;
+        if data.eye.max_dilation <= data.eye.min_dilation {
+            self.learn_dilation(data);
+        }
+        data.eye.left_diameter = m_data.eye_left_diameter;
+        data.eye.right_diameter = m_data.eye_right_diameter;
 
-            data.eye.right.gaze.x = m_data.right_eye_gaze_x;
-            data.eye.right.gaze.y = m_data.right_eye_gaze_y;
-            data.eye.right.pupil_diameter_mm = m_data.right_eye_pupil_diameter_mm;
-            data.eye.right.openness = m_data.right_eye_openness;
+        data.head.head_yaw = m_data.head_yaw;
+        data.head.head_pitch = m_data.head_pitch;
+        data.head.head_roll = m_data.head_roll;
+        data.head.head_pos_x = m_data.head_pos_x;
+        data.head.head_pos_y = m_data.head_pos_y;
+        data.head.head_pos_z = m_data.head_pos_z;
 
-            data.eye.max_dilation = m_data.eye_max_dilation;
-            data.eye.min_dilation = m_data.eye_min_dilation;
-            if data.eye.max_dilation <= data.eye.min_dilation {
-                self.learn_dilation(data);
-            }
-            data.eye.left_diameter = m_data.eye_left_diameter;
-            data.eye.right_diameter = m_data.eye_right_diameter;
-
-            data.head.head_yaw = m_data.head_yaw;
-            data.head.head_pitch = m_data.head_pitch;
-            data.head.head_roll = m_data.head_roll;
-            data.head.head_pos_x = m_data.head_pos_x;
-            data.head.head_pos_y = m_data.head_pos_y;
-            data.head.head_pos_z = m_data.head_pos_z;
-
-            for i in 0..data.shapes.len().min(200) {
-                data.shapes[i].weight = m_data.shapes[i];
-            }
+        let weights = m_data.shapes;
+        for (shape, weight) in data.shapes.iter_mut().zip(weights) {
+            shape.weight = weight;
         }
         true
+    }
+
+    /// Whether the host has exited or stopped beating (and if stuck, ends
+    /// it), or was never started.
+    fn host_down(&mut self) -> bool {
+        let Some(child) = &mut self.child else {
+            return true;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log::warn!("VrcftRuntime exited with status: {status}. Restarting...");
+                true
+            }
+            // The host beats from its own loop, apart from the module's
+            // Update(), so a module that blocks while it waits for its
+            // device doesn't stop it; a lost heartbeat means the host itself
+            // is stuck.
+            Ok(None) if self.last_runtime_update.elapsed() > HEARTBEAT_TIMEOUT => {
+                log::warn!("VrcftRuntime heartbeat lost. Restarting...");
+                let _ = child.kill();
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                log::error!("Error checking child process: {e}. Restarting...");
+                true
+            }
+        }
+    }
+
+    /// Starts a new host in place of the old, then waits longer before the
+    /// next restart, until a frame arrives.
+    fn restart(&mut self) {
+        self.unload();
+        match self
+            .spawn_child()
+            .context("Failed to restart VrcftRuntime")
+            .and_then(|()| {
+                self.connect_shmem()
+                    .context("Failed to reconnect to shared memory")
+            }) {
+            Ok(()) => log::info!("VrcftRuntime restarted successfully."),
+            Err(e) => log::error!("{e:#}"),
+        }
+        self.next_restart = Instant::now() + self.restart_delay;
+        self.restart_delay = (self.restart_delay * 2).min(MAX_RESTART_DELAY);
     }
 }
 
@@ -283,45 +355,10 @@ impl TrackingModule for ProxyModule {
 
     fn update(&mut self, data: &mut UnifiedTrackingData) -> Result<()> {
         let fresh = self.read_frame(data);
-
-        // Check for crash or timeout
-        let should_restart = if let Some(child) = &mut self.child {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    log::warn!("VrcftRuntime exited with status: {}. Restarting...", status);
-                    true
-                }
-                Ok(None) => {
-                    // Still running, check heartbeat. The host beats from its
-                    // own loop, apart from the module's Update(), so a module
-                    // that blocks while it waits for its device doesn't stop
-                    // it; a lost heartbeat means the host itself is stuck.
-                    if self.last_runtime_update.elapsed() > std::time::Duration::from_secs(5) {
-                        log::warn!("VrcftRuntime heartbeat lost. Restarting...");
-                        let _ = self.child.as_mut().unwrap().kill();
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Err(e) => {
-                    log::error!("Error checking child process: {}. Restarting...", e);
-                    true
-                }
-            }
-        } else {
-            true
-        };
-
-        if should_restart {
-            self.unload();
-            if let Err(e) = self.spawn_child() {
-                log::error!("Failed to restart VrcftRuntime: {}", e);
-            } else if let Err(e) = self.connect_shmem() {
-                log::error!("Failed to reconnect to shared memory: {}", e);
-            } else {
-                log::info!("VrcftRuntime restarted successfully.");
-            }
+        if fresh {
+            self.restart_delay = MIN_RESTART_DELAY;
+        } else if Instant::now() >= self.next_restart && self.host_down() {
+            self.restart();
         }
 
         if fresh {
