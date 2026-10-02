@@ -12,6 +12,8 @@ use vrft_protocol::{DAEMON_INSTANCE, DAEMON_PID, OWNER_PID_ARG};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 #[cfg(windows)]
+use vrft_daemon::named_mutex::{wide, NamedMutex};
+#[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
@@ -34,20 +36,10 @@ const ALREADY_RUNNING: &str =
 /// takes it, so this is dropped on the thread that claimed it: `main`'s.
 pub struct Instance {
     #[cfg(windows)]
-    mutex: OwnedHandle,
+    _mutex: NamedMutex,
     /// This process's id, where the app finds it while it doesn't answer.
     #[cfg(windows)]
     _pid: Option<OwnedHandle>,
-}
-
-#[cfg(windows)]
-impl Drop for Instance {
-    fn drop(&mut self) {
-        use windows::Win32::System::Threading::ReleaseMutex;
-        // SAFETY: the handle is open. On another thread this fails, and the
-        // mutex is let go as the claiming thread ends.
-        let _ = unsafe { ReleaseMutex(HANDLE(self.mutex.as_raw_handle())) };
-    }
 }
 
 /// Marks this process as the running daemon, or fails if another daemon is
@@ -62,36 +54,23 @@ pub fn claim_instance() -> Result<Instance> {
 /// it.
 #[cfg(windows)]
 fn claim(name: &str, pid_name: &str) -> Result<Instance> {
-    use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
-    };
-    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-    let wide = wide(name);
-    // SAFETY: the name is NUL-terminated and outlives the call, and the
-    // handle is owned, and closed, from here on.
-    let mutex = match unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) } {
-        Ok(handle) => unsafe { OwnedHandle::from_raw_handle(handle.0) },
+    use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+    let mutex = match NamedMutex::acquire(name, CLAIM_WAIT) {
+        Ok(Some(mutex)) => mutex,
+        Ok(None) => anyhow::bail!(ALREADY_RUNNING),
         // Made by a daemon running as administrator.
         Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {
             anyhow::bail!(ALREADY_RUNNING)
         }
         Err(error) => return Err(error.into()),
     };
-    let wait = CLAIM_WAIT.as_millis() as u32;
-    // SAFETY: the handle is open for the wait.
-    let event = unsafe { WaitForSingleObject(HANDLE(mutex.as_raw_handle()), wait) };
-    if event == WAIT_TIMEOUT {
-        anyhow::bail!(ALREADY_RUNNING);
-    }
-    // Abandoned, it's taken all the same: the daemon that held it ended
-    // without letting go.
-    if event != WAIT_OBJECT_0 && event != WAIT_ABANDONED {
-        return Err(windows::core::Error::from_thread().into());
-    }
     let pid = publish_pid(pid_name)
         .inspect_err(|error| warn!("The app can't end vrft_d while it doesn't answer: {error}"))
         .ok();
-    Ok(Instance { mutex, _pid: pid })
+    Ok(Instance {
+        _mutex: mutex,
+        _pid: pid,
+    })
 }
 
 #[cfg(not(windows))]
@@ -132,12 +111,6 @@ fn publish_pid(name: &str) -> windows::core::Result<OwnedHandle> {
         UnmapViewOfFile(view)?;
         Ok(mapping)
     }
-}
-
-/// `name` as a NUL-terminated wide string.
-#[cfg(windows)]
-fn wide(name: &str) -> Vec<u16> {
-    name.encode_utf16().chain(Some(0)).collect()
 }
 
 /// Starts the job that the programs the daemon starts join, so they end when

@@ -1,15 +1,14 @@
 pub mod generic_udp;
-pub mod resonite;
-pub mod vrchat;
 
 use crate::osc::query::target::VrchatTarget;
+use crate::osc::query::vrchat;
+use crate::osc::resonite::ResoniteOsc;
+use crate::osc::vrchat::VRChatOsc;
 use anyhow::Result;
 use axum::Router;
 use generic_udp::GenericUdpStrategy;
-use resonite::ResoniteOscStrategy;
 use std::sync::{Arc, RwLock};
-use vrchat::VRChatOscStrategy;
-use vrft_common::{IntegrationAdapter, MutationConfig, OutputMode, UnifiedTrackingData};
+use vrft_common::{IntegrationAdapter, MutationConfig, OscConfig, OutputMode, UnifiedTrackingData};
 
 pub struct OscContext {
     pub tracking_data: Arc<RwLock<UnifiedTrackingData>>,
@@ -17,31 +16,25 @@ pub struct OscContext {
     pub vrchat: VrchatTarget,
 }
 
-pub enum PlatformBackend {
-    VRChat(Box<VRChatOscStrategy>),
-    Resonite(ResoniteOscStrategy),
-    Generic(GenericUdpStrategy),
-}
-
-impl IntegrationAdapter for PlatformBackend {
+impl IntegrationAdapter for VRChatOsc {
     fn initialize(&mut self) -> Result<()> {
-        match self {
-            Self::VRChat(s) => s.initialize(),
-            Self::Resonite(s) => s.initialize(),
-            Self::Generic(s) => s.initialize(),
-        }
+        VRChatOsc::initialize(self)
     }
 
     fn send(&self, data: &UnifiedTrackingData) -> Result<()> {
-        match self {
-            Self::VRChat(s) => s.send(data),
-            Self::Resonite(s) => s.send(data),
-            Self::Generic(s) => s.send(data),
-        }
+        VRChatOsc::send(self, data)
     }
 }
 
-use std::sync::mpsc::Receiver;
+impl IntegrationAdapter for ResoniteOsc {
+    fn initialize(&mut self) -> Result<()> {
+        ResoniteOsc::initialize(self)
+    }
+
+    fn send(&self, data: &UnifiedTrackingData) -> Result<()> {
+        ResoniteOsc::send(self, data)
+    }
+}
 
 /// Port used to listen for OSC messages when one cannot be derived from the
 /// send port.
@@ -60,38 +53,35 @@ fn receive_port_for(send_port: u16) -> u16 {
     })
 }
 
+/// `host:port` for `osc`'s send address, with an IPv6 address in brackets.
+fn send_target(osc: &OscConfig) -> String {
+    if osc.send_address.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{}]:{}", osc.send_address, osc.send_port)
+    } else {
+        format!("{}:{}", osc.send_address, osc.send_port)
+    }
+}
+
+/// The output `config.osc.output_mode` asks for, and for VRChat, the
+/// OSCQuery routes that advertise it.
 pub fn create_strategy(
     config: &MutationConfig,
     context: OscContext,
-) -> (PlatformBackend, Option<Router>, Option<Receiver<String>>) {
+) -> (Box<dyn IntegrationAdapter>, Option<Router>) {
     match config.osc.output_mode {
         OutputMode::Generic => (
-            PlatformBackend::Generic(GenericUdpStrategy::new(format!(
-                "{}:{}",
-                config.osc.send_address, config.osc.send_port
-            ))),
-            None,
+            Box::new(GenericUdpStrategy::new(send_target(&config.osc))),
             None,
         ),
         OutputMode::VRChat => {
-            let (strategy, router, change_rx) = VRChatOscStrategy::new(
-                context.vrchat.clone(),
-                receive_port_for(config.osc.send_port),
-                context,
-            );
-            (
-                PlatformBackend::VRChat(Box::new(strategy)),
-                Some(router),
-                change_rx,
-            )
+            let reply_ip = context.vrchat.reply_ip();
+            let osc = VRChatOsc::new(context.vrchat, receive_port_for(config.osc.send_port));
+            // Advertise the address and port we actually listen on, not fixed
+            // defaults.
+            let router = vrchat::get_router(context.tracking_data, reply_ip, osc.receive_port());
+            (Box::new(osc), Some(router))
         }
-        OutputMode::Resonite => {
-            let strategy = ResoniteOscStrategy::new(&format!(
-                "{}:{}",
-                config.osc.send_address, config.osc.send_port
-            ));
-            (PlatformBackend::Resonite(strategy), None, None)
-        }
+        OutputMode::Resonite => (Box::new(ResoniteOsc::new(&send_target(&config.osc))), None),
     }
 }
 
@@ -108,5 +98,17 @@ mod tests {
     #[test]
     fn receive_port_does_not_overflow_at_the_maximum_send_port() {
         assert_eq!(receive_port_for(u16::MAX), FALLBACK_RECEIVE_PORT);
+    }
+
+    #[test]
+    fn ipv6_send_addresses_are_bracketed() {
+        let osc = |address: &str| OscConfig {
+            send_address: address.into(),
+            send_port: 9000,
+            ..OscConfig::default()
+        };
+        assert_eq!(send_target(&osc("127.0.0.1")), "127.0.0.1:9000");
+        assert_eq!(send_target(&osc("::1")), "[::1]:9000");
+        assert_eq!(send_target(&osc("localhost")), "localhost:9000");
     }
 }

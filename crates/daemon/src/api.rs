@@ -5,8 +5,9 @@
 use crate::config_file;
 use crate::daemon_status::DaemonStatus;
 use crate::modules::ModuleManager;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Request, State};
+use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -16,7 +17,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use vrft_daemon::plugin_loader;
 use vrft_extension::StatusFn;
 use vrft_protocol::{
     routes, Config, ConfigPatch, EnableRequest, EnableResponse, ModuleRequest, Modules,
@@ -56,7 +56,7 @@ pub fn start(
 ) {
     let router = router(daemon, running, config, plugins, modules, extensions);
     let serve = move || {
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
+        let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .thread_name("local-api")
             .build()
@@ -140,7 +140,43 @@ fn router(
             )
             .nest(&base, routes);
     }
-    router
+    router.layer(middleware::from_fn(local_host_only))
+}
+
+/// Refuses a request whose `Host` isn't this PC's loopback address. A web
+/// page can point its own name at 127.0.0.1 (DNS rebinding) to reach the API
+/// from the browser, but its requests still carry that name. Browsers always
+/// send `Host`, so a request without one isn't from a page and is let
+/// through.
+async fn local_host_only(request: Request, next: Next) -> Response {
+    if let Some(host) = request.headers().get(header::HOST) {
+        if !host.to_str().is_ok_and(local_host) {
+            return (
+                StatusCode::FORBIDDEN,
+                "VRFaceTracking only answers at 127.0.0.1 or localhost.",
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Whether `host`, as a `Host` header says it, is `127.0.0.1` or
+/// `localhost`, with any port.
+fn local_host(host: &str) -> bool {
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if port.parse::<u16>().is_ok() => name,
+        _ => host,
+    };
+    name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost")
+}
+
+/// Runs `work`, which reads files or waits for the config lock, off the
+/// thread that answers requests.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()))
 }
 
 async fn index(State(api): State<ApiState>) -> Response {
@@ -193,7 +229,9 @@ async fn set_enabled(
             format!("This VRFaceTracking has no extension called {}", request.id),
         ));
     }
-    config_file::write_enabled(&api.config, &request.id, request.enabled)
+    let (config, id) = (api.config.clone(), request.id.clone());
+    blocking(move || config_file::write_enabled(&config, &id, request.enabled))
+        .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     info!(
         "Extension {} {} in {}; restart VRFaceTracking to apply",
@@ -211,24 +249,27 @@ async fn set_enabled(
 }
 
 async fn get_config(State(api): State<ApiState>) -> Result<Json<Config>, (StatusCode, String)> {
-    config_file::view(&api.config, &api.plugins)
+    let dotnet_host = api.modules.dotnet_host();
+    blocking(move || config_file::view(&api.config, &api.plugins))
+        .await
         .map(|config| {
             Json(Config {
-                dotnet_host: api.modules.dotnet_host(),
+                dotnet_host,
                 ..config
             })
         })
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))
 }
 
-/// Changes settings in `config.json`. They take effect when the daemon next
-/// starts.
+/// Changes settings in `config.json`. A new module loads straight away; the
+/// rest take effect when the daemon next starts.
 async fn patch_config(
     State(api): State<ApiState>,
     Json(patch): Json<ConfigPatch>,
 ) -> Result<Json<Config>, (StatusCode, String)> {
-    let modules = plugin_loader::discover_plugins(&api.plugins);
-    config_file::apply(&api.config, &patch, &modules)
+    let modules = api.modules.clone();
+    let patch = blocking(move || modules.apply_config(&patch).map(|()| patch))
+        .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     info!(
         "Settings changed in {}: {patch:?}; restart VRFaceTracking to apply",
@@ -238,7 +279,7 @@ async fn patch_config(
 }
 
 async fn get_modules(State(api): State<ApiState>) -> Json<Modules> {
-    Json(api.modules.view())
+    Json(blocking(move || api.modules.view()).await)
 }
 
 /// Takes a JSON body, as every change does, so a web page can't post it.
@@ -247,7 +288,7 @@ async fn refresh_registry(
     Json(_): Json<serde_json::Value>,
 ) -> Json<Modules> {
     api.modules.refresh();
-    Json(api.modules.view())
+    get_modules(State(api)).await
 }
 
 /// Starts installing or updating a registry module; `/modules` shows how it
@@ -259,17 +300,18 @@ async fn install_module(
     api.modules
         .install(&request.module_id)
         .map_err(|error| (StatusCode::CONFLICT, error))?;
-    Ok(Json(api.modules.view()))
+    Ok(get_modules(State(api)).await)
 }
 
 async fn uninstall_module(
     State(api): State<ApiState>,
     Json(request): Json<ModuleRequest>,
 ) -> Result<Json<Modules>, (StatusCode, String)> {
-    api.modules
-        .uninstall(&request.module_id)
+    let modules = api.modules.clone();
+    blocking(move || modules.uninstall(&request.module_id))
+        .await
         .map_err(|error| (StatusCode::CONFLICT, error))?;
-    Ok(Json(api.modules.view()))
+    Ok(get_modules(State(api)).await)
 }
 
 /// Makes a module the tracking module, loading it without a restart.
@@ -277,25 +319,21 @@ async fn use_module(
     State(api): State<ApiState>,
     Json(request): Json<UseModuleRequest>,
 ) -> Result<Json<Modules>, (StatusCode, String)> {
-    api.modules
-        .use_module(&request.file)
+    let modules = api.modules.clone();
+    blocking(move || modules.use_module(&request.file))
+        .await
         .map_err(|error| (StatusCode::CONFLICT, error))?;
-    Ok(Json(api.modules.view()))
+    Ok(get_modules(State(api)).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::daemon_status::RunMode;
+    use crate::test_support::temp_dir;
     use serde_json::{json, Value};
+    use std::io::{Read as _, Write as _};
     use vrft_extension::ExtensionReport;
-
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vrft_api_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     /// Serves `router` on a free port for the rest of the test.
     fn serve(router: Router) -> SocketAddr {
@@ -335,8 +373,8 @@ mod tests {
         let routes = Router::new()
             .route("/", get(|| async { "demo page" }))
             .route("/thing", get(|| async { "thing" }));
-        let config = temp_dir("serve").join("config.json");
-        let plugins = temp_dir("serve-plugins");
+        let config = temp_dir("api_serve").join("config.json");
+        let plugins = temp_dir("api_serve_plugins");
         let modules = ModuleManager::new(
             plugins.clone(),
             config.clone(),
@@ -378,5 +416,37 @@ mod tests {
             );
         }
         assert_eq!(fetch(format!("http://{address}/ext/other/thing")).0, 404);
+
+        // `localhost` is this PC too, but another name, as a page that
+        // points its own at 127.0.0.1 sends, isn't.
+        let port = address.port();
+        assert_eq!(get_as(address, &format!("localhost:{port}")), 200);
+        assert_eq!(get_as(address, "127.0.0.1"), 200);
+        assert_eq!(get_as(address, &format!("evil.example:{port}")), 403);
+        assert_eq!(get_as(address, "127.0.0.1.evil.example"), 403);
+    }
+
+    /// The status code `/status` answers with when asked for as `host`.
+    fn get_as(address: SocketAddr, host: &str) -> u16 {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET /status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        reply.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn hosts_other_than_this_pc_are_refused() {
+        assert!(local_host("127.0.0.1:27275"));
+        assert!(local_host("LOCALHOST:27275"));
+        assert!(local_host("localhost"));
+        assert!(!local_host("evil.example:27275"));
+        assert!(!local_host("127.0.0.1:27275.evil.example"));
+        assert!(!local_host("localhost.evil.example"));
+        assert!(!local_host(""));
     }
 }

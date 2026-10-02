@@ -7,8 +7,9 @@ mod extensions;
 mod installed;
 mod lifetime;
 mod modules;
+#[cfg(test)]
+mod test_support;
 
-use vrft_daemon::dispatcher;
 use vrft_daemon::plugin_loader::{self, PluginKind};
 use vrft_daemon::strategies;
 
@@ -24,40 +25,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vrft_api::{
-    LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedTrackingData,
+    LogLevel, ModuleLogger, ProxyModule, TrackingModule, UnifiedExpressions, UnifiedSingleEyeData,
+    UnifiedTrackingData,
 };
 use vrft_common::{MutationConfig, UnifiedTrackingMutator};
 use vrft_extension::{ExtensionConfig, ExtensionReport, FrameHook, HostContext};
 
 use daemon_status::{DaemonStatus, ModuleStatus, OutputTarget, RunMode};
-use dispatcher::Dispatcher;
 
-/// Loads `path`, or creates it with defaults, listing `extensions` so they
-/// are easy to find and turn off.
-fn load_config(path: &Path, extensions: &[&str]) -> Result<MutationConfig> {
-    if path.exists() {
-        info!("Loading config from {:?}", path);
-        let file = fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
-        let config = serde_json::from_reader(reader)?;
-        Ok(config)
-    } else {
-        info!("Config not found. Creating default at {:?}", path);
-        let mut config = MutationConfig::default();
-        for id in extensions {
-            config.extensions.insert(
-                id.to_string(),
-                serde_json::to_value(ExtensionConfig::default())?,
-            );
-        }
-        let file = fs::File::create(path)?;
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &config)?;
-        Ok(config)
-    }
-}
+/// How often a send error that keeps happening is logged again.
+const SEND_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 extern "C" fn module_log_callback(level: LogLevel, target: *const i8, message: *const i8) {
     unsafe {
@@ -138,9 +117,9 @@ fn main() -> Result<()> {
     let built_in = extensions::built_in();
     let extension_ids: Vec<&str> = built_in.iter().map(|extension| extension.id()).collect();
     let config_path = Path::new("config.json");
-    let config = load_config(config_path, &extension_ids).unwrap_or_else(|e| {
-        error!("Failed to load config: {}. Using defaults.", e);
-        daemon_status.set_config_error(Some(format!("{e:#}")));
+    let config = config_file::read_or_create(config_path, &extension_ids).unwrap_or_else(|e| {
+        error!("Failed to load config: {e}. Using defaults.");
+        daemon_status.set_config_error(Some(e));
         MutationConfig::default()
     });
     info!("Loaded Config: {:?}", config);
@@ -171,8 +150,11 @@ fn main() -> Result<()> {
         start_extensions(built_in, &config, &root, &running, mode, &daemon_status);
     // The host for managed (.NET / VRCFT) modules, outside the scanned
     // plugins tree so it is never mistaken for a plugin.
-    let dotnet_host = plugin_loader::find_dotnet_host(&root)
-        .or_else(|| dev_build.as_ref().and(dev_build::dotnet_host(&root)));
+    let dotnet_host = plugin_loader::find_dotnet_host(&root).or_else(|| {
+        dev_build
+            .as_ref()
+            .and_then(|_| dev_build::dotnet_host(&root))
+    });
     // How the local API asks the tracking loop to load another module.
     let switch = modules::ModuleSwitch::default();
     let module_manager = modules::ModuleManager::new(
@@ -202,6 +184,36 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let shared_data = Arc::new(RwLock::new(UnifiedTrackingData::default()));
+    let shared_data_for_host = shared_data.clone();
+    let shared_data_for_consumer = shared_data.clone();
+
+    let debug_state = Arc::new(RwLock::new(HashMap::<String, f32>::new()));
+    let debug_state_for_host = debug_state.clone();
+    let debug_state_for_consumer = debug_state.clone();
+
+    let vrchat_target = VrchatTarget::new(&config.osc.send_address, config.osc.send_port);
+    if config.osc.output_mode == vrft_common::OutputMode::VRChat {
+        daemon_status.set_vrchat(vrchat_target.clone());
+    }
+    let osc_context = strategies::OscContext {
+        tracking_data: shared_data_for_host.clone(),
+        vrchat: vrchat_target,
+    };
+    let (mut output, strategy_router) = strategies::create_strategy(&config, osc_context);
+    // Set up before any module loads, which can take a while. Without it,
+    // sends fail, and say why, until the setting is fixed.
+    match output.initialize() {
+        Ok(()) => info!("{:?} output initialized.", config.osc.output_mode),
+        Err(e) => {
+            error!(
+                "Failed to set up {:?} output: {e:#}",
+                config.osc.output_mode
+            );
+            daemon_status.set_config_error(Some(format!("Output: {e:#}")));
+        }
+    }
+
     // Native libraries of modules switched away from. They stay loaded, as a
     // module may leave threads or callbacks behind that would crash the
     // daemon if its code were unmapped.
@@ -221,43 +233,11 @@ fn main() -> Result<()> {
         smoothing: config.mutator.enabled.then_some(config.mutator.smoothness),
         vrchat: None,
     });
-    for hook in &mut hooks {
-        hook.module_loaded(current.is_some());
-    }
-    // Tells the consumer thread's hooks when a switch loads, or fails to
-    // load, another module.
+    // Tells the consumer thread's hooks whether a module loaded, at first
+    // and as switches load, or fail to load, another.
     let (module_loaded_tx, module_loaded_rx) = std::sync::mpsc::channel::<bool>();
-
-    let shared_data = Arc::new(RwLock::new(UnifiedTrackingData::default()));
-    let shared_data_for_host = shared_data.clone();
-    let shared_data_for_consumer = shared_data.clone();
-
-    let debug_state = Arc::new(RwLock::new(HashMap::<String, f32>::new()));
-    let debug_state_for_host = debug_state.clone();
-    let debug_state_for_consumer = debug_state.clone();
-
+    let _ = module_loaded_tx.send(current.is_some());
     let mut data = UnifiedTrackingData::default();
-
-    let vrchat_target = VrchatTarget::new(&config.osc.send_address, config.osc.send_port);
-    if config.osc.output_mode == vrft_common::OutputMode::VRChat {
-        daemon_status.set_vrchat(vrchat_target.clone());
-    }
-    let osc_context = strategies::OscContext {
-        tracking_data: shared_data_for_host.clone(),
-        vrchat: vrchat_target,
-    };
-    let (strategy, strategy_router, _avatar_change_rx) =
-        strategies::create_strategy(&config, osc_context);
-    let mut transport_manager = Dispatcher::new(strategy);
-
-    if let Err(e) = transport_manager.initialize() {
-        error!("Failed to initialize transport manager: {}", e);
-        return Err(e);
-    }
-    info!(
-        "Transport Manager initialized with {:?} Strategy.",
-        config.osc.output_mode
-    );
 
     let osc_query = move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -289,21 +269,26 @@ fn main() -> Result<()> {
     let (tx, rx) = sync_channel::<UnifiedTrackingData>(1);
 
     let running_consumer = running.clone();
+    let target_frame_duration = config.frame_interval();
+    if let (None, Some(fps)) = (target_frame_duration, config.max_fps) {
+        warn!("Ignoring invalid max_fps value {fps}; running uncapped");
+    }
     // How often to send frames the tracking module didn't produce, while an
-    // extension has live data: max_fps, or 60 when it is unset or invalid.
-    let live_frame_interval = Duration::from_secs_f32(
-        1.0 / config
-            .max_fps
-            .filter(|fps| fps.is_finite() && *fps > 0.0)
-            .unwrap_or(60.0)
-            .max(10.0),
-    );
+    // extension has live data: max_fps, or 60 when it is unset or invalid,
+    // and at least 10.
+    let live_frame_interval = target_frame_duration
+        .unwrap_or(Duration::from_secs(1) / 60)
+        .min(Duration::from_millis(100));
 
     let consumer = move || {
         info!("Consumer Thread Started");
 
-        let transport_manager = transport_manager;
-        let mut last_frame_time = std::time::Instant::now();
+        let output = output;
+        let mut last_frame_time = Instant::now();
+        // Failed sends since the last that worked, and when one was last
+        // logged: an unreachable target would otherwise log every frame.
+        let mut send_errors = 0u64;
+        let mut send_error_logged = Instant::now();
 
         // Hold last received data to prevent glitches on tracking loss
         let mut last_received_data: Option<UnifiedTrackingData> = None;
@@ -348,9 +333,9 @@ fn main() -> Result<()> {
                     {
                         use std::cell::Cell;
                         thread_local! {
-                            static LAST_DEBUG_WARN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+                            static LAST_DEBUG_WARN: Cell<Option<Instant>> = const { Cell::new(None) };
                         }
-                        let now = std::time::Instant::now();
+                        let now = Instant::now();
                         let should_log = LAST_DEBUG_WARN.with(|cell| match cell.get() {
                             Some(last) if now.duration_since(last).as_secs() < 5 => false,
                             _ => {
@@ -363,66 +348,11 @@ fn main() -> Result<()> {
                         }
                     }
 
-                    for i in 0..UnifiedExpressions::Max as usize {
-                        if let Ok(expr) = UnifiedExpressions::try_from(i) {
-                            let name = format!("v2/{:?}", expr);
-                            if let Some(&val) = debug.get(&name) {
-                                received_data.shapes[i].weight = val;
-                            } else if let Some(short_name) = name.strip_prefix("v2/") {
-                                if let Some(&val) = debug.get(short_name) {
-                                    received_data.shapes[i].weight = val;
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(&val) = debug.get("EyeLeftOpenness") {
-                        received_data.eye.left.openness = val;
-                    }
-                    if let Some(&val) = debug.get("EyeRightOpenness") {
-                        received_data.eye.right.openness = val;
-                    }
-
-                    if let Some(&val) = debug.get("EyeLeftPupil") {
-                        received_data.eye.left.pupil_diameter_mm = val;
-                    }
-                    if let Some(&val) = debug.get("EyeRightPupil") {
-                        received_data.eye.right.pupil_diameter_mm = val;
-                    }
-
-                    if let Some(&x) = debug.get("EyeLeftGazeX") {
-                        received_data.eye.left.gaze.x = x;
-                    }
-                    if let Some(&y) = debug.get("EyeLeftGazeY") {
-                        received_data.eye.left.gaze.y = y;
-                    }
-                    if let Some(&x) = debug.get("EyeRightGazeX") {
-                        received_data.eye.right.gaze.x = x;
-                    }
-                    if let Some(&y) = debug.get("EyeRightGazeY") {
-                        received_data.eye.right.gaze.y = y;
-                    }
-
-                    if let Some(&val) = debug.get("EyeCombinedOpenness") {
-                        received_data.eye.left.openness = val;
-                        received_data.eye.right.openness = val;
-                    }
-                    if let Some(&val) = debug.get("EyeCombinedPupil") {
-                        received_data.eye.left.pupil_diameter_mm = val;
-                        received_data.eye.right.pupil_diameter_mm = val;
-                    }
-                    if let Some(&x) = debug.get("EyeCombinedGazeX") {
-                        received_data.eye.left.gaze.x = x;
-                        received_data.eye.right.gaze.x = x;
-                    }
-                    if let Some(&y) = debug.get("EyeCombinedGazeY") {
-                        received_data.eye.left.gaze.y = y;
-                        received_data.eye.right.gaze.y = y;
-                    }
+                    apply_debug_overrides(&debug, &mut received_data);
                 }
             }
 
-            let now = std::time::Instant::now();
+            let now = Instant::now();
             let dt = now.duration_since(last_frame_time).as_secs_f32();
             last_frame_time = now;
 
@@ -441,8 +371,19 @@ fn main() -> Result<()> {
                 *write_guard = received_data.clone();
             }
 
-            if let Err(e) = transport_manager.send(&received_data) {
-                error!("Failed to send OSC data: {}", e);
+            match output.send(&received_data) {
+                Ok(()) if send_errors > 0 => {
+                    info!("Sending again after {send_errors} failed frame(s)");
+                    send_errors = 0;
+                }
+                Ok(()) => {}
+                Err(e) => {
+                    send_errors += 1;
+                    if send_errors == 1 || send_error_logged.elapsed() >= SEND_ERROR_LOG_INTERVAL {
+                        error!("Failed to send OSC data ({send_errors} frame(s) so far): {e:#}");
+                        send_error_logged = Instant::now();
+                    }
+                }
             }
         }
     };
@@ -455,21 +396,8 @@ fn main() -> Result<()> {
 
     let mut frame_count: u64 = 0;
     let mut log_interval: u64 = 1000;
-    let mut last_log = std::time::Instant::now();
-    let mut last_frame_time = std::time::Instant::now();
-    // A non-positive or non-finite value would make Duration::from_secs_f32
-    // panic, and max_fps comes straight from user-editable config.
-    let target_frame_duration = config
-        .max_fps
-        .filter(|fps| {
-            if fps.is_finite() && *fps > 0.0 {
-                true
-            } else {
-                warn!("Ignoring invalid max_fps value {}; running uncapped", fps);
-                false
-            }
-        })
-        .map(|fps| Duration::from_secs_f32(1.0 / fps));
+    let mut last_log = Instant::now();
+    let mut last_frame_time = Instant::now();
 
     while running.load(Ordering::SeqCst) {
         if let Some(key) = switch.take() {
@@ -504,7 +432,7 @@ fn main() -> Result<()> {
                     "Tracking Active: Processed {} frames (approx {:.1} FPS)",
                     frame_count, fps
                 );
-                last_log = std::time::Instant::now();
+                last_log = Instant::now();
 
                 if frame_count >= 1_000_000 {
                     log_interval = 1_000_000;
@@ -521,7 +449,7 @@ fn main() -> Result<()> {
                     thread::sleep(target_duration - elapsed);
                 }
             }
-            last_frame_time = std::time::Instant::now();
+            last_frame_time = Instant::now();
         } else {
             thread::sleep(Duration::from_millis(5));
         }
@@ -536,6 +464,43 @@ fn main() -> Result<()> {
     // were kept: a module's leftover threads may still be running its code.
     std::mem::forget(retired);
     Ok(())
+}
+
+/// One value of an eye.
+type EyeValue = fn(&mut UnifiedSingleEyeData) -> &mut f32;
+
+/// Each eye value the debug API can set, as `Eye{Left,Right,Combined}<name>`
+/// names it.
+const DEBUG_EYE_VALUES: [(&str, EyeValue); 4] = [
+    ("Openness", |eye| &mut eye.openness),
+    ("Pupil", |eye| &mut eye.pupil_diameter_mm),
+    ("GazeX", |eye| &mut eye.gaze.x),
+    ("GazeY", |eye| &mut eye.gaze.y),
+];
+
+/// Sets the values the debug API was given: expressions by name, with or
+/// without `v2/`, and eye values for one eye or, overriding that, both.
+fn apply_debug_overrides(debug: &HashMap<String, f32>, data: &mut UnifiedTrackingData) {
+    for (index, shape) in data.shapes.iter_mut().enumerate() {
+        let Ok(expression) = UnifiedExpressions::try_from(index) else {
+            break;
+        };
+        let name = format!("{expression:?}");
+        if let Some(&value) = debug
+            .get(&format!("v2/{name}"))
+            .or_else(|| debug.get(&name))
+        {
+            shape.weight = value;
+        }
+    }
+    for (name, value_of) in DEBUG_EYE_VALUES {
+        let both = debug.get(&format!("EyeCombined{name}"));
+        for (side, eye) in [("Left", &mut data.eye.left), ("Right", &mut data.eye.right)] {
+            if let Some(&value) = both.or_else(|| debug.get(&format!("Eye{side}{name}"))) {
+                *value_of(eye) = value;
+            }
+        }
+    }
 }
 
 /// A tracking module the daemon is running.

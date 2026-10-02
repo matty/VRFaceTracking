@@ -127,7 +127,7 @@ pub fn stage(plugins: &Path, entry: &RegistryModule, bytes: &[u8]) -> Result<Pat
     let main = contained(&dir, &entry.dll_file_name)
         .context("the registry names the module's file with a path outside its folder")?;
     if bytes.starts_with(b"PK\x03\x04") {
-        unzip(bytes, &dir)?;
+        unzip(bytes, &dir, MAX_UNPACKED)?;
     } else if bytes.starts_with(b"MZ") {
         if let Some(parent) = main.parent() {
             fs::create_dir_all(parent)?;
@@ -148,7 +148,9 @@ pub fn stage(plugins: &Path, entry: &RegistryModule, bytes: &[u8]) -> Result<Pat
     Ok(dir)
 }
 
-fn unzip(bytes: &[u8], dir: &Path) -> Result<()> {
+/// Unpacks the `.zip` in `bytes` into `dir`, failing once more than `limit`
+/// bytes come out.
+fn unzip(bytes: &[u8], dir: &Path, limit: u64) -> Result<()> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).context("the download isn't a valid .zip")?;
     let mut unpacked = 0u64;
@@ -174,19 +176,17 @@ fn unzip(bytes: &[u8], dir: &Path) -> Result<()> {
             fs::create_dir_all(&path)?;
             continue;
         }
-        unpacked += file.size();
-        if unpacked > MAX_UNPACKED {
-            bail!(
-                "the download unpacks to more than {} MB",
-                MAX_UNPACKED >> 20
-            );
-        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let mut out = fs::File::create(&path)
             .with_context(|| format!("couldn't write {}", path.display()))?;
-        std::io::copy(&mut file, &mut out)?;
+        // Counted as written, as a .zip can say a file is smaller than it is.
+        let left = limit - unpacked;
+        unpacked += std::io::copy(&mut (&mut file).take(left + 1), &mut out)?;
+        if unpacked > limit {
+            bail!("the download unpacks to more than {} MB", limit >> 20);
+        }
     }
     Ok(())
 }
@@ -204,19 +204,38 @@ pub enum Placed {
 pub fn place(plugins: &Path, id: &str, staged: &Path) -> Result<Placed> {
     let target = module_dir(plugins, id);
     let waiting = registry_dir(plugins).join(PENDING).join(id);
-    if target.exists() && move_to_trash(plugins, &target).is_err() {
-        if waiting.exists() {
-            fs::remove_dir_all(&waiting)?;
+    let mut old = None;
+    if target.exists() {
+        match move_to_trash(plugins, &target) {
+            Ok(trashed) => old = Some(trashed),
+            Err(_) => {
+                if waiting.exists() {
+                    fs::remove_dir_all(&waiting)?;
+                }
+                fs::create_dir_all(waiting.parent().unwrap())?;
+                fs::rename(staged, &waiting)
+                    .context("couldn't keep the update for the next start")?;
+                return Ok(Placed::AfterRestart);
+            }
         }
-        fs::create_dir_all(waiting.parent().unwrap())?;
-        fs::rename(staged, &waiting).context("couldn't keep the update for the next start")?;
-        return Ok(Placed::AfterRestart);
     }
     if waiting.exists() {
         let _ = fs::remove_dir_all(&waiting);
     }
-    fs::rename(staged, &target)
-        .with_context(|| format!("couldn't move the module into {}", target.display()))?;
+    if let Err(error) = fs::rename(staged, &target) {
+        // Put the installed version back, before emptying the trash loses it.
+        if let Some(old) = old {
+            if let Err(restore) = fs::rename(&old, &target) {
+                warn!(
+                    "Couldn't put {} back as {}: {restore}",
+                    old.display(),
+                    target.display()
+                );
+            }
+        }
+        return Err(error)
+            .with_context(|| format!("couldn't move the module into {}", target.display()));
+    }
     // Only goes if nothing else is being staged.
     let _ = fs::remove_dir(registry_dir(plugins).join(STAGING));
     empty_trash(plugins);
@@ -236,7 +255,7 @@ pub fn uninstall(plugins: &Path, id: &str) -> Result<()> {
     if !target.exists() {
         bail!("that module isn't installed from the registry");
     }
-    move_to_trash(plugins, &target).context(
+    move_to_trash(plugins, &target).map(drop).context(
         "its files are in use. Choose another module, restart VRFaceTracking, then remove it",
     )?;
     empty_trash(plugins);
@@ -244,7 +263,8 @@ pub fn uninstall(plugins: &Path, id: &str) -> Result<()> {
 }
 
 /// Moves `dir` aside in one step, so a module is never left half deleted.
-fn move_to_trash(plugins: &Path, dir: &Path) -> std::io::Result<()> {
+/// Returns where it went.
+fn move_to_trash(plugins: &Path, dir: &Path) -> std::io::Result<PathBuf> {
     let trash = registry_dir(plugins).join(TRASH);
     fs::create_dir_all(&trash)?;
     let stamp = SystemTime::now()
@@ -252,7 +272,9 @@ fn move_to_trash(plugins: &Path, dir: &Path) -> std::io::Result<()> {
         .map(|time| time.as_nanos())
         .unwrap_or_default();
     let name = dir.file_name().unwrap_or_default().to_string_lossy();
-    fs::rename(dir, trash.join(format!("{name}-{stamp}")))
+    let trashed = trash.join(format!("{name}-{stamp}"));
+    fs::rename(dir, &trashed)?;
+    Ok(trashed)
 }
 
 fn empty_trash(plugins: &Path) {
@@ -296,25 +318,32 @@ pub fn apply_pending(plugins: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{managed_dll, temp_dir};
     use std::io::Write;
 
-    fn temp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vrft_registry_{tag}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn a_failed_update_keeps_the_installed_version() {
+        let plugins = temp_dir("registry_restore");
+        let entry = entry("Link.dll");
+        let staged = stage(&plugins, &entry, &managed_dll()).unwrap();
+        place(&plugins, &entry.module_id, &staged).unwrap();
+        // The update can't be moved in, as it isn't there.
+        let missing = registry_dir(&plugins).join(STAGING).join("missing");
+        assert!(place(&plugins, &entry.module_id, &missing).is_err());
+        let dir = module_dir(&plugins, &entry.module_id);
+        assert!(dir.join("Link.dll").is_file());
+        assert_eq!(plugin_loader::read_manifest(&dir).unwrap().version, "1.0.6");
+        let _ = fs::remove_dir_all(&plugins);
     }
 
-    /// A managed PE image: enough for the plugin loader to classify.
-    fn managed_dll() -> Vec<u8> {
-        let mut bytes = vec![0u8; 0x200];
-        bytes[..2].copy_from_slice(b"MZ");
-        bytes[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-        bytes[0x98..0x9A].copy_from_slice(&0x10bu16.to_le_bytes());
-        let com_size = 0x98 + 96 + 14 * 8 + 4;
-        bytes[com_size..com_size + 4].copy_from_slice(&0x48u32.to_le_bytes());
-        bytes
+    #[test]
+    fn unpacking_stops_at_the_limit() {
+        let plugins = temp_dir("registry_limit");
+        let bytes = zip_of(&[("a.dll", &[0u8; 600]), ("b.dll", &[0u8; 600])]);
+        let error = unzip(&bytes, &plugins.join("small"), 1000).unwrap_err();
+        assert!(error.to_string().contains("unpacks to more"), "{error}");
+        unzip(&bytes, &plugins.join("big"), 1200).unwrap();
+        let _ = fs::remove_dir_all(&plugins);
     }
 
     fn entry(file: &str) -> RegistryModule {
@@ -341,7 +370,7 @@ mod tests {
 
     #[test]
     fn installs_a_zip_and_lists_only_its_module() {
-        let plugins = temp("zip");
+        let plugins = temp_dir("registry_zip");
         let dll = managed_dll();
         let bytes = zip_of(&[
             ("net7.0/Link.dll", &dll),
@@ -371,7 +400,7 @@ mod tests {
 
     #[test]
     fn installs_a_bare_dll_and_updates_it() {
-        let plugins = temp("dll");
+        let plugins = temp_dir("registry_dll");
         let entry = entry("Link.dll");
         let staged = stage(&plugins, &entry, &managed_dll()).unwrap();
         place(&plugins, &entry.module_id, &staged).unwrap();
@@ -392,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_waiting_update_is_applied_at_startup() {
-        let plugins = temp("pending");
+        let plugins = temp_dir("registry_pending");
         let entry = entry("Link.dll");
         let staged = stage(&plugins, &entry, &managed_dll()).unwrap();
         let waiting = registry_dir(&plugins).join(PENDING).join(&entry.module_id);
@@ -410,7 +439,7 @@ mod tests {
 
     #[test]
     fn refuses_what_it_cannot_install_safely() {
-        let plugins = temp("refuse");
+        let plugins = temp_dir("registry_refuse");
         let dll = managed_dll();
         let missing = stage(
             &plugins,
@@ -435,7 +464,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_registry_modules_install() {
-        let plugins = temp("live");
+        let plugins = temp_dir("registry_live");
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(120)))
             .build()

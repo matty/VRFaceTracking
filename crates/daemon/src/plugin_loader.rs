@@ -3,6 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use log::warn;
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use vrft_protocol::RegistryModule;
 
@@ -115,8 +116,11 @@ pub fn detect_plugin_kind(path: &Path) -> Result<PluginKind> {
 }
 
 fn is_dynamic_lib(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext == "dll" || ext == "so" || ext == "dylib")
+    path.extension().is_some_and(|ext| {
+        ["dll", "so", "dylib"]
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+    })
 }
 
 /// Recursively scan `dir` for plugin libraries, classifying each by PE header.
@@ -127,7 +131,7 @@ fn is_dynamic_lib(path: &Path) -> bool {
 /// `.` (downloads in progress, updates waiting for a restart) are skipped.
 pub fn discover_plugins(dir: &Path) -> Vec<DiscoveredPlugin> {
     let mut out = Vec::new();
-    discover_into(dir, &mut out, true);
+    discover_into(dir, &mut out, &mut HashSet::new(), true);
     for plugin in &mut out {
         plugin.key = plugin_key(dir, &plugin.path);
     }
@@ -200,7 +204,18 @@ fn classify(path: PathBuf, manifest: Option<RegistryModule>) -> Option<Discovere
     }
 }
 
-fn discover_into(dir: &Path, out: &mut Vec<DiscoveredPlugin>, root: bool) {
+/// Linked folders are followed, as someone may link a module's build
+/// folder into `plugins`, but each folder is read once, so a link back up
+/// the tree doesn't loop.
+fn discover_into(
+    dir: &Path,
+    out: &mut Vec<DiscoveredPlugin>,
+    seen: &mut HashSet<PathBuf>,
+    root: bool,
+) {
+    if !seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())) {
+        return;
+    }
     if !root {
         if let Some(manifest) = read_manifest(dir) {
             match contained(dir, &manifest.dll_file_name) {
@@ -232,7 +247,7 @@ fn discover_into(dir: &Path, out: &mut Vec<DiscoveredPlugin>, root: bool) {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with('.'));
             if !hidden {
-                discover_into(&path, out, false);
+                discover_into(&path, out, seen, false);
             }
         } else if is_dynamic_lib(&path) {
             out.extend(classify(path, None));
@@ -243,36 +258,8 @@ fn discover_into(dir: &Path, out: &mut Vec<DiscoveredPlugin>, root: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{make_pe, temp_dir};
     use std::fs;
-
-    /// Build a minimal in-memory PE image whose COM-descriptor data directory
-    /// (index 14) has the given `com_size`. `magic` selects PE32 (0x10b) or
-    /// PE32+ (0x20b), which changes where the data directory array begins.
-    fn make_pe(magic: u16, com_size: u32) -> Vec<u8> {
-        let pe_off: usize = 0x80; // PE header offset (e_lfanew)
-        let dd_off: usize = if magic == 0x20b { 112 } else { 96 };
-        let opt_off = pe_off + 24; // 4 (sig) + 20 (COFF header)
-        let com_size_off = opt_off + dd_off + 14 * 8 + 4; // +4 = skip VirtualAddress
-        let mut buf = vec![0u8; com_size_off + 4];
-
-        // e_lfanew at 0x3C
-        buf[0x3C..0x40].copy_from_slice(&(pe_off as u32).to_le_bytes());
-        // "PE\0\0" signature
-        buf[pe_off..pe_off + 4].copy_from_slice(b"PE\0\0");
-        // Optional header magic
-        buf[opt_off..opt_off + 2].copy_from_slice(&magic.to_le_bytes());
-        // COM descriptor Size
-        buf[com_size_off..com_size_off + 4].copy_from_slice(&com_size.to_le_bytes());
-        buf
-    }
-
-    fn unique_tmp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("vrft_plugin_test_{}_{}", tag, std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     #[test]
     fn pe32_with_com_descriptor_is_managed() {
@@ -317,31 +304,71 @@ mod tests {
 
     #[test]
     fn discovers_plugins_recursively_with_kinds() {
-        let root = unique_tmp_dir("discover");
+        let root = temp_dir("plugins_discover");
         // Native dll at top level.
         fs::write(root.join("native_mod.dll"), make_pe(0x10b, 0)).unwrap();
         // Managed dll in a subfolder (folder-style VRCFT module).
         let sub = root.join("vrcft_mod");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("managed_mod.dll"), make_pe(0x10b, 0x48)).unwrap();
+        // Windows ignores the case of extensions, and so does discovery.
+        fs::write(sub.join("Upper.DLL"), make_pe(0x20b, 0)).unwrap();
         // A non-dll file that must be ignored.
         fs::write(root.join("readme.txt"), b"hello").unwrap();
 
         let mut found = discover_plugins(&root);
         found.sort_by(|a, b| a.name.cmp(&b.name));
 
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].name, "managed_mod.dll");
-        assert_eq!(found[0].kind, PluginKind::Managed);
-        assert_eq!(found[1].name, "native_mod.dll");
-        assert_eq!(found[1].kind, PluginKind::Native);
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].name, "Upper.DLL");
+        assert_eq!(found[1].name, "managed_mod.dll");
+        assert_eq!(found[1].kind, PluginKind::Managed);
+        assert_eq!(found[2].name, "native_mod.dll");
+        assert_eq!(found[2].kind, PluginKind::Native);
 
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A junction back up the tree is read once, not until the stack runs
+    /// out, while one to a folder elsewhere is followed.
+    #[cfg(windows)]
+    #[test]
+    fn linked_folders_are_followed_once() {
+        let root = temp_dir("plugins_links");
+        let elsewhere = temp_dir("plugins_linked");
+        fs::write(root.join("mine.dll"), make_pe(0x10b, 0)).unwrap();
+        fs::write(elsewhere.join("linked.dll"), make_pe(0x10b, 0)).unwrap();
+        let junction = |link: PathBuf, target: &Path| {
+            let made = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        };
+        junction(root.join("loop"), &root);
+        junction(root.join("build"), &elsewhere);
+
+        let mut found: Vec<String> = discover_plugins(&root)
+            .into_iter()
+            .map(|plugin| plugin.key)
+            .collect();
+        found.sort();
+        assert_eq!(found, ["build/linked.dll", "mine.dll"]);
+
+        // Removing a junction leaves what it points to.
+        fs::remove_dir(root.join("loop")).unwrap();
+        fs::remove_dir(root.join("build")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&elsewhere).unwrap();
+    }
+
     #[test]
     fn a_module_folder_lists_only_its_own_dll() {
-        let root = unique_tmp_dir("manifest");
+        let root = temp_dir("plugins_manifest");
         let module = root.join("registry").join("abc");
         fs::create_dir_all(module.join("net7.0")).unwrap();
         fs::create_dir_all(module.join("ModuleLibs")).unwrap();
@@ -369,7 +396,7 @@ mod tests {
 
     #[test]
     fn plugins_are_found_by_key_or_file_name() {
-        let root = unique_tmp_dir("find");
+        let root = temp_dir("plugins_find");
         fs::write(root.join("Link.dll"), make_pe(0x10b, 0)).unwrap();
         let module = root.join("registry").join("abc");
         fs::create_dir_all(&module).unwrap();

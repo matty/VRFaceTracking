@@ -4,7 +4,7 @@
 
 ## What the Resonite Strategy Does
 
-The `ResoniteOsc` strategy (`crates/daemon/src/strategies/resonite.rs`) sends face tracking data to Resonite via OSC over UDP.
+The `ResoniteOsc` strategy (`crates/daemon/src/osc/resonite.rs`) sends face tracking data to Resonite via OSC over UDP.
 
 Resonite uses two OSC address namespaces for face tracking:
 

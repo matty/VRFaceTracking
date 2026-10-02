@@ -7,18 +7,20 @@ use vrft_common::mutations::{adjustment_group, valid_range, ADJUSTMENT_GROUPS};
 use vrft_common::{MutationConfig, MutatorConfig};
 use vrft_daemon::plugin_loader::{self, PluginKind};
 use vrft_protocol::{
-    module_name as friendly_name, AdjustmentGroup, AdjustmentTuning, Config, ConfigPatch,
-    CorrectorsTuning, FilterTuning, Plugin, Tuning, CONFIG_LOCK,
+    module_name as friendly_name, AdjustmentGroup, Config, ConfigPatch, Plugin, Tuning, CONFIG_LOCK,
 };
 
 /// The output modes the desktop app offers, as `config.json` names them.
 /// `Resonite` still works when set in the file by hand, but isn't offered.
 const OUTPUT_MODES: [&str; 2] = ["VRChat", "Generic"];
 
-/// The file as JSON, or an empty object when there isn't one yet.
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// The file as JSON, or an empty object when there isn't one yet. A UTF-8
+/// byte order mark, as Notepad may write, is skipped.
 fn read_json(config: &Path) -> Result<Value, String> {
     match std::fs::read(config) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+        Ok(bytes) => serde_json::from_slice(bytes.strip_prefix(UTF8_BOM).unwrap_or(&bytes))
             .map_err(|error| format!("{} isn't valid JSON: {error}", config.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         Err(error) => Err(format!("Can't read {}: {error}", config.display())),
@@ -39,41 +41,16 @@ const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// write back the file as it was before the other.
 struct ConfigLock {
     #[cfg(windows)]
-    mutex: std::os::windows::io::OwnedHandle,
-}
-
-#[cfg(windows)]
-impl Drop for ConfigLock {
-    fn drop(&mut self) {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::Threading::ReleaseMutex;
-        // SAFETY: the handle is open, and this thread holds the mutex.
-        let _ = unsafe { ReleaseMutex(HANDLE(self.mutex.as_raw_handle())) };
-    }
+    _mutex: vrft_daemon::named_mutex::NamedMutex,
 }
 
 /// Takes [`CONFIG_LOCK`], waiting while the app or another thread holds it.
 #[cfg(windows)]
 fn lock_config() -> Result<ConfigLock, String> {
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
-    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-    let wide: Vec<u16> = CONFIG_LOCK.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: the name is NUL-terminated and outlives the call, and the
-    // handle is owned, and closed, from here on.
-    let mutex = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }
-        .map(|handle| unsafe { OwnedHandle::from_raw_handle(handle.0) })
-        .map_err(|error| format!("Can't save the change: {error}"))?;
-    let wait = LOCK_WAIT.as_millis() as u32;
-    // SAFETY: the handle is open for the wait.
-    let event = unsafe { WaitForSingleObject(HANDLE(mutex.as_raw_handle()), wait) };
-    // Abandoned, it's taken all the same: whoever held it ended.
-    if event == WAIT_OBJECT_0 || event == WAIT_ABANDONED {
-        Ok(ConfigLock { mutex })
-    } else {
-        Err("Another change is still being saved. Try again.".into())
+    match vrft_daemon::named_mutex::NamedMutex::acquire(CONFIG_LOCK, LOCK_WAIT) {
+        Ok(Some(mutex)) => Ok(ConfigLock { _mutex: mutex }),
+        Ok(None) => Err("Another change is still being saved. Try again.".into()),
+        Err(error) => Err(format!("Can't save the change: {error}")),
     }
 }
 
@@ -137,6 +114,27 @@ pub fn write_enabled(config: &Path, id: &str, enabled: bool) -> Result<(), Strin
 pub fn read(config: &Path) -> Result<MutationConfig, String> {
     serde_json::from_value(read_json(config)?)
         .map_err(|error| format!("{} can't be read: {error}", config.display()))
+}
+
+/// The config VRFT reads from the file, which is created with the defaults
+/// when there isn't one, listing `extensions` so they are easy to find and
+/// turn off.
+pub fn read_or_create(config: &Path, extensions: &[&str]) -> Result<MutationConfig, String> {
+    if config.exists() {
+        log::info!("Loading config from {}", config.display());
+        return read(config);
+    }
+    log::info!("Config not found. Creating default at {}", config.display());
+    let mut defaults = MutationConfig::default();
+    let enabled = serde_json::to_value(vrft_extension::ExtensionConfig::default())
+        .map_err(|error| error.to_string())?;
+    for id in extensions {
+        defaults.extensions.insert(id.to_string(), enabled.clone());
+    }
+    let text = serde_json::to_string_pretty(&defaults).map_err(|error| error.to_string())?;
+    std::fs::write(config, text)
+        .map_err(|error| format!("Can't write {}: {error}", config.display()))?;
+    Ok(defaults)
 }
 
 /// What to call a module: its registry name, or else from its file name.
@@ -217,28 +215,25 @@ pub fn view(config: &Path, plugins: &Path) -> Result<Config, String> {
     })
 }
 
+/// Whether `address` is an IP address or a host name, which the outputs
+/// put a port after: a port or path in it would stop them starting.
+fn valid_host(address: &str) -> bool {
+    address.parse::<std::net::IpAddr>().is_ok()
+        || address.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
 /// The tracking tuning in `mutator`, as the API says it.
 fn tuning(mutator: &MutatorConfig) -> Tuning {
-    let filter = &mutator.filter;
-    let correctors = &mutator.correctors;
     Tuning {
-        filter: FilterTuning {
-            min_cutoff: filter.min_cutoff,
-            beta: filter.beta,
-            d_cutoff: filter.d_cutoff,
-            head: filter.head,
-        },
-        correctors: CorrectorsTuning {
-            enabled: correctors.enabled,
-            mouth_closed_clamp: correctors.mouth_closed_clamp,
-            lip_suck_limiter: correctors.lip_suck_limiter,
-            eyelid_blend: correctors.eyelid_blend,
-            eye_look_symmetrize: correctors.eye_look_symmetrize,
-        },
-        adjustment: AdjustmentTuning {
-            enabled: mutator.adjustment.enabled,
-            ranges: mutator.adjustment.ranges.clone(),
-        },
+        filter: mutator.filter.clone(),
+        correctors: mutator.correctors.clone(),
+        adjustment: mutator.adjustment.clone(),
     }
 }
 
@@ -339,8 +334,14 @@ pub fn apply(
         }
     }
     if let Some(address) = &patch.send_address {
-        if address.trim().is_empty() {
+        let address = address.trim();
+        if address.is_empty() {
             return Err("Enter the address to send tracking to.".into());
+        }
+        if !valid_host(address) {
+            return Err(format!(
+                "{address} isn't an address. Enter an IP address or computer name, without a port."
+            ));
         }
     }
     if patch.send_port == Some(0) {
@@ -396,18 +397,12 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::temp_dir;
     use std::path::PathBuf;
-
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vrft_config_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     #[test]
     fn enabling_keeps_the_rest_of_the_config() {
-        let dir = temp_dir("enable");
+        let dir = temp_dir("config_enable");
         let config = dir.join("config.json");
         std::fs::write(
             &config,
@@ -434,7 +429,7 @@ mod tests {
 
     #[test]
     fn changes_saved_at_the_same_time_all_stay() {
-        let dir = temp_dir("together");
+        let dir = temp_dir("config_together");
         let config = dir.join("config.json");
         std::fs::write(&config, "{}").unwrap();
         std::thread::scope(|scope| {
@@ -464,7 +459,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_change_waits_for_one_saved_elsewhere() {
-        let dir = temp_dir("elsewhere");
+        let dir = temp_dir("config_elsewhere");
         let config = dir.join("config.json");
         std::fs::write(&config, "{}").unwrap();
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
@@ -492,7 +487,7 @@ mod tests {
 
     #[test]
     fn a_patch_changes_only_its_settings_and_is_checked() {
-        let dir = temp_dir("patch");
+        let dir = temp_dir("config_patch");
         let config = dir.join("config.json");
         std::fs::write(
             &config,
@@ -565,7 +560,7 @@ mod tests {
 
     #[test]
     fn tuning_is_read_written_and_checked() {
-        let dir = temp_dir("tuning");
+        let dir = temp_dir("config_tuning");
         let config = dir.join("config.json");
         std::fs::write(
             &config,
@@ -650,5 +645,21 @@ mod tests {
     fn modules_get_friendly_names() {
         assert_eq!(friendly_name("vd_module.dll"), "Virtual Desktop");
         assert_eq!(friendly_name("Meta_Quest_Pro.dll"), "Meta Quest Pro");
+    }
+
+    #[test]
+    fn send_addresses_are_hosts_without_ports() {
+        for good in [
+            "127.0.0.1",
+            "::1",
+            "localhost",
+            "my-pc.local",
+            "192.0.2.20",
+        ] {
+            assert!(valid_host(good), "{good}");
+        }
+        for bad in ["127.0.0.1:9000", "my pc", "http://pc", "pc..local", "[::1]"] {
+            assert!(!valid_host(bad), "{bad}");
+        }
     }
 }

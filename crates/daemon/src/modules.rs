@@ -291,7 +291,45 @@ impl ModuleManager {
     /// running. Returns the key saved.
     pub fn use_module(&self, file: &str) -> Result<String, String> {
         let discovered = plugin_loader::discover_plugins(&self.plugins);
-        let plugin = plugin_loader::find_plugin(&discovered, file)
+        let key = self.runnable_key(&discovered, file)?;
+        config_file::apply(
+            &self.config,
+            &ConfigPatch {
+                module: Some(key.clone()),
+                ..ConfigPatch::default()
+            },
+            &discovered,
+        )?;
+        self.switch_to(&key);
+        Ok(key)
+    }
+
+    /// Saves `patch` in `config.json`. A different module in it is checked
+    /// and loaded as [`Self::use_module`] does; the rest applies when the
+    /// daemon next starts.
+    pub fn apply_config(&self, patch: &ConfigPatch) -> Result<(), String> {
+        let discovered = plugin_loader::discover_plugins(&self.plugins);
+        let key = match &patch.module {
+            Some(file) => Some(self.runnable_key(&discovered, file)?),
+            None => None,
+        };
+        let before = config_file::read(&self.config)
+            .map(|config| config_file::active_key(&config.module.active, &discovered))
+            .ok();
+        config_file::apply(&self.config, patch, &discovered)?;
+        if let Some(key) = key.filter(|key| before.as_ref() != Some(key)) {
+            self.switch_to(&key);
+        }
+        Ok(())
+    }
+
+    /// The key of the module `file` names, or why it can't run.
+    fn runnable_key(
+        &self,
+        discovered: &[plugin_loader::DiscoveredPlugin],
+        file: &str,
+    ) -> Result<String, String> {
+        let plugin = plugin_loader::find_plugin(discovered, file)
             .ok_or_else(|| format!("There's no tracking module called {file} in plugins."))?;
         if plugin.kind == PluginKind::Managed && self.dotnet_host.is_none() {
             return Err(format!(
@@ -301,25 +339,20 @@ impl ModuleManager {
                 plugin_loader::DOTNET_HOST
             ));
         }
-        let key = plugin.key.clone();
-        config_file::apply(
-            &self.config,
-            &ConfigPatch {
-                module: Some(key.clone()),
-                ..ConfigPatch::default()
-            },
-            &discovered,
-        )?;
+        Ok(plugin.key.clone())
+    }
+
+    /// Has the tracking loop load module `key` in place of the one running.
+    fn switch_to(&self, key: &str) {
         match &self.switch {
             Some(switch) => {
                 info!("Switching the tracking module to {key}");
-                switch.request(key.clone());
+                switch.request(key.to_string());
             }
             None => info!(
                 "Tracking module set to {key}; it loads when VRFaceTracking next runs tracking"
             ),
         }
-        Ok(key)
     }
 
     /// Removes registry module `id`, unless it's the one in use.
@@ -343,5 +376,43 @@ impl ModuleManager {
             .operations
             .retain(|operation| operation.module_id != id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{make_pe, temp_dir};
+
+    #[test]
+    fn a_settings_change_to_another_module_loads_it() {
+        let dir = temp_dir("modules_patch");
+        let plugins = dir.join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        for name in ["a.dll", "b.dll"] {
+            std::fs::write(plugins.join(name), make_pe(0x10b, 0)).unwrap();
+        }
+        let config = dir.join("config.json");
+        std::fs::write(&config, r#"{"module": {"active": "a.dll"}}"#).unwrap();
+        let switch = ModuleSwitch::default();
+        let modules = ModuleManager::new(
+            plugins,
+            config,
+            "http://127.0.0.1:1/modules".into(),
+            None,
+            Some(switch.clone()),
+        );
+        let patch = |module: &str| ConfigPatch {
+            module: Some(module.into()),
+            ..ConfigPatch::default()
+        };
+
+        modules.apply_config(&patch("a.dll")).unwrap();
+        assert_eq!(switch.take(), None, "the module running isn't reloaded");
+        modules.apply_config(&patch("b.dll")).unwrap();
+        assert_eq!(switch.take().as_deref(), Some("b.dll"));
+        assert!(modules.apply_config(&patch("missing.dll")).is_err());
+        assert_eq!(switch.take(), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

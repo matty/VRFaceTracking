@@ -1,5 +1,6 @@
 //! Running a development build, from `<repo>/target/[<triple>/]<profile>/`,
 //! against the repository's `config.json` and `plugins/`.
+use crate::installed::copy_if_changed;
 use log::{info, warn};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,16 +60,13 @@ pub fn install_modules(build: &Path, modules: &Path, plugins: &Path) {
             std::env::consts::DLL_SUFFIX
         );
         let built = build.join(&file);
-        let installed = plugins.join(&file);
         // Not built in this profile, or not yet.
-        let Ok(built_meta) = fs::metadata(&built) else {
-            continue;
-        };
-        if fs::metadata(&installed).is_ok_and(|meta| same_file(&built_meta, &meta)) {
+        if !built.is_file() {
             continue;
         }
-        match fs::copy(&built, &installed) {
-            Ok(_) => info!("Copied {file} from this build into {}", plugins.display()),
+        match copy_if_changed(&built, &plugins.join(&file)) {
+            Ok(true) => info!("Copied {file} from this build into {}", plugins.display()),
+            Ok(false) => {}
             Err(error) => warn!(
                 "Couldn't copy {} into {}, so the one there may be out of date: {error}",
                 built.display(),
@@ -94,12 +92,6 @@ pub fn dotnet_host(root: &Path) -> Option<PathBuf> {
         host.display()
     );
     None
-}
-
-/// `fs::copy` keeps the modification time, so a copy matches its original
-/// until the original is rebuilt.
-fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    a.len() == b.len() && a.modified().ok() == b.modified().ok()
 }
 
 /// The library name of each crate under `modules`.
@@ -146,13 +138,7 @@ fn library_name(manifest: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vrft_dev_{tag}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_support::temp_dir;
 
     fn library(name: &str) -> String {
         format!(
@@ -180,7 +166,7 @@ mod tests {
 
     #[test]
     fn built_modules_are_copied_into_plugins_when_they_change() {
-        let dir = temp_dir("install");
+        let dir = temp_dir("dev_install");
         let build = dir.join("target/debug");
         let modules = dir.join("modules");
         let plugins = dir.join("plugins");

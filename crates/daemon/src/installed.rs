@@ -3,6 +3,7 @@
 //! alone. See [`vrft_protocol::layout`].
 use log::{info, warn};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// What a package ships that the daemon reads from its working folder. Each
@@ -55,13 +56,7 @@ fn fill(app_dir: &Path, data: &Path) {
 /// Copies each file under `from` whose copy under `to` is missing or differs.
 fn copy_changed(from: &Path, to: &Path) {
     if from.is_file() {
-        let same = match (fs::metadata(from), fs::metadata(to)) {
-            (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
-            _ => false,
-        };
-        if !same {
-            copy(from, to);
-        }
+        copy(from, to);
         return;
     }
     let Ok(entries) = fs::read_dir(from) else {
@@ -72,12 +67,9 @@ fn copy_changed(from: &Path, to: &Path) {
     }
 }
 
+/// Copies `from` to `to` when they differ, warning when it can't.
 fn copy(from: &Path, to: &Path) {
-    let result = to
-        .parent()
-        .map_or(Ok(()), fs::create_dir_all)
-        .and_then(|()| fs::copy(from, to));
-    if let Err(error) = result {
+    if let Err(error) = copy_if_changed(from, to) {
         warn!(
             "Couldn't copy {} to {}, so the one there may be out of date: {error}",
             from.display(),
@@ -86,14 +78,32 @@ fn copy(from: &Path, to: &Path) {
     }
 }
 
+/// Copies file `from` to `to`, making its folder, unless `to` is already a
+/// copy of it: `fs::copy` keeps the modification time, so a copy matches its
+/// original until the original changes. Returns whether it copied.
+pub fn copy_if_changed(from: &Path, to: &Path) -> io::Result<bool> {
+    let source = fs::metadata(from)?;
+    let same = fs::metadata(to).is_ok_and(|copy| {
+        copy.len() == source.len() && copy.modified().ok() == source.modified().ok()
+    });
+    if same {
+        return Ok(false);
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(from, to)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::temp_dir;
 
     #[test]
     fn shipped_files_are_refreshed_and_settings_kept() {
-        let root = std::env::temp_dir().join(format!("vrft_installed_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = temp_dir("installed");
         let app = root.join("current");
         let data = root.join("data");
         fs::create_dir_all(app.join("plugins/sub")).unwrap();
@@ -104,7 +114,9 @@ mod tests {
         fs::write(app.join("models/quest-pro/eye.json"), b"model").unwrap();
         fs::write(app.join("config.json"), b"{}").unwrap();
         fs::write(app.join("vrft_d.exe"), b"exe").unwrap();
-        fs::write(data.join("plugins/vd_module.dll"), b"old").unwrap();
+        // Written within the same clock tick, the two can have the same
+        // modification time, so the size tells them apart.
+        fs::write(data.join("plugins/vd_module.dll"), b"older").unwrap();
         fs::write(data.join("plugins/mine.dll"), b"mine").unwrap();
         fs::write(data.join("config.json"), b"{\"max_fps\": 30}").unwrap();
 
