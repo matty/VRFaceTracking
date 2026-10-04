@@ -147,6 +147,17 @@ pub struct V2Frame {
     pub tongue_vertical: f64,
 }
 
+/// What the heads read from one strip, before the event layer.
+#[derive(Clone, Debug)]
+pub struct V2Reading {
+    /// [`CHEEKS`]' order.
+    pub cheeks: [f64; 4],
+    /// [`BROWS`]' order.
+    pub brows: [f64; 8],
+    /// The tongue's horizontal and vertical direction.
+    pub tongue: (f64, f64),
+}
+
 /// Meta's own expression values, by their OpenXR names, and when they
 /// arrived (nanoseconds on the caller's monotonic clock).
 #[derive(Clone, Debug, Default)]
@@ -477,6 +488,23 @@ impl UniversalV2 {
             bail!("this model needs the face setup");
         }
         Ok(())
+    }
+
+    /// The heads' own readings of one strip, before the event layer and
+    /// without Meta's values: for scoring the model on recordings.
+    pub fn read(&mut self, strip: &[u8]) -> Result<V2Reading> {
+        let (q, t, w) = self.run(strip)?;
+        let probabilities = self.head_forward(&q, &self.anchors, &self.present);
+        let brows = self.brow_forward(&w, &self.brow_neutral, self.brow_present);
+        let tongue = match &self.tongue_map {
+            Some(map) => tongue_direction(&q, map),
+            None => ((t[1] as f64).tanh(), (t[2] as f64).tanh()),
+        };
+        Ok(V2Reading {
+            cheeks: CHEEKS.map(|name| probabilities[self.index(name)] as f64),
+            brows: std::array::from_fn(|k| brows[k] as f64),
+            tongue,
+        })
     }
 
     /// QFT+'s `update`: one strip, the latest native sample (if any), now.
