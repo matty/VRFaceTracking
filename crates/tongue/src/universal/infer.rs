@@ -279,10 +279,13 @@ impl State {
     }
 }
 
+/// Embeddings, one row per strip.
+type Rows = Vec<Vec<f32>>;
+
 /// Runs the network: Burn on a device, or ONNX Runtime.
 trait Runner {
     /// Each strip's mouth embedding `q` and brow embedding `w`.
-    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)>;
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)>;
     /// One strip's activated outputs and its mouth embedding.
     fn predict(&mut self, strip: &[u8], state: &State) -> Result<([f32; OUTPUTS], Vec<f32>)>;
     /// Where it runs now, when that can change (ONNX Runtime's switch to
@@ -337,7 +340,7 @@ impl<B: Backend> BurnRunner<B> {
 }
 
 impl<B: Backend> Runner for BurnRunner<B> {
-    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)> {
         let (mut mouth, mut brow) = (vec![], vec![]);
         for chunk in strips.chunks(16) {
             let embeddings = self.net.embed(self.input(chunk));
@@ -401,7 +404,7 @@ impl OnnxRunner {
 }
 
 impl Runner for OnnxRunner {
-    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)> {
         let empty = State::empty();
         let (mut mouth, mut brow) = (vec![], vec![]);
         for strip in strips {
