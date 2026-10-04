@@ -21,9 +21,9 @@ use burn::tensor::{Bool, Tensor, TensorData};
 use crate::{TARGETS, TONGUE_TARGETS};
 
 pub const ARCHITECTURE: &str = "spatial-stereo-resnet-v2";
-const BATCH_NORM_EPSILON: f32 = 1e-5;
+pub(crate) const BATCH_NORM_EPSILON: f32 = 1e-5;
 /// Heads with a signed range (tanh); every other head is a sigmoid.
-const SIGNED: [&str; 3] = ["horizontal", "vertical", "twist"];
+pub(crate) const SIGNED: [&str; 3] = ["horizontal", "vertical", "twist"];
 
 /// Named weights, as in a PyTorch state dict.
 pub type Weights = HashMap<String, TensorData>;
@@ -344,9 +344,10 @@ pub(crate) const ENCODER: [(usize, [usize; 3], usize); 4] = [
     (8, [64, 96, 3], 2),
     (12, [96, 160, 3], 2),
 ];
-const FUSION: [(usize, [usize; 3], usize); 2] = [(0, [640, 224, 1], 1), (4, [224, 256, 3], 2)];
+pub(crate) const FUSION: [(usize, [usize; 3], usize); 2] =
+    [(0, [640, 224, 1], 1), (4, [224, 256, 3], 2)];
 /// Head linear layers: (nn.Sequential index, in, out).
-const HEAD: [(usize, usize, usize); 3] = [
+pub(crate) const HEAD: [(usize, usize, usize); 3] = [
     (0, 512, 384),
     (3, 384, FEATURES),
     (6, FEATURES, TARGETS.len()),

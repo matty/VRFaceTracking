@@ -8,7 +8,11 @@
 //!   strips.
 //! - Frames come from `--recording` (cycled), else from a fixed noise strip:
 //!   the networks do the same work whatever the pixels are.
-//! - On the CPU, `RAYON_NUM_THREADS` sets how many threads Burn uses.
+//! - It runs on ONNX Runtime when its library is found, as the daemon does,
+//!   and times the int8 model a CPU session switches to; `VRFT_INFERENCE=burn`
+//!   times Burn instead.
+//! - On the CPU, `VRFT_ONNX_THREADS` sets how many threads ONNX Runtime
+//!   uses, and `RAYON_NUM_THREADS` how many Burn uses.
 //! - Memory is the process's resident set (working set on Windows): before
 //!   loading, after loading and its peak.
 //!
@@ -42,6 +46,13 @@ impl Model {
         match self {
             Model::Pair(model) => model.predict(frame).map(drop),
             Model::Face(model) => model.predict(frame).map(drop),
+        }
+    }
+
+    fn settled(&self) -> bool {
+        match self {
+            Model::Pair(model) => model.settled(),
+            Model::Face(model) => model.settled(),
         }
     }
 
@@ -191,6 +202,19 @@ fn main() -> Result<()> {
     for frame in frames.iter().cycle().take(warmup) {
         model.predict(frame)?;
     }
+    // On ONNX Runtime's CPU, a new model may calibrate on its first frames
+    // and then switch to int8 in the background: time what it settles on.
+    let settling = Instant::now();
+    for frame in frames.iter().cycle() {
+        if model.settled() {
+            break;
+        }
+        if settling.elapsed().as_secs() > 60 {
+            bail!("the model never settled");
+        }
+        model.predict(frame)?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let mut times = Vec::with_capacity(frames_wanted);
     for frame in frames.iter().cycle().take(frames_wanted) {
         let at = Instant::now();
@@ -200,14 +224,25 @@ fn main() -> Result<()> {
     let after = memory();
     let mean = times.iter().sum::<f64>() / times.len() as f64;
     times.sort_by(f64::total_cmp);
-    let threads = std::env::var("RAYON_NUM_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or_else(rayon::current_num_threads);
+    let threads = if model.device().contains("ONNX") {
+        std::env::var("VRFT_ONNX_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(vrft_tongue::onnx::runtime::default_threads)
+    } else {
+        std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(rayon::current_num_threads)
+    };
     let round = |ms: f64| (ms * 1000.0).round() / 1000.0;
     let report = json!({
         "model": name,
-        "runtime": "Burn 0.21",
+        "runtime": if model.device().contains("ONNX") || model.device().contains("DirectML") {
+            "ONNX Runtime"
+        } else {
+            "Burn 0.21"
+        },
         "device": model.device(),
         "threads": threads,
         "frames": times.len(),
