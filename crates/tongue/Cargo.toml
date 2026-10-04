@@ -19,7 +19,16 @@ rand = "0.9"
 rayon = "1"
 burn-flex = { version = "=0.21.0", features = ["rayon", "simd"] }
 burn-store = { version = "=0.21.0", default-features = false, features = ["std", "pytorch"] }
+# Inference on ONNX Runtime, whose library is loaded at run time (onnx::runtime).
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-24"] }
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-24", "directml"] }
 
 [features]
 # Train and run on NVIDIA's CUDA rather than wgpu, for Linux GPU servers.
 cuda = ["burn/cuda"]
+
+# examples/benchmark.rs reads the process's working set.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

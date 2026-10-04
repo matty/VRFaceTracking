@@ -155,17 +155,21 @@ jobs:
         shell: pwsh
         run: |
           $release_dir = "target/x86_64-pc-windows-msvc/release"
+          # ONNX Runtime with DirectML runs the tongue models; without it they run on Burn.
+          ./tools/onnxruntime/fetch.ps1 -Dest onnxruntime
 
           function Make-Package($name, $active, $bundle_dotnet) {
             New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
-            # vrft_app starts vrft_d.
+            # vrft_app starts vrft_d, which loads ONNX Runtime from beside it.
             Copy-Item "$release_dir/vrft_d.exe", "$release_dir/vrft_app.exe" "$name/"
+            Copy-Item "onnxruntime/onnxruntime.dll", "onnxruntime/DirectML.dll" "$name/"
             Copy-Item "docs/guide/tongue-training.md", "docs/guide/quest-pro-eye-tracking.md" "$name/"
             New-Item -ItemType Directory -Force -Path "$name/models/quest-pro" | Out-Null
             Copy-Item "models/quest-pro/qpro-independent-visual-axis-v2.json" "$name/models/quest-pro/"
             New-Item -ItemType Directory -Force -Path "$name/third_party" | Out-Null
             Copy-Item "third_party/Qpro-Enhanced-FT-LICENSE" "$name/third_party/"
+            Copy-Item "onnxruntime/onnxruntime-LICENSE.txt", "onnxruntime/DirectML-LICENSE.txt" "$name/third_party/"
             # The bundled headset app.
             if (Test-Path "headset-app") {
               Copy-Item "headset-app" "$name/" -Recurse

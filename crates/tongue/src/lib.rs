@@ -6,6 +6,7 @@ pub mod checkpoint;
 pub mod dataset;
 pub mod infer;
 pub mod model;
+pub mod onnx;
 pub mod preprocess;
 pub mod recordings;
 pub mod train;

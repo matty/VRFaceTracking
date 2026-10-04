@@ -11,6 +11,7 @@ use log::warn;
 use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
 use crate::checkpoint::{Checkpoint, Role};
 use crate::model::TongueNet;
+use crate::onnx::{self, live::LiveSession, live::Plan};
 use crate::preprocess::{AreaResize, FRAME_BYTES};
 use crate::TARGETS;
 
@@ -38,13 +39,7 @@ struct Pair<B: Backend> {
 
 impl<B: Backend> Pair<B> {
     fn new(gate: &Checkpoint, direction: &Checkpoint, device: B::Device) -> Result<Self> {
-        let disabled = TARGETS.map(|name| {
-            direction
-                .metadata
-                .disabled_targets
-                .iter()
-                .any(|disabled| disabled == name)
-        });
+        let disabled = disabled_targets(direction);
         Ok(Self {
             gate: TongueNet::from_weights(gate.weights.clone(), &device)?.fold(),
             direction: TongueNet::from_weights(direction.weights.clone(), &device)?.fold(),
@@ -76,27 +71,110 @@ impl<B: Backend> Pair<B> {
 
     fn predict(&mut self, strip: &[u8]) -> Result<[f32; TARGETS.len()]> {
         let visibility = self.run(true, strip)?[0];
-        let mut values: [f32; TARGETS.len()] = self
-            .run(false, strip)?
-            .try_into()
-            .map_err(|_| anyhow!("tongue model returned the wrong number of values"))?;
-        // Visibility comes from the gate, every other head from the direction model.
-        values[0] = visibility;
-        for (value, disabled) in values.iter_mut().zip(self.disabled) {
-            if disabled {
-                *value = 0.0;
-            }
-        }
-        if values.iter().any(|value| !value.is_finite()) {
-            bail!("tongue model returned non-finite values");
-        }
-        Ok(values)
+        let direction = self.run(false, strip)?;
+        combine(visibility, direction, self.disabled)
     }
+}
+
+/// Visibility from the gate, every other head from the direction model.
+fn combine(
+    visibility: f32,
+    direction: Vec<f32>,
+    disabled: [bool; TARGETS.len()],
+) -> Result<[f32; TARGETS.len()]> {
+    let mut values: [f32; TARGETS.len()] = direction
+        .try_into()
+        .map_err(|_| anyhow!("tongue model returned the wrong number of values"))?;
+    values[0] = visibility;
+    for (value, disabled) in values.iter_mut().zip(disabled) {
+        if disabled {
+            *value = 0.0;
+        }
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        bail!("tongue model returned non-finite values");
+    }
+    Ok(values)
+}
+
+/// The pair on ONNX Runtime.
+struct OnnxPair {
+    gate: LiveSession,
+    direction: LiveSession,
+    gate_resize: AreaResize,
+    direction_resize: AreaResize,
+    disabled: [bool; TARGETS.len()],
+    buffer: Vec<f32>,
+}
+
+impl OnnxPair {
+    fn new(
+        gate: (&Checkpoint, &Path),
+        direction: (&Checkpoint, &Path),
+        accelerator: Accelerator,
+    ) -> Result<Self> {
+        let placement = onnx::runtime::placement(accelerator);
+        let session = |(checkpoint, path): (&Checkpoint, &Path)| {
+            let mut weights = checkpoint.weights.clone();
+            weights.remove("signed_mask");
+            weights.retain(|name, _| !name.ends_with("num_batches_tracked"));
+            let graph = onnx::pair_graph(&weights, checkpoint.metadata.image_size)?;
+            // Float: int8 moves the pair's directions by a few hundredths
+            // (docs/internals/model-benchmark.md); VRFT_ONNX_INT8=all opts in.
+            LiveSession::new(graph, path, &weights, placement, Plan::Float)
+        };
+        Ok(Self {
+            gate: session(gate)?,
+            direction: session(direction)?,
+            gate_resize: AreaResize::new(gate.0.metadata.image_size),
+            direction_resize: AreaResize::new(direction.0.metadata.image_size),
+            disabled: disabled_targets(direction.0),
+            buffer: vec![],
+        })
+    }
+
+    fn run(&mut self, gate: bool, strip: &[u8]) -> Result<Vec<f32>> {
+        let (session, resize) = if gate {
+            (&mut self.gate, &self.gate_resize)
+        } else {
+            (&mut self.direction, &self.direction_resize)
+        };
+        resize.stereo(strip, &mut self.buffer);
+        let size = resize.size();
+        let mut values =
+            session.run(&[("views", &[1, 2, size, size], &self.buffer)], &["values"])?;
+        Ok(values.pop().unwrap_or_default())
+    }
+
+    fn predict(&mut self, strip: &[u8]) -> Result<[f32; TARGETS.len()]> {
+        let visibility = self.run(true, strip)?[0];
+        let direction = self.run(false, strip)?;
+        combine(visibility, direction, self.disabled)
+    }
+
+    fn device(&self) -> String {
+        self.direction.device()
+    }
+
+    fn settled(&self) -> bool {
+        self.gate.settled() && self.direction.settled()
+    }
+}
+
+fn disabled_targets(direction: &Checkpoint) -> [bool; TARGETS.len()] {
+    TARGETS.map(|name| {
+        direction
+            .metadata
+            .disabled_targets
+            .iter()
+            .any(|disabled| disabled == name)
+    })
 }
 
 enum Engine {
     Gpu(Pair<Gpu>),
     Cpu(Pair<Cpu>),
+    Onnx(Box<OnnxPair>),
 }
 
 pub struct TongueModel {
@@ -124,10 +202,30 @@ impl TongueModel {
             role.find(dir)
                 .ok_or_else(|| anyhow!("incomplete tongue model pair in {}", dir.display()))
         };
-        let gate = Checkpoint::load(&path(Role::Gate)?)?;
-        let direction = Checkpoint::load(&path(Role::Direction)?)?;
+        let (gate_path, direction_path) = (path(Role::Gate)?, path(Role::Direction)?);
+        let gate = Checkpoint::load(&gate_path)?;
+        let direction = Checkpoint::load(&direction_path)?;
         let blank = vec![0u8; FRAME_BYTES];
+        let mut onnx = None;
+        if onnx::runtime::wanted() {
+            let started = guarded(|| {
+                let mut pair = OnnxPair::new(
+                    (&gate, &gate_path),
+                    (&direction, &direction_path),
+                    accelerator,
+                )?;
+                pair.predict(&blank)?;
+                Ok(pair)
+            });
+            match started {
+                Ok(pair) => onnx = Some(Engine::Onnx(Box::new(pair))),
+                Err(error) => {
+                    warn!("Tongue model: ONNX Runtime unavailable ({error:#}); using Burn")
+                }
+            }
+        }
         let engine = match accelerator {
+            _ if onnx.is_some() => onnx,
             Accelerator::Cpu => None,
             Accelerator::Auto | Accelerator::Gpu => {
                 let started = guarded(|| {
@@ -154,9 +252,10 @@ impl TongueModel {
         let info = ModelInfo {
             camera_weight: gate.metadata.visibility_gate.camera_weight as f32,
             threshold: gate.metadata.visibility_gate.threshold as f32,
-            device: match engine {
+            device: match &engine {
                 Engine::Gpu(_) => GPU_NAME.into(),
                 Engine::Cpu(_) => "CPU".into(),
+                Engine::Onnx(pair) => pair.device(),
             },
             gate_size: gate.metadata.image_size,
             direction_size: direction.metadata.image_size,
@@ -169,15 +268,29 @@ impl TongueModel {
         &self.info
     }
 
+    /// Whether the model has stopped changing how it runs (ONNX Runtime's
+    /// calibration and switch to int8 are done).
+    pub fn settled(&self) -> bool {
+        match &self.engine {
+            Engine::Onnx(pair) => pair.settled(),
+            _ => true,
+        }
+    }
+
     /// Raw per-frame values in `TARGETS` order for one 800x400 gray8 stereo
     /// strip; smoothing is the caller's job.
     pub fn predict(&mut self, strip: &[u8]) -> Result<[f32; TARGETS.len()]> {
         if strip.len() != FRAME_BYTES {
             bail!("tongue frames must be 800x400 gray8");
         }
-        guarded(|| match &mut self.engine {
+        let values = guarded(|| match &mut self.engine {
             Engine::Gpu(pair) => pair.predict(strip),
             Engine::Cpu(pair) => pair.predict(strip),
-        })
+            Engine::Onnx(pair) => pair.predict(strip),
+        });
+        if let Engine::Onnx(pair) = &self.engine {
+            self.info.device = pair.device();
+        }
+        values
     }
 }

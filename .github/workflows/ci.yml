@@ -34,6 +34,14 @@ jobs:
         # Keep the cache even when the run fails.
         cache-on-failure: true
 
+    # The ONNX tests run the tongue models on ONNX Runtime's CPU build.
+    - name: Fetch ONNX Runtime
+      shell: pwsh
+      run: |
+        Invoke-WebRequest https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip -OutFile onnxruntime.zip
+        Expand-Archive onnxruntime.zip -DestinationPath $env:RUNNER_TEMP
+        "VRFT_ONNXRUNTIME=$env:RUNNER_TEMP\onnxruntime-win-x64-1.24.4\lib\onnxruntime.dll" >> $env:GITHUB_ENV
+
     # cargo test builds everything else.
     - name: Build plugin
       run: cargo build -p vrft-vd-module

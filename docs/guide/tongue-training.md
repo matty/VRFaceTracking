@@ -32,7 +32,7 @@ Recording pauses if the mouth cameras stop, and stops if they don't come back wi
 
 **Model in use** (on the app's Test tab) switches between your saved models and the built-in model at any time. Choose **Built-in model** to undo a personal model.
 
-**Advanced options** in the app, or **Training options** in the preview, sets the model name (the date and time by default), the device and the number of training passes (12 by default). **Automatic** trains on the GPU (NVIDIA, AMD or Intel, through DX12 or Vulkan) when one works, and on the CPU otherwise. **GPU** fails rather than falling back. On a recent GPU a basic recording trains in roughly ten minutes; the CPU takes several times longer. Live inference uses the GPU the same way.
+**Advanced options** in the app, or **Training options** in the preview, sets the model name (the date and time by default), the device and the number of training passes (12 by default). **Automatic** trains on the GPU (NVIDIA, AMD or Intel, through DX12 or Vulkan) when one works, and on the CPU otherwise. **GPU** fails rather than falling back. On a recent GPU a basic recording trains in roughly ten minutes; the CPU takes several times longer. Live inference runs on ONNX Runtime on the CPU for **Automatic** and **CPU**, and through DirectML for **GPU**. Without ONNX Runtime it picks the device the same way as training.
 
 ## How training works
 

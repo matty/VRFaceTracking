@@ -22,6 +22,7 @@ use super::net::{activate, FaceNet};
 use super::{ANCHOR_SLOTS, BROW_EMBEDDING, CAMERAS, FACE_TARGETS, MOUTH_EMBEDDING};
 use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
 use crate::infer::guarded;
+use crate::onnx::{self, live::LiveSession, live::Plan};
 use crate::preprocess::{AreaResize, VIEW};
 use crate::recordings::Recording;
 use vrft_quest_pro_protocol::{STRIP_BYTES, STRIP_WIDTH};
@@ -255,111 +256,221 @@ pub struct FacePrediction {
     pub values: [f32; OUTPUTS],
 }
 
-struct Engine<B: Backend> {
+/// The wearer's face setup as the model reads it.
+struct State {
+    /// `[6 * 512]`, a slot's mean mouth embedding where `present`.
+    anchors: Vec<f32>,
+    present: Vec<f32>,
+    /// `[480]`, the neutral frames' mean brow embedding.
+    brow_neutral: Vec<f32>,
+    brow_present: f32,
+    tongue_map: Option<TongueMap>,
+}
+
+impl State {
+    fn empty() -> Self {
+        Self {
+            anchors: vec![0.0; ANCHOR_SLOTS.len() * MOUTH_EMBEDDING],
+            present: vec![0.0; ANCHOR_SLOTS.len()],
+            brow_neutral: vec![0.0; BROW_EMBEDDING],
+            brow_present: 0.0,
+            tongue_map: None,
+        }
+    }
+}
+
+/// Embeddings, one row per strip.
+type Rows = Vec<Vec<f32>>;
+
+/// Runs the network: Burn on a device, or ONNX Runtime.
+trait Runner {
+    /// Each strip's mouth embedding `q` and brow embedding `w`.
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)>;
+    /// One strip's activated outputs and its mouth embedding.
+    fn predict(&mut self, strip: &[u8], state: &State) -> Result<([f32; OUTPUTS], Vec<f32>)>;
+    /// Where it runs now, when that can change (ONNX Runtime's switch to
+    /// int8).
+    fn device(&self) -> Option<String> {
+        None
+    }
+    fn settled(&self) -> bool {
+        true
+    }
+}
+
+/// `strips` (each 2000 x 400) as `n * 5` views of `size` px in 0..1.
+fn views(resize: &AreaResize, strips: &[&[u8]]) -> Vec<f32> {
+    let size = resize.size();
+    let mut pixels = Vec::with_capacity(strips.len() * CAMERAS * size * size);
+    let mut view = vec![0u8; size * size];
+    for strip in strips {
+        for camera in 0..CAMERAS {
+            resize.view_of(strip, STRIP_WIDTH as usize, camera, &mut view);
+            pixels.extend(view.iter().map(|&value| value as f32 / 255.0));
+        }
+    }
+    pixels
+}
+
+struct BurnRunner<B: Backend> {
     net: FaceNet<B>,
     resize: AreaResize,
-    anchors: Tensor<B, 3>,
-    present: Tensor<B, 2>,
-    brow_neutral: Tensor<B, 2>,
-    brow_present: Tensor<B, 2>,
-    tongue_map: Option<TongueMap>,
     device: B::Device,
 }
 
-impl<B: Backend> Engine<B> {
+impl<B: Backend> BurnRunner<B> {
     fn new(checkpoint: &FaceCheckpoint, device: B::Device) -> Result<Self> {
-        let net = FaceNet::from_weights(checkpoint.weights.clone(), false, &device)?.fold();
-        let slots = ANCHOR_SLOTS.len();
         Ok(Self {
-            net,
+            net: FaceNet::from_weights(checkpoint.weights.clone(), false, &device)?.fold(),
             resize: AreaResize::new(checkpoint.metadata.image_size),
-            anchors: Tensor::zeros([1, slots, MOUTH_EMBEDDING], &device),
-            present: Tensor::zeros([1, slots], &device),
-            brow_neutral: Tensor::zeros([1, BROW_EMBEDDING], &device),
-            brow_present: Tensor::zeros([1, 1], &device),
-            tongue_map: None,
             device,
         })
     }
 
-    /// `strips` (each 2000 x 400) as `[n, 5, size, size]` in 0..1.
-    fn views(&self, strips: &[&[u8]]) -> Tensor<B, 4> {
+    fn input(&self, strips: &[&[u8]]) -> Tensor<B, 4> {
         let size = self.resize.size();
-        let mut pixels = Vec::with_capacity(strips.len() * CAMERAS * size * size);
-        let mut view = vec![0u8; size * size];
-        for strip in strips {
-            for camera in 0..CAMERAS {
-                self.resize
-                    .view_of(strip, STRIP_WIDTH as usize, camera, &mut view);
-                pixels.extend(view.iter().map(|&value| value as f32 / 255.0));
-            }
-        }
         Tensor::from_data(
-            TensorData::new(pixels, [strips.len(), CAMERAS, size, size]),
+            TensorData::new(
+                views(&self.resize, strips),
+                [strips.len(), CAMERAS, size, size],
+            ),
             &self.device,
         )
     }
+}
 
+impl<B: Backend> Runner for BurnRunner<B> {
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)> {
+        let (mut mouth, mut brow) = (vec![], vec![]);
+        for chunk in strips.chunks(16) {
+            let embeddings = self.net.embed(self.input(chunk));
+            mouth.extend(to_rows(embeddings.mouth, MOUTH_EMBEDDING)?);
+            brow.extend(to_rows(embeddings.brow, BROW_EMBEDDING)?);
+        }
+        Ok((mouth, brow))
+    }
+
+    fn predict(&mut self, strip: &[u8], state: &State) -> Result<([f32; OUTPUTS], Vec<f32>)> {
+        let slots = ANCHOR_SLOTS.len();
+        let embeddings = self.net.embed(self.input(&[strip]));
+        let q = to_rows(embeddings.mouth.clone(), MOUTH_EMBEDDING)?.remove(0);
+        let tensor = |values: &[f32], shape: [usize; 2]| {
+            Tensor::<B, 2>::from_data(TensorData::new(values.to_vec(), shape), &self.device)
+        };
+        let raw = self.net.raw(
+            &embeddings,
+            Tensor::from_data(
+                TensorData::new(state.anchors.clone(), [1, slots, MOUTH_EMBEDDING]),
+                &self.device,
+            ),
+            tensor(&state.present, [1, slots]),
+            tensor(&state.brow_neutral, [1, BROW_EMBEDDING]),
+            tensor(&[state.brow_present], [1, 1]),
+        );
+        let values: [f32; OUTPUTS] = activate(raw)
+            .into_data()
+            .to_vec::<f32>()
+            .map_err(|error| anyhow!("{error:?}"))?
+            .try_into()
+            .map_err(|_| anyhow!("face model returned the wrong number of values"))?;
+        Ok((values, q))
+    }
+}
+
+struct OnnxRunner {
+    session: LiveSession,
+    resize: AreaResize,
+}
+
+impl OnnxRunner {
+    fn run(&mut self, strip: &[u8], state: &State, outputs: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let size = self.resize.size();
+        let slots = ANCHOR_SLOTS.len();
+        self.session.run(
+            &[
+                (
+                    "views",
+                    &[1, CAMERAS, size, size],
+                    &views(&self.resize, &[strip]),
+                ),
+                ("anchors", &[1, slots, MOUTH_EMBEDDING], &state.anchors),
+                ("present", &[1, slots], &state.present),
+                ("brow_neutral", &[1, BROW_EMBEDDING], &state.brow_neutral),
+                ("brow_present", &[1, 1], &[state.brow_present]),
+            ],
+            outputs,
+        )
+    }
+}
+
+impl Runner for OnnxRunner {
+    fn embed(&mut self, strips: &[&[u8]]) -> Result<(Rows, Rows)> {
+        let empty = State::empty();
+        let (mut mouth, mut brow) = (vec![], vec![]);
+        for strip in strips {
+            let mut out = self.run(strip, &empty, &["q", "w"])?;
+            brow.push(out.pop().unwrap_or_default());
+            mouth.push(out.pop().unwrap_or_default());
+        }
+        Ok((mouth, brow))
+    }
+
+    fn predict(&mut self, strip: &[u8], state: &State) -> Result<([f32; OUTPUTS], Vec<f32>)> {
+        let mut out = self.run(strip, state, &["values", "q"])?;
+        let q = out.pop().unwrap_or_default();
+        let values = out
+            .pop()
+            .unwrap_or_default()
+            .try_into()
+            .map_err(|_| anyhow!("face model returned the wrong number of values"))?;
+        Ok((values, q))
+    }
+
+    fn device(&self) -> Option<String> {
+        Some(self.session.device())
+    }
+
+    fn settled(&self) -> bool {
+        self.session.settled()
+    }
+}
+
+struct Engine {
+    runner: Box<dyn Runner + Send>,
+    state: State,
+}
+
+impl Engine {
     fn enroll(&mut self, enrollment: &Enrollment) -> Result<(Vec<String>, bool)> {
-        let mut anchors = vec![0f32; ANCHOR_SLOTS.len() * MOUTH_EMBEDDING];
-        let mut present = vec![0f32; ANCHOR_SLOTS.len()];
+        let mut state = State::empty();
         let mut holds: BTreeMap<&str, Vec<Vec<f32>>> = BTreeMap::new();
         let mut enrolled = vec![];
         for (slot, strips) in &enrollment.frames {
             let strips: Vec<&[u8]> = strips.iter().map(Vec::as_slice).collect();
-            let mut mouth = vec![];
-            let mut brow = vec![];
-            for chunk in strips.chunks(16) {
-                let embeddings = self.net.embed(self.views(chunk));
-                mouth.extend(to_rows(embeddings.mouth, MOUTH_EMBEDDING)?);
-                brow.extend(to_rows(embeddings.brow, BROW_EMBEDDING)?);
-            }
+            let (mouth, brow) = self.runner.embed(&strips)?;
             if let Some(index) = ANCHOR_SLOTS.iter().position(|name| name == slot) {
                 let mean = mean_rows(&mouth);
-                anchors[index * MOUTH_EMBEDDING..][..MOUTH_EMBEDDING].copy_from_slice(&mean);
-                present[index] = 1.0;
+                state.anchors[index * MOUTH_EMBEDDING..][..MOUTH_EMBEDDING].copy_from_slice(&mean);
+                state.present[index] = 1.0;
                 enrolled.push(slot.clone());
                 if index == 0 {
-                    self.brow_neutral = Tensor::from_data(
-                        TensorData::new(mean_rows(&brow), [1, BROW_EMBEDDING]),
-                        &self.device,
-                    );
-                    self.brow_present = Tensor::ones([1, 1], &self.device);
+                    state.brow_neutral = mean_rows(&brow);
+                    state.brow_present = 1.0;
                 }
             }
             if let Some((name, _)) = TONGUE_HOLDS.iter().find(|(name, _)| name == slot) {
                 holds.insert(name, mouth);
             }
         }
-        self.anchors = Tensor::from_data(
-            TensorData::new(anchors, [1, ANCHOR_SLOTS.len(), MOUTH_EMBEDDING]),
-            &self.device,
-        );
-        self.present = Tensor::from_data(
-            TensorData::new(present, [1, ANCHOR_SLOTS.len()]),
-            &self.device,
-        );
-        self.tongue_map = TongueMap::fit(&holds);
-        Ok((enrolled, self.tongue_map.is_some()))
+        state.tongue_map = TongueMap::fit(&holds);
+        let fitted = state.tongue_map.is_some();
+        self.state = state;
+        Ok((enrolled, fitted))
     }
 
-    fn predict(&self, strip: &[u8]) -> Result<[f32; OUTPUTS]> {
-        let embeddings = self.net.embed(self.views(&[strip]));
-        let q = to_rows(embeddings.mouth.clone(), MOUTH_EMBEDDING)?.remove(0);
-        let raw = self.net.raw(
-            &embeddings,
-            self.anchors.clone(),
-            self.present.clone(),
-            self.brow_neutral.clone(),
-            self.brow_present.clone(),
-        );
-        let mut values: [f32; OUTPUTS] = activate(raw)
-            .into_data()
-            .to_vec::<f32>()
-            .map_err(|error| anyhow!("{error:?}"))?
-            .try_into()
-            .map_err(|_| anyhow!("face model returned the wrong number of values"))?;
-        if let Some(map) = &self.tongue_map {
+    fn predict(&mut self, strip: &[u8]) -> Result<[f32; OUTPUTS]> {
+        let (mut values, q) = self.runner.predict(strip, &self.state)?;
+        if let Some(map) = &self.state.tongue_map {
             let [horizontal, vertical] = map.direction(&q);
             values[2] = horizontal;
             values[3] = vertical;
@@ -388,51 +499,82 @@ fn mean_rows(rows: &[Vec<f32>]) -> Vec<f32> {
     mean
 }
 
-enum Engines {
-    Gpu(Box<Engine<Gpu>>),
-    Cpu(Box<Engine<Cpu>>),
-}
-
 pub struct FaceModel {
-    engine: Engines,
+    engine: Engine,
     info: FaceInfo,
     enabled: [bool; OUTPUTS],
 }
 
 impl FaceModel {
-    /// Loads a checkpoint and proves it runs on the chosen device. `Auto`
-    /// uses the GPU when one works and falls back to the CPU.
+    /// Loads a checkpoint and proves it runs on the chosen device.
+    ///
+    /// ONNX Runtime runs it when its library is there (see
+    /// [`onnx::runtime`]), unless `VRFT_INFERENCE=burn`: on the CPU for
+    /// `Auto` and `Cpu`, through DirectML for `Gpu`. Otherwise Burn runs it,
+    /// where `Auto` uses the GPU when one works and falls back to the CPU.
     pub fn load(path: &Path, accelerator: Accelerator) -> Result<Self> {
         let checkpoint = FaceCheckpoint::load(path)?;
         let blank = vec![0u8; STRIP_BYTES];
-        let engine = match accelerator {
-            Accelerator::Cpu => None,
-            Accelerator::Auto | Accelerator::Gpu => {
-                let started = guarded(|| {
-                    let engine = Engine::<Gpu>::new(&checkpoint, Default::default())?;
-                    engine.predict(&blank)?;
-                    Ok(engine)
-                });
-                match started {
-                    Ok(engine) => Some(Engines::Gpu(Box::new(engine))),
-                    Err(error) if accelerator == Accelerator::Auto => {
-                        warn!("Face model: GPU unavailable ({error:#}); using the CPU");
-                        None
-                    }
-                    Err(error) => return Err(error.context("the GPU could not run the face model")),
+        let prove = |mut engine: Engine| -> Result<Engine> {
+            engine.predict(&blank)?;
+            Ok(engine)
+        };
+        let mut device = String::new();
+        let mut engine = None;
+        if onnx::runtime::wanted() {
+            let started = guarded(|| {
+                let graph = onnx::face_graph(&checkpoint.weights, checkpoint.metadata.image_size)?;
+                let placement = onnx::runtime::placement(accelerator);
+                let plan = Plan::Int8(&[onnx::TONGUE_SCOPE]);
+                let session = LiveSession::new(graph, path, &checkpoint.weights, placement, plan)?;
+                let runner = OnnxRunner {
+                    session,
+                    resize: AreaResize::new(checkpoint.metadata.image_size),
+                };
+                prove(Engine {
+                    runner: Box::new(runner),
+                    state: State::empty(),
+                })
+            });
+            match started {
+                Ok(started) => {
+                    device = started.runner.device().unwrap_or_default();
+                    engine = Some(started);
+                }
+                Err(error) => warn!("Face model: ONNX Runtime unavailable ({error:#}); using Burn"),
+            }
+        }
+        if engine.is_none() && accelerator != Accelerator::Cpu {
+            let started = guarded(|| {
+                prove(Engine {
+                    runner: Box::new(BurnRunner::<Gpu>::new(&checkpoint, Default::default())?),
+                    state: State::empty(),
+                })
+            });
+            match started {
+                Ok(started) => {
+                    device = GPU_NAME.into();
+                    engine = Some(started);
+                }
+                Err(error) if accelerator == Accelerator::Auto => {
+                    warn!("Face model: GPU unavailable ({error:#}); using the CPU");
+                }
+                Err(error) => return Err(error.context("the GPU could not run the face model")),
+            }
+        }
+        let engine = match engine {
+            Some(engine) => engine,
+            None => {
+                device = "CPU".into();
+                Engine {
+                    runner: Box::new(BurnRunner::<Cpu>::new(&checkpoint, Default::default())?),
+                    state: State::empty(),
                 }
             }
         };
-        let engine = match engine {
-            Some(engine) => engine,
-            None => Engines::Cpu(Box::new(Engine::new(&checkpoint, Default::default())?)),
-        };
         let metadata = &checkpoint.metadata;
         let info = FaceInfo {
-            device: match engine {
-                Engines::Gpu(_) => GPU_NAME.into(),
-                Engines::Cpu(_) => "CPU".into(),
-            },
+            device,
             image_size: metadata.image_size,
             camera_weight: metadata.visibility_gate.camera_weight as f32,
             threshold: metadata.visibility_gate.threshold as f32,
@@ -451,6 +593,12 @@ impl FaceModel {
         &self.info
     }
 
+    /// Whether the model has stopped changing how it runs (ONNX Runtime's
+    /// calibration and switch to int8 are done).
+    pub fn settled(&self) -> bool {
+        self.engine.runner.settled()
+    }
+
     /// Whether output `index` of [`FACE_TARGETS`] was trained.
     pub fn enabled(&self, index: usize) -> bool {
         self.enabled[index]
@@ -459,10 +607,7 @@ impl FaceModel {
     /// Encodes the wearer's face setup; until then, or without one, the
     /// model reads every anchor as missing.
     pub fn enroll(&mut self, enrollment: &Enrollment) -> Result<()> {
-        let (enrolled, tongue_map) = guarded(|| match &mut self.engine {
-            Engines::Gpu(engine) => engine.enroll(enrollment),
-            Engines::Cpu(engine) => engine.enroll(enrollment),
-        })?;
+        let (enrolled, tongue_map) = guarded(|| self.engine.enroll(enrollment))?;
         self.info.enrolled = enrolled;
         self.info.tongue_map = tongue_map;
         Ok(())
@@ -474,10 +619,10 @@ impl FaceModel {
         if strip.len() != STRIP_BYTES {
             bail!("face frames must be 2000x400 gray8");
         }
-        let mut values = guarded(|| match &self.engine {
-            Engines::Gpu(engine) => engine.predict(strip),
-            Engines::Cpu(engine) => engine.predict(strip),
-        })?;
+        let mut values = guarded(|| self.engine.predict(strip))?;
+        if let Some(device) = self.engine.runner.device() {
+            self.info.device = device;
+        }
         for (value, enabled) in values.iter_mut().zip(self.enabled) {
             if !enabled {
                 *value = 0.0;
