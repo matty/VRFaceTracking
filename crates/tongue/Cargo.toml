@@ -23,3 +23,7 @@ burn-store = { version = "=0.21.0", default-features = false, features = ["std",
 [features]
 # Train and run on NVIDIA's CUDA rather than wgpu, for Linux GPU servers.
 cuda = ["burn/cuda"]
+
+# examples/benchmark.rs reads the process's working set.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
