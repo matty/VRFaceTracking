@@ -1,8 +1,6 @@
 //! Live Quest Pro state: this extension's part of the daemon's polled status,
 //! and the camera images while a page shows them.
-use crate::daemon::{
-    Camera, Frame, PupilMark, QuestProClient, Settings, Status, FRAME_HEIGHT, FRAME_WIDTH,
-};
+use crate::daemon::{Camera, Frame, PupilMark, QuestProClient, Settings, Status};
 use crate::summary::{Connection, Rates};
 use gpui_kit::{Context, Entity, RenderImage, Subscription, Task};
 use std::sync::Arc;
@@ -108,7 +106,7 @@ impl CameraFeed {
         // default, so check a little faster than that. Eye snapshots arrive a
         // few times a second at most.
         let interval = match camera {
-            Camera::Mouth => Duration::from_millis(30),
+            Camera::Mouth | Camera::Brow => Duration::from_millis(30),
             Camera::Eyes => Duration::from_millis(200),
         };
         let poll = cx.spawn(async move |this, cx| loop {
@@ -200,7 +198,7 @@ impl CameraFeed {
 }
 
 pub fn decode(frame: Frame) -> (u64, Arc<RenderImage>) {
-    let buffer = image::RgbaImage::from_raw(FRAME_WIDTH, FRAME_HEIGHT, frame.to_bgra())
+    let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.to_bgra())
         .expect("a checked frame fills the image");
     let image = RenderImage::new(vec![image::Frame::new(buffer)]);
     (frame.sequence, Arc::new(image))

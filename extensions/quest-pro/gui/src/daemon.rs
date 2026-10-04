@@ -31,6 +31,7 @@ impl QuestProClient {
         let route = match camera {
             Camera::Mouth => routes::FRAME,
             Camera::Eyes => routes::EYE_FRAME,
+            Camera::Brow => routes::BROW_FRAME,
         };
         let mut response = self
             .core
@@ -60,7 +61,7 @@ impl QuestProClient {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| serde_json::from_str(value).ok());
         let pixels = response.body_mut().read_to_vec()?;
-        let mut frame = Frame::new(sequence, pixels)?;
+        let mut frame = Frame::of(camera, sequence, pixels)?;
         frame.pupils = pupils;
         Ok(Some(frame))
     }
@@ -233,26 +234,51 @@ pub enum Camera {
     Mouth,
     /// The eye pair, sent as occasional snapshots.
     Eyes,
+    /// The brow camera (camera 4) on its own, while the headset sends all
+    /// five cameras.
+    Brow,
 }
 
-/// One 8-bit grayscale stereo frame.
+impl Camera {
+    /// The width and height of its image.
+    pub fn size(self) -> (u32, u32) {
+        match self {
+            Camera::Mouth | Camera::Eyes => (FRAME_WIDTH, FRAME_HEIGHT),
+            Camera::Brow => (VIEW, VIEW),
+        }
+    }
+}
+
+/// One 8-bit grayscale frame: a stereo pair, or the brow camera.
 pub struct Frame {
     pub sequence: u64,
+    pub width: u32,
+    pub height: u32,
     pub pixels: Vec<u8>,
     /// For an eye snapshot, the pupils found in it, left view then right.
     pub pupils: Option<[Option<PupilMark>; 2]>,
 }
 
 impl Frame {
+    /// A stereo pair's frame.
     pub fn new(sequence: u64, pixels: Vec<u8>) -> Result<Self> {
-        if pixels.len() != FRAME_BYTES {
+        Self::of(Camera::Mouth, sequence, pixels)
+    }
+
+    /// A frame from `camera`, which sets its size.
+    pub fn of(camera: Camera, sequence: u64, pixels: Vec<u8>) -> Result<Self> {
+        let (width, height) = camera.size();
+        let expected = (width * height) as usize;
+        if pixels.len() != expected {
             bail!(
-                "Camera frame has {} bytes; expected {FRAME_BYTES}",
+                "Camera frame has {} bytes; expected {expected}",
                 pixels.len()
             );
         }
         Ok(Self {
             sequence,
+            width,
+            height,
             pixels,
             pupils: None,
         })
@@ -291,5 +317,8 @@ mod tests {
         let bgra = frame.to_bgra();
         assert_eq!(bgra.len(), frame.pixels.len() * 4);
         assert_eq!(&bgra[..4], &[200, 200, 200, 255]);
+        let brow = Frame::of(Camera::Brow, 8, vec![0; VIEW_BYTES]).unwrap();
+        assert_eq!((brow.width, brow.height), (400, 400));
+        assert!(Frame::of(Camera::Brow, 8, vec![0; FRAME_BYTES]).is_err());
     }
 }

@@ -36,6 +36,8 @@ The headset app and `vrft_d` talk over one TCP stream of messages, each starting
 
 `vrft_d` builds from before the skip rule drop the connection on an unknown message.
 
+The PC sends one message of its own, `QPHELO1`, as it connects, laid out the same way: it lists the camera frames that `vrft_d` reads (`{"camera_masks":[12,3,31]}`). Headset apps from before it never read from the PC. The headset app sends five-camera frames (`QPLIVE3` mask `0x1f`, 2000 × 400) only to a `vrft_d` whose hello lists them, and the mouth stream to every other, so neither needed a protocol bump. A frame layout an older `vrft_d` can't read must be gated the same way, never sent unasked.
+
 ## Installer and updates
 
 The desktop app is installed and updated with [Velopack](https://velopack.io). `release.yml` packs the std package plus the .NET host (`runtime/`) with `vpk pack` under the id `VRFaceTracking`, and uploads the setup, a portable zip, the full `.nupkg` and the channel's `releases.<channel>.json` with the release. `vpk` in the workflow and the `velopack` crate in `crates/gui/Cargo.toml` are pinned to the same version; change them together.

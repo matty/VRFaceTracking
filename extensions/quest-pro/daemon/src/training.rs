@@ -20,12 +20,13 @@ use std::{
 
 use crate::builtin::{self, BuiltinModel};
 use crate::transfer::Transfers;
+use vrft_quest_pro_protocol::CameraLayout;
 use vrft_quest_pro_protocol::{
     routes, BuiltinStatus, CaptureMode, Coverage, ExportModel, FrameQuery, ImportModel,
     ModelActivated, Models, RecordedPose, Recording, RecordingDeleted, RecordingId, RenameModel,
     ReviewRequest, ReviewSaved, SavedModel, TrainRequest, TrainerRequest, TrainingCancelled,
     TrainingProgress, TrainingReport, TrainingStage, TrainingStarted, TrainingStatus,
-    TransferStatus, FRAME_BYTES,
+    TransferStatus, MOUTH_CAMERAS,
 };
 use vrft_tongue::Role;
 
@@ -235,11 +236,12 @@ async fn sessions(
             let id = entry.file_name().to_string_lossy().into_owned();
             let details = (|| -> Result<Recording, String> {
                 let metadata = read_json(&path.join("metadata.json"))?;
+                let layout = CameraLayout::from_metadata(&metadata)?;
                 let samples = labels(&path)?;
                 if fs::metadata(path.join("frames.gray8"))
                     .map_err(|e| e.to_string())?
                     .len()
-                    != samples.len() as u64 * FRAME_BYTES as u64
+                    != samples.len() as u64 * layout.frame_bytes() as u64
                 {
                     return Err("Frame/label count mismatch".into());
                 }
@@ -391,14 +393,22 @@ async fn frame(
 ) -> Result<impl IntoResponse, ApiError> {
     let path =
         safe_child(&manager.root.join(".local/tongue-captures"), &request.id).map_err(bad)?;
+    let layout = CameraLayout::from_metadata(&read_json(&path.join("metadata.json")).map_err(bad)?)
+        .map_err(bad)?;
+    let frame_bytes = layout.frame_bytes() as u64;
     let mut file = File::open(path.join("frames.gray8")).map_err(bad)?;
-    if request.index >= file.metadata().map_err(bad)?.len() / FRAME_BYTES as u64 {
+    if request.index >= file.metadata().map_err(bad)?.len() / frame_bytes {
         return Err(bad("Frame is outside recording"));
     }
-    file.seek(SeekFrom::Start(request.index * FRAME_BYTES as u64))
+    file.seek(SeekFrom::Start(request.index * frame_bytes))
         .map_err(bad)?;
-    let mut pixels = vec![0; FRAME_BYTES];
-    file.read_exact(&mut pixels).map_err(bad)?;
+    let mut frame = vec![0; frame_bytes as usize];
+    file.read_exact(&mut frame).map_err(bad)?;
+    // Review shows the mouth pair, which every recording holds.
+    let pixels = layout
+        .select(&frame, &MOUTH_CAMERAS)
+        .filter(|_| layout.view == vrft_quest_pro_protocol::VIEW as usize)
+        .ok_or_else(|| bad("This recording has no headset-sized mouth cameras"))?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream"),

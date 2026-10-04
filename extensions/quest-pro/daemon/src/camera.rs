@@ -9,7 +9,7 @@ use axum::{extract::State, Json, Router};
 use log::{debug, info, warn};
 use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -20,9 +20,10 @@ use std::time::{Duration, Instant};
 use vrft_api::{UnifiedExpressions, UnifiedTrackingData};
 use vrft_extension::FrameHook;
 use vrft_quest_pro_protocol::{
-    routes, CaptureCommand, CaptureRequest, Headset, Mismatch, ModelStatus, OutputStatus,
-    PupilMark, Status, TongueSource, Update, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH,
-    PUPILS_HEADER,
+    routes, CameraLayout, CaptureCommand, CaptureRequest, Headset, Mismatch, ModelStatus,
+    OutputStatus, PupilMark, Status, TongueSource, Update, BROW_CAMERA, EYE_CAMERAS, FRAME_HEIGHT,
+    FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS, PUPILS_HEADER, STRIP_BYTES, STRIP_WIDTH,
+    VIEW_BYTES,
 };
 use vrft_tongue::{Accelerator, Role, TongueModel, CHEEK_COLUMNS};
 
@@ -44,6 +45,12 @@ const FRAME_BYTES: usize = vrft_quest_pro_protocol::FRAME_BYTES;
 const MOUTH_MASK: u32 = 0x0c;
 /// Camera mask of the eye pair (cameras 0 and 1), sent as low-rate snapshots.
 const EYES_MASK: u32 = 0x03;
+/// Camera mask of the whole five-camera strip, which the headset app sends
+/// only to a daemon whose [`hello`] asks for it.
+const ALL_MASK: u32 = 0x1f;
+/// Eye snapshots a second cut from five-camera frames for the pupils, until
+/// the headset app says its own snapshot rate.
+const DEFAULT_EYE_FPS: u32 = 5;
 const STATUS_MAX_BYTES: usize = 16 * 1024;
 /// Headset stream protocols this daemon reads. The headset app advertises its
 /// protocol over mDNS and in the `QPSTAT1` it sends first on every connection.
@@ -93,6 +100,8 @@ struct Frame {
 enum Message {
     Mouth(Frame),
     Eyes(Frame),
+    /// All five cameras, 2000 x 400.
+    Strip(Frame),
     Gaze(GazePacket),
     Status(serde_json::Value),
 }
@@ -501,6 +510,9 @@ struct FeedState {
     status: String,
     latest: Option<Frame>,
     eyes: Option<Frame>,
+    /// The latest five-camera frame, while the headset sends them. `latest`
+    /// holds its mouth pair and `eyes` its eye pair at the snapshot rate.
+    strip: Option<Frame>,
     /// The pupils found in `eyes`, for drawing over it.
     eye_pupils: [Option<PupilMark>; 2],
     /// Latest `QPSTAT1` status from the headset APK.
@@ -520,6 +532,7 @@ impl FeedState {
         self.source = None;
         self.latest = None;
         self.eyes = None;
+        self.strip = None;
         self.eye_pupils = [None; 2];
         self.headset = None;
     }
@@ -598,6 +611,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let routes = routes
         .route(routes::FRAME, get(latest_frame))
         .route(routes::EYE_FRAME, get(latest_eye_frame))
+        .route(routes::BROW_FRAME, get(latest_brow_frame))
         .route(routes::STATUS, get(feed_status))
         .route(routes::SETTINGS, get(get_settings).post(update_settings))
         .route(routes::EYE_RECENTER, post(eye_recenter))
@@ -727,6 +741,14 @@ fn status(preview: &PreviewState) -> Status {
             .eyes
             .as_ref()
             .map(|frame| frame.received_at.elapsed().as_millis() as u64),
+        brow_frame_sequence: state.strip.as_ref().map(|frame| frame.sequence),
+        brow_frame_age_ms: state
+            .strip
+            .as_ref()
+            .map(|frame| frame.received_at.elapsed().as_millis() as u64),
+        // A mouth frame clears it, so it's set only while five-camera
+        // frames are what arrives.
+        five_cameras: state.strip.is_some(),
         headset: state.headset.clone(),
         headset_mismatch: state.mismatch.clone(),
         model_error: state.model_error.clone(),
@@ -756,6 +778,19 @@ async fn latest_eye_frame(State(preview): State<PreviewState>) -> impl IntoRespo
         }
     }
     response
+}
+
+/// The brow camera's view of the latest five-camera frame.
+async fn latest_brow_frame(State(preview): State<PreviewState>) -> impl IntoResponse {
+    let strip = preview.feed.read().unwrap().strip.clone();
+    frame_response(strip.map(|strip| {
+        let mut pixels = vec![0u8; VIEW_BYTES];
+        CameraLayout::all().cut(&strip.pixels, BROW_CAMERA, &mut pixels);
+        Frame {
+            pixels: pixels.into(),
+            ..strip
+        }
+    }))
 }
 
 async fn get_settings(State(preview): State<PreviewState>) -> Json<QuestProSettings> {
@@ -836,13 +871,21 @@ async fn capture_start(
             "Wait for training to finish, or cancel it, before recording".into(),
         ));
     }
-    let camera_live = preview
-        .feed
-        .read()
-        .unwrap()
-        .latest
-        .as_ref()
-        .is_some_and(|frame| frame.received_at.elapsed() <= TONGUE_FRESH_FOR);
+    let (camera_live, layout) = {
+        let feed = preview.feed.read().unwrap();
+        let fresh = |frame: &Option<Frame>| {
+            frame
+                .as_ref()
+                .is_some_and(|frame| frame.received_at.elapsed() <= TONGUE_FRESH_FOR)
+        };
+        // While the headset sends all five cameras, recordings keep them all.
+        let layout = if fresh(&feed.strip) {
+            CameraLayout::all()
+        } else {
+            CameraLayout::mouth()
+        };
+        (fresh(&feed.latest), layout)
+    };
     if !camera_live {
         return Err((
             StatusCode::CONFLICT,
@@ -851,7 +894,7 @@ async fn capture_start(
     }
     preview
         .capture
-        .start(request.mode.name(), &request.poses)
+        .start(request.mode.name(), &request.poses, layout)
         .map(Json)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))
 }
@@ -1096,6 +1139,8 @@ fn connect_and_receive(
     info!("Quest Pro camera: connected to the headset at {address}");
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_nodelay(true)?;
+    // Headset apps from before the hello never read it.
+    stream.write_all(&hello())?;
     {
         let mut state = shared.write().unwrap();
         state.disconnect();
@@ -1104,10 +1149,16 @@ fn connect_and_receive(
     }
     let mut last_log = Instant::now();
     let mut last_frame_at = Instant::now();
+    let mut eye_schedule = EyeSchedule::new(DEFAULT_EYE_FPS);
     while running.load(Ordering::SeqCst) {
         match read_message(&mut stream) {
             Ok(Some(Message::Mouth(frame))) => {
-                capture.record(frame.sequence, frame.received_at, &frame.pixels);
+                capture.record(
+                    frame.sequence,
+                    frame.received_at,
+                    &CameraLayout::mouth(),
+                    &frame.pixels,
+                );
                 last_frame_at = Instant::now();
                 if last_log.elapsed() >= Duration::from_secs(5) {
                     info!("Quest Pro camera frame {} from {address}", frame.sequence);
@@ -1116,6 +1167,36 @@ fn connect_and_receive(
                 let mut state = shared.write().unwrap();
                 state.status = format!("Live · frame {}", frame.sequence);
                 state.latest = Some(frame);
+                state.strip = None;
+            }
+            Ok(Some(Message::Strip(strip))) => {
+                capture.record(
+                    strip.sequence,
+                    strip.received_at,
+                    &CameraLayout::all(),
+                    &strip.pixels,
+                );
+                last_frame_at = Instant::now();
+                if last_log.elapsed() >= Duration::from_secs(5) {
+                    info!(
+                        "Quest Pro camera five-camera frame {} from {address}",
+                        strip.sequence
+                    );
+                    last_log = Instant::now();
+                }
+                let (mouth, eyes) = split_strip(&strip, &mut eye_schedule);
+                // Measured before taking the lock, as for a snapshot.
+                let pupils = eyes
+                    .as_ref()
+                    .map(|eyes| processors.pupils.process(&eyes.pixels, eyes.received_at));
+                let mut state = shared.write().unwrap();
+                state.status = format!("Live · frame {} · five cameras", strip.sequence);
+                state.latest = Some(mouth);
+                if let (Some(eyes), Some(pupils)) = (eyes, pupils) {
+                    state.eyes = Some(eyes);
+                    state.eye_pupils = pupils;
+                }
+                state.strip = Some(strip);
             }
             Ok(Some(Message::Eyes(frame))) => {
                 let pupils = processors.pupils.process(&frame.pixels, frame.received_at);
@@ -1133,6 +1214,12 @@ fn connect_and_receive(
                     .map_err(Disconnect::Mismatch)?;
                 if let Some(eye) = status.get("eye") {
                     info!("Quest Pro headset eye pipeline: {eye}");
+                }
+                if let Some(fps) = status.get("eye_preview_fps").and_then(|v| v.as_u64()) {
+                    eye_schedule = EyeSchedule::new(fps.min(30) as u32);
+                }
+                if status.get("camera_mask").and_then(|v| v.as_u64()) == Some(ALL_MASK.into()) {
+                    info!("Quest Pro camera: the headset sends all five cameras");
                 }
                 let headset = serde_json::from_value(status).unwrap_or_else(|error| {
                     warn!(
@@ -1155,10 +1242,74 @@ fn connect_and_receive(
             if state.latest.is_some() || state.status.starts_with("Live") {
                 state.status = "Connected. Waiting for camera frames from the headset".into();
                 state.latest = None;
+                state.strip = None;
             }
         }
     }
     Ok(())
+}
+
+/// The `QPHELO1` sent to the headset app on connecting, saying which camera
+/// frames this daemon reads, so the app sends five-camera frames only to a
+/// daemon that reads them. The layout is that of every headset message: an
+/// 8-byte magic, a version at byte 8 and the payload's length at byte 12.
+fn hello() -> Vec<u8> {
+    let payload = serde_json::json!({ "camera_masks": [MOUTH_MASK, EYES_MASK, ALL_MASK] });
+    let payload = serde_json::to_vec(&payload).expect("the hello serializes");
+    let mut message = b"QPHELO1\0".to_vec();
+    message.extend(1u32.to_le_bytes());
+    message.extend((payload.len() as u32).to_le_bytes());
+    message.extend(payload);
+    message
+}
+
+/// When to cut an eye pair out of the five-camera frames for the pupils: at
+/// the headset app's eye snapshot rate, as it would send them without the
+/// five-camera stream.
+struct EyeSchedule {
+    interval: Option<Duration>,
+    next: Option<Instant>,
+}
+
+impl EyeSchedule {
+    fn new(fps: u32) -> Self {
+        Self {
+            interval: (fps > 0).then(|| Duration::from_secs(1) / fps),
+            next: None,
+        }
+    }
+
+    fn due(&mut self, at: Instant) -> bool {
+        let Some(interval) = self.interval else {
+            return false;
+        };
+        if self.next.is_some_and(|next| at < next) {
+            return false;
+        }
+        let mut next = self.next.unwrap_or(at);
+        while next <= at {
+            next += interval;
+        }
+        self.next = Some(next);
+        true
+    }
+}
+
+/// A five-camera frame's mouth pair, which the tongue model and the preview
+/// read as they do the mouth stream, and its eye pair when one is due.
+fn split_strip(strip: &Frame, eye_schedule: &mut EyeSchedule) -> (Frame, Option<Frame>) {
+    let layout = CameraLayout::all();
+    let pair = |cameras: &[u8]| Frame {
+        pixels: layout
+            .select(&strip.pixels, cameras)
+            .expect("a strip has every camera")
+            .into(),
+        ..strip.clone()
+    };
+    let eyes = eye_schedule
+        .due(strip.received_at)
+        .then(|| pair(&EYE_CAMERAS));
+    (pair(&MOUTH_CAMERAS), eyes)
 }
 
 pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
@@ -1384,18 +1535,23 @@ fn read_message(stream: &mut impl Read) -> std::io::Result<Option<Message>> {
             header[..16].copy_from_slice(&prefix);
             stream.read_exact(&mut header[16..])?;
             let mask = u32_at(&header, 52);
+            // The width says how many cameras the frame carries.
+            let (width, bytes) = match mask {
+                MOUTH_MASK | EYES_MASK => (WIDTH, FRAME_BYTES),
+                ALL_MASK => (STRIP_WIDTH as usize, STRIP_BYTES),
+                _ => return Err(invalid("Invalid QPLIVE3 frame header")),
+            };
             if u32_at(&header, 8) != 3
                 || u32_at(&header, 12) != 64
-                || u32_at(&header, 32) != WIDTH as u32
+                || u32_at(&header, 32) != width as u32
                 || u32_at(&header, 36) != HEIGHT as u32
-                || u32_at(&header, 40) != WIDTH as u32
+                || u32_at(&header, 40) != width as u32
                 || u32_at(&header, 44) != 1
-                || u32_at(&header, 48) != FRAME_BYTES as u32
-                || (mask != MOUTH_MASK && mask != EYES_MASK)
+                || u32_at(&header, 48) != bytes as u32
             {
                 return Err(invalid("Invalid QPLIVE3 frame header"));
             }
-            let mut pixels = vec![0u8; FRAME_BYTES];
+            let mut pixels = vec![0u8; bytes];
             stream.read_exact(&mut pixels)?;
             let frame = Frame {
                 sequence: u64::from_le_bytes(header[16..24].try_into().unwrap()),
@@ -1403,10 +1559,10 @@ fn read_message(stream: &mut impl Read) -> std::io::Result<Option<Message>> {
                 pixels: pixels.into(),
                 received_at: Instant::now(),
             };
-            Ok(Some(if mask == MOUTH_MASK {
-                Message::Mouth(frame)
-            } else {
-                Message::Eyes(frame)
+            Ok(Some(match mask {
+                MOUTH_MASK => Message::Mouth(frame),
+                EYES_MASK => Message::Eyes(frame),
+                _ => Message::Strip(frame),
             }))
         }
         b"QPGAZE1\0" => {
@@ -1743,16 +1899,21 @@ mod tests {
     }
 
     fn frame_bytes(mask: u32, sequence: u64) -> Vec<u8> {
-        let mut bytes = vec![0u8; 64 + FRAME_BYTES];
+        let width = if mask == ALL_MASK { 2000 } else { 800 };
+        frame_with_width(mask, sequence, width)
+    }
+
+    fn frame_with_width(mask: u32, sequence: u64, width: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; 64 + width as usize * 400];
         bytes[..7].copy_from_slice(b"QPLIVE3");
         for (at, value) in [
             (8, 3u32),
             (12, 64),
-            (32, 800),
+            (32, width),
             (36, 400),
-            (40, 800),
+            (40, width),
             (44, 1),
-            (48, FRAME_BYTES as u32),
+            (48, width * 400),
             (52, mask),
         ] {
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -1808,8 +1969,47 @@ mod tests {
     }
 
     #[test]
+    fn stream_reader_reads_five_camera_frames() {
+        let mut stream = frame_bytes(ALL_MASK, 8);
+        // Each column holds its camera's number.
+        for (index, pixel) in stream[64..].iter_mut().enumerate() {
+            *pixel = ((index % 2000) / 400) as u8;
+        }
+        let mut reader = std::io::Cursor::new(stream);
+        let Some(Message::Strip(strip)) = read_message(&mut reader).unwrap() else {
+            panic!("expected a five-camera frame");
+        };
+        assert_eq!((strip.sequence, strip.pixels.len()), (8, STRIP_BYTES));
+        let mut schedule = EyeSchedule::new(5);
+        let (mouth, eyes) = split_strip(&strip, &mut schedule);
+        assert_eq!(mouth.sequence, 8);
+        assert_eq!(mouth.pixels.len(), FRAME_BYTES);
+        assert_eq!((mouth.pixels[0], mouth.pixels[400]), (2, 3));
+        let eyes = eyes.expect("the first frame carries an eye pair");
+        assert_eq!((eyes.pixels[0], eyes.pixels[400]), (0, 1));
+        // Not again until the snapshot interval has passed.
+        assert!(split_strip(&strip, &mut schedule).1.is_none());
+    }
+
+    #[test]
+    fn eye_pairs_follow_the_snapshot_rate() {
+        let start = Instant::now();
+        let mut schedule = EyeSchedule::new(5);
+        let sent = (0..24)
+            .filter(|frame| schedule.due(start + Duration::from_secs(1) * *frame / 24))
+            .count();
+        assert_eq!(sent, 5);
+        assert!(!EyeSchedule::new(0).due(start));
+    }
+
+    #[test]
     fn stream_reader_rejects_unknown_masks_and_non_headset_bytes() {
-        let mut reader = std::io::Cursor::new(frame_bytes(0x1f, 1));
+        // Three face cameras, and five cameras claiming the mouth's width.
+        let mut reader = std::io::Cursor::new(frame_with_width(0x1c, 1, 1200));
+        assert!(read_message(&mut reader).is_err());
+        let mut reader = std::io::Cursor::new(frame_with_width(ALL_MASK, 1, 800));
+        assert!(read_message(&mut reader).is_err());
+        let mut reader = std::io::Cursor::new(frame_with_width(MOUTH_MASK, 1, 2000));
         assert!(read_message(&mut reader).is_err());
         let mut reader = std::io::Cursor::new(b"GET / HTTP/1.1\r\n".to_vec());
         assert!(read_message(&mut reader).is_err());
@@ -1903,6 +2103,15 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let headset = thread::spawn(move || {
             let (mut client, _) = listener.accept().unwrap();
+            // The daemon says first which frames it reads.
+            let mut hello = [0u8; 16];
+            client.read_exact(&mut hello).unwrap();
+            assert_eq!(&hello[..8], b"QPHELO1\0");
+            let mut payload =
+                vec![0u8; u32::from_le_bytes(hello[12..16].try_into().unwrap()) as usize];
+            client.read_exact(&mut payload).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(payload["camera_masks"], serde_json::json!([12, 3, 31]));
             let status = br#"{"apk_version":"2027.1.0","protocol":99}"#;
             let mut message = b"QPSTAT1\0".to_vec();
             message.extend(1u32.to_le_bytes());

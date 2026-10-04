@@ -19,6 +19,146 @@ pub const NAME: &str = "Quest Pro";
 pub const FRAME_WIDTH: u32 = 800;
 pub const FRAME_HEIGHT: u32 = 400;
 pub const FRAME_BYTES: usize = (FRAME_WIDTH * FRAME_HEIGHT) as usize;
+/// One camera view's width and height.
+pub const VIEW: u32 = 400;
+/// The headset's whole sensor strip: five views side by side, the eyes
+/// (cameras 0 and 1), the mouth (2 and 3) and the brow (4). The headset app
+/// sends it only to a daemon that asks for it, with its five-camera stream on.
+pub const STRIP_WIDTH: u32 = VIEW * CAMERAS as u32;
+pub const STRIP_BYTES: usize = (STRIP_WIDTH * VIEW) as usize;
+/// One view's pixels, such as the brow camera's.
+pub const VIEW_BYTES: usize = (VIEW * VIEW) as usize;
+pub const CAMERAS: usize = 5;
+pub const EYE_CAMERAS: [u8; 2] = [0, 1];
+/// The left then the right mouth camera, as in the factory calibration's
+/// `cam07_left_mouth` and `cam08_right_mouth`.
+pub const MOUTH_CAMERAS: [u8; 2] = [2, 3];
+pub const BROW_CAMERA: u8 = 4;
+pub const ALL_CAMERAS: [u8; CAMERAS] = [0, 1, 2, 3, 4];
+
+/// Which cameras a frame, or every frame of a recording, holds: their views
+/// side by side, `view` pixels square, in camera order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraLayout {
+    pub cameras: Vec<u8>,
+    pub view: usize,
+}
+
+impl CameraLayout {
+    /// The mouth pair at the headset's size: frames and recordings from
+    /// before the five-camera stream.
+    pub fn mouth() -> Self {
+        Self {
+            cameras: MOUTH_CAMERAS.to_vec(),
+            view: VIEW as usize,
+        }
+    }
+
+    /// Every camera at the headset's size.
+    pub fn all() -> Self {
+        Self {
+            cameras: ALL_CAMERAS.to_vec(),
+            view: VIEW as usize,
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        self.cameras.len() * self.view
+    }
+
+    pub fn frame_bytes(&self) -> usize {
+        self.width() * self.view
+    }
+
+    pub fn has(&self, camera: u8) -> bool {
+        self.cameras.contains(&camera)
+    }
+
+    /// Whether every camera is there.
+    pub fn is_all(&self) -> bool {
+        self.cameras == ALL_CAMERAS
+    }
+
+    /// A recording's layout from its `metadata.json`: `cameras` (the mouth
+    /// pair when missing, as in every recording from before it), and the
+    /// view's size from `height` (400 when missing). `width` and
+    /// `bytesPerFrame` must agree when present.
+    pub fn from_metadata(metadata: &Value) -> Result<Self, String> {
+        let cameras = match metadata.get("cameras") {
+            None | Some(Value::Null) => MOUTH_CAMERAS.to_vec(),
+            Some(value) => serde_json::from_value::<Vec<u8>>(value.clone())
+                .map_err(|_| "metadata.json has invalid cameras".to_string())?,
+        };
+        let sorted = cameras.windows(2).all(|pair| pair[0] < pair[1]);
+        if cameras.is_empty() || !sorted || cameras.iter().any(|&c| c as usize >= CAMERAS) {
+            return Err(format!("metadata.json lists unknown cameras {cameras:?}"));
+        }
+        let view = match metadata.get("height") {
+            None | Some(Value::Null) => VIEW as usize,
+            Some(value) => value
+                .as_u64()
+                .ok_or("metadata.json has an invalid height")? as usize,
+        };
+        if !(1..=VIEW as usize).contains(&view) {
+            return Err(format!("metadata.json has an unsupported height {view}"));
+        }
+        let layout = Self { cameras, view };
+        let agrees = |key: &str, expected: usize| match metadata.get(key) {
+            None | Some(Value::Null) => true,
+            Some(value) => value.as_u64() == Some(expected as u64),
+        };
+        if !agrees("width", layout.width()) || !agrees("bytesPerFrame", layout.frame_bytes()) {
+            return Err("metadata.json's frame size doesn't match its cameras".into());
+        }
+        Ok(layout)
+    }
+
+    /// The `metadata.json` fields that describe this layout.
+    pub fn metadata(&self) -> Value {
+        serde_json::json!({
+            "width": self.width(),
+            "height": self.view,
+            "bytesPerFrame": self.frame_bytes(),
+            "cameras": self.cameras,
+        })
+    }
+
+    /// Copies `camera`'s view out of `frame` into `out` (`view * view`
+    /// bytes). False when the layout doesn't have it.
+    pub fn cut(&self, frame: &[u8], camera: u8, out: &mut [u8]) -> bool {
+        let Some(position) = self.cameras.iter().position(|&c| c == camera) else {
+            return false;
+        };
+        assert_eq!(frame.len(), self.frame_bytes());
+        assert_eq!(out.len(), self.view * self.view);
+        let width = self.width();
+        for (row, line) in out.chunks_mut(self.view).enumerate() {
+            line.copy_from_slice(&frame[row * width + position * self.view..][..self.view]);
+        }
+        true
+    }
+
+    /// `cameras`' views of `frame` side by side, or `None` when one is
+    /// missing: such as the mouth pair, as an 800 x 400 frame, from a
+    /// five-camera one.
+    pub fn select(&self, frame: &[u8], cameras: &[u8]) -> Option<Vec<u8>> {
+        if !cameras.iter().all(|&camera| self.has(camera)) {
+            return None;
+        }
+        let view = self.view;
+        let width = cameras.len() * view;
+        let mut out = vec![0u8; width * view];
+        let mut single = vec![0u8; view * view];
+        for (slot, &camera) in cameras.iter().enumerate() {
+            self.cut(frame, camera, &mut single);
+            for (row, line) in single.chunks(view).enumerate() {
+                out[row * width + slot * view..][..view].copy_from_slice(line);
+            }
+        }
+        Some(out)
+    }
+}
+
 /// Response header carrying a camera frame's sequence number.
 pub const FRAME_SEQUENCE_HEADER: &str = "x-frame-sequence";
 /// Response header on an eye snapshot carrying the pupils found in it, as
@@ -45,6 +185,9 @@ pub mod routes {
     /// GET: the latest eye camera snapshot, as [`FRAME`] is sent, with the
     /// pupils found in it in [`PUPILS_HEADER`](super::PUPILS_HEADER).
     pub const EYE_FRAME: &str = "/eye-frame";
+    /// GET: the latest brow camera (camera 4) view, 400 x 400, as [`FRAME`]
+    /// is sent; 204 unless the headset sends all five cameras.
+    pub const BROW_FRAME: &str = "/brow-frame";
     /// GET [`Settings`](super::Settings); POST a
     /// [`SettingsPatch`](super::SettingsPatch), answered with them all.
     pub const SETTINGS: &str = "/settings";
@@ -129,6 +272,12 @@ pub struct Status {
     pub frame_age_ms: Option<u64>,
     pub eye_frame_sequence: Option<u64>,
     pub eye_frame_age_ms: Option<u64>,
+    /// The latest brow camera view's, while the headset sends all five
+    /// cameras.
+    pub brow_frame_sequence: Option<u64>,
+    pub brow_frame_age_ms: Option<u64>,
+    /// Whether the latest frame carried all five cameras.
+    pub five_cameras: bool,
     /// What the headset app last reported about itself.
     pub headset: Option<Headset>,
     /// Set while the headset app speaks a stream protocol the daemon can't read.
@@ -153,6 +302,12 @@ pub struct Headset {
     /// The stream protocol the app speaks.
     pub protocol: Option<u64>,
     pub camera_fps: Option<u32>,
+    /// Whether the app's five-camera stream is on. Absent from apps from
+    /// before it.
+    pub five_cameras: Option<bool>,
+    /// The camera mask this connection is sent: `0x1f` for all five, else
+    /// `0x0c` for the mouth pair.
+    pub camera_mask: Option<u32>,
     pub eye: Option<HeadsetEye>,
     #[serde(flatten)]
     pub other: Map<String, Value>,
@@ -931,6 +1086,53 @@ mod tests {
         assert_eq!(again, status);
         let written = serde_json::to_value(&status).unwrap();
         assert_eq!(written["headset"]["eye_preview_fps"], 2);
+    }
+
+    #[test]
+    fn recordings_without_cameras_hold_the_mouth_pair() {
+        let old = serde_json::json!({"format": "vrft-tongue-capture-v1", "width": 800,
+                                     "height": 400, "bytesPerFrame": 320000});
+        assert_eq!(
+            CameraLayout::from_metadata(&old).unwrap(),
+            CameraLayout::mouth()
+        );
+        let five = CameraLayout::all().metadata();
+        assert_eq!(five["width"], 2000);
+        assert_eq!(five["bytesPerFrame"], STRIP_BYTES);
+        assert_eq!(
+            CameraLayout::from_metadata(&five).unwrap(),
+            CameraLayout::all()
+        );
+        let packed = serde_json::json!({"width": 640, "height": 128, "cameras": [0, 1, 2, 3, 4]});
+        assert_eq!(CameraLayout::from_metadata(&packed).unwrap().view, 128);
+        let wrong = serde_json::json!({"width": 800, "cameras": [0, 1, 2, 3, 4]});
+        assert!(CameraLayout::from_metadata(&wrong).is_err());
+        let unknown = serde_json::json!({"cameras": [2, 7]});
+        assert!(CameraLayout::from_metadata(&unknown).is_err());
+    }
+
+    #[test]
+    fn the_mouth_pair_and_the_brow_cut_out_of_a_strip() {
+        let layout = CameraLayout::all();
+        let strip: Vec<u8> = (0..STRIP_BYTES)
+            .map(|i| ((i % STRIP_WIDTH as usize) / VIEW as usize) as u8)
+            .collect();
+        let mouth = layout.select(&strip, &MOUTH_CAMERAS).unwrap();
+        assert_eq!(mouth.len(), FRAME_BYTES);
+        assert_eq!((mouth[0], mouth[399], mouth[400], mouth[799]), (2, 2, 3, 3));
+        assert_eq!(mouth[800 * 399 + 400], 3);
+        let mut brow = vec![0; VIEW_BYTES];
+        assert!(layout.cut(&strip, BROW_CAMERA, &mut brow));
+        assert!(brow.iter().all(|&value| value == 4));
+        assert!(CameraLayout::mouth()
+            .select(&mouth, &[BROW_CAMERA])
+            .is_none());
+        assert_eq!(
+            CameraLayout::mouth()
+                .select(&mouth, &MOUTH_CAMERAS)
+                .unwrap(),
+            mouth
+        );
     }
 
     #[test]

@@ -428,6 +428,13 @@
         </div>
         <p id="eye-feed-state" class="hint"></p>
       </section>
+      <section id="brow-panel" class="panel" hidden>
+        <h3>Brow camera</h3>
+        <div class="screen">
+          <canvas id="brow-feed" width="400" height="400" aria-label="Brow camera, camera 4"></canvas>
+        </div>
+        <p id="brow-feed-state" class="hint"></p>
+      </section>
       <section class="panel">
         <h3>Gaze, seen from above</h3>
         <div class="screen"><canvas id="vergence" width="480" height="240" aria-label="Top-down view of both gaze rays"></canvas></div>
@@ -648,12 +655,14 @@ const feedContext = byId('feed').getContext('2d', {alpha: false});
 const feedImage = feedContext.createImageData(800, 400);
 const eyeContext = byId('eye-feed').getContext('2d', {alpha: false});
 const eyeImage = eyeContext.createImageData(800, 400);
-let lastSequence = null, lastEyeSequence = null;
+const browContext = byId('brow-feed').getContext('2d', {alpha: false});
+const browImage = browContext.createImageData(400, 400);
+let lastSequence = null, lastEyeSequence = null, lastBrowSequence = null;
 async function drawGray(path, target, pixels) {
   const response = await fetch(path, {cache: 'no-store'});
   if (!response.ok) return null;
   const gray = new Uint8Array(await response.arrayBuffer());
-  if (gray.length !== 320000) return null;
+  if (gray.length !== pixels.width * pixels.height) return null;
   for (let i = 0, j = 0; i < gray.length; i++, j += 4) {
     pixels.data[j] = gray[i]; pixels.data[j + 1] = gray[i]; pixels.data[j + 2] = gray[i]; pixels.data[j + 3] = 255;
   }
@@ -669,6 +678,11 @@ async function drawEyeFrame(sequence) {
   if (sequence === lastEyeSequence) return;
   const drawn = await drawGray('/ext/quest-pro/eye-frame', eyeContext, eyeImage);
   if (drawn !== null) lastEyeSequence = drawn;
+}
+async function drawBrowFrame(sequence) {
+  if (sequence === lastBrowSequence) return;
+  const drawn = await drawGray('/ext/quest-pro/brow-frame', browContext, browImage);
+  if (drawn !== null) lastBrowSequence = drawn;
 }
 function showFeed(live, title, detail) {
   byId('feed-live').hidden = !live;
@@ -866,6 +880,11 @@ function showEyes(state) {
   byId('eye-feed-overlay').hidden = eyeAge !== null;
   byId('eye-feed-state').textContent = eyeAge === null ? '' : `Snapshot ${state.eye_frame_sequence} · ${eyeAge} ms old`;
   if (eyeAge !== null && eyeAge < 3000) drawEyeFrame(String(state.eye_frame_sequence));
+  // The brow camera comes only with the headset's five-camera stream.
+  const browAge = state.brow_frame_age_ms ?? null;
+  byId('brow-panel').hidden = !state.five_cameras;
+  byId('brow-feed-state').textContent = browAge === null ? '' : `Frame ${state.brow_frame_sequence} · ${browAge} ms old`;
+  if (state.five_cameras && browAge !== null && browAge < 3000) drawBrowFrame(String(state.brow_frame_sequence));
 }
 let recenterTimer = null;
 byId('eye-recenter').onclick = () => {

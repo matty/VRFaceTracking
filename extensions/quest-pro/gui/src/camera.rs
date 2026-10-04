@@ -1,6 +1,6 @@
 //! Mouth: the live stereo image from the Quest Pro's lower-face cameras, the
 //! tongue and cheek puffs VRChat receives from it, and the settings that
-//! shape them.
+//! shape them. With the headset's five-camera stream, the brow camera too.
 use crate::daemon::{Settings, SettingsPatch, Status, TongueSource, VisibilityMode};
 use crate::live::{CameraFeed, QuestProState};
 use crate::pages;
@@ -92,6 +92,8 @@ const SENT_FOLDED: usize = 5;
 pub struct MouthPage {
     daemon: Entity<QuestProState>,
     camera: Entity<CameraFeed>,
+    /// The brow camera, shown while the headset sends all five cameras.
+    brow: Entity<CameraFeed>,
     launcher: Entity<Launcher>,
     smoothing: Entity<SliderState>,
     /// The smoothing the daemon last reported, so the slider only follows
@@ -106,13 +108,14 @@ pub struct MouthPage {
     _save: Option<Task<()>>,
     /// Asking the daemon to try the headset again, while it does.
     retrying: Option<Task<()>>,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 5],
 }
 
 impl MouthPage {
     pub fn new(
         daemon: Entity<QuestProState>,
         camera: Entity<CameraFeed>,
+        brow: Entity<CameraFeed>,
         launcher: Entity<Launcher>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -130,6 +133,7 @@ impl MouthPage {
                 cx.notify();
             }),
             cx.observe(&camera, |_, _, cx| cx.notify()),
+            cx.observe(&brow, |_, _, cx| cx.notify()),
             cx.observe(&launcher, |_, _, cx| cx.notify()),
             // The number follows the drag; the setting saves on release.
             cx.subscribe(&smoothing, |page, _, event: &SliderEvent, cx| match event {
@@ -146,6 +150,7 @@ impl MouthPage {
         Self {
             daemon,
             camera,
+            brow,
             launcher,
             smoothing,
             shown_smoothing: None,
@@ -527,6 +532,54 @@ impl MouthPage {
 
     /// Each cheek's puff as VRChat receives it, where it comes from, and the
     /// switch that takes it from the cameras.
+    /// The brow camera (camera 4), while the headset sends all five cameras.
+    fn brow_panel(&self, status: Option<&Status>, cx: &Context<Self>) -> Option<AnyElement> {
+        if !status.is_some_and(|status| status.five_cameras) {
+            return None;
+        }
+        let image = self.brow.read(cx).image();
+        // Inside the card's border, so a pixel tighter than its corners.
+        let corner = cx.theme().radius_lg - px(1.);
+        Some(
+            card(cx)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .aspect_ratio(1.)
+                        .rounded_t(corner)
+                        .overflow_hidden()
+                        // Grayscale raster data, black in either theme.
+                        .bg(black())
+                        .when_some(image, |this, image| {
+                            this.child(
+                                img(image)
+                                    .size_full()
+                                    .rounded_t(corner)
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                        }),
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .px(px(18.))
+                        .py_3()
+                        .border_t_1()
+                        .border_color(palette::line())
+                        .child(card_title(t!("camera.brow_camera")))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_3())
+                                .child(t!("camera.brow_camera_hint")),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn cheek_panel(&self, status: Option<&Status>, cx: &Context<Self>) -> AnyElement {
         let output = status.and_then(|status| status.output.as_ref());
         let checked = status.map_or(Settings::default().cheek_puffs, |status| {
@@ -794,6 +847,7 @@ impl Render for MouthPage {
         let tongue = tongue_panel(tongue_reading(status, &rates), source, cx);
         let sent = self.sent_panel(status, cx);
         let cheeks = self.cheek_panel(status, cx);
+        let brow = self.brow_panel(status, cx);
 
         v_flex()
             .gap(px(20.))
@@ -838,7 +892,8 @@ impl Render for MouthPage {
                             .when(wide, |this| this.w(px(PANEL_WIDTH)))
                             .child(tongue)
                             .child(sent)
-                            .child(cheeks),
+                            .child(cheeks)
+                            .children(brow),
                     ),
             )
     }
