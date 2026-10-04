@@ -4,7 +4,7 @@ Renders labelled Quest Pro frames of all five inward cameras (the eyes, the mout
 
 It shares tools/tongue-synth's camera model, materials, IR lighting and sensor model by importing `render_tongue.py`; only the faces, expressions and labels are new.
 
-Needs Blender 4.2 or later. It uses Blender's bundled NumPy; MPFB, GNM's own package and TensorFlow are not needed.
+Needs Blender 4.2 or later. It uses Blender's bundled NumPy; MPFB, GNM's own package and TensorFlow are not needed. A Python with `h5py` (`pip install h5py numpy`) converts GNM's semantic sampler once; without it the renders go ahead without semantic expressions, with a warning.
 
 ```powershell
 ./tools/face-synth/render.ps1 -Count 500                 # newest Blender Launcher stable build
@@ -23,7 +23,8 @@ Options:
 - `--engine cycles` renders on the CPU, for machines without a GPU. EEVEE, the default, needs one.
 - `--no-enrollment`.
 - `--gnm` (where the GNM file is, or goes).
-- `--expressions` (below).
+- `--semantic` (where the converted semantic sampler is, or goes) and `--no-semantic` (below).
+- `--label-scales`: a JSON file overriding the label scales (see Tuning the labels).
 - `--calibration`, `--camera-ids` and `--list-calibration` (see Cameras).
 
 On four CPU cores, `--fast --engine cycles` renders about 5 frames a minute (25 views); EEVEE on a desktop GPU is much faster.
@@ -80,7 +81,25 @@ Other prototypes are at most 4 standard deviations long. Two kinds of movement a
 - **Tongue sideways:** GNM's tongue reaches about 4 mm sideways at rest. A bend swings the tongue's front toward a corner from inside the mouth, and a lift tips the part past the lips up or down.
 - **Tongue length:** a stretch adds the last centimetre of protrusion.
 
-Optional: `precompute_expressions.py` samples GNM's semantic sampler (BLOW, SUCK, PUCKER, FUNNELER, MOUTH_LEFT/RIGHT, LIPS_ROLL_IN, TONGUE_CENTER and others) offline into `.local/gnm/semantic_expressions.npz`. It needs GNM's package and TensorFlow, outside Blender. `--expressions` then mixes those in as a tenth of the frames. Their labels still come from the geometry.
+### Semantic expressions
+
+GNM's semantic sampler draws whole expressions of a named class, learned from scans of real faces:
+
+- surprise, disgust, suck, compress face, stretch face, happy, squint, platysma;
+- blow, funneler, wide smile, corners down, pucker, wink left and right;
+- mouth left and right, lips rolled in, snarl, tongue out (`tongue_center`).
+
+15% of the random frames come from it, a class at a time, picked evenly. Their labels still come from the geometry, never from the class.
+
+The sampler is a Keras model, the decoder half of a conditional VAE: five Dense layers, with a 64-dimensional latent and the class in and 383 expression coefficients out. `semantic_decoder.py` converts it to NumPy:
+
+- it downloads `expression_decoder_model.h5` (1.5 MB, Apache-2.0) from GNM's repository at a pinned commit;
+- checks its SHA-256;
+- writes the layers to `.local/gnm/semantic_decoder.npz`.
+
+`render_face.py` runs the converter itself when that file is missing, with `VRFT_PYTHON`, `python3`, `python` or `py`, whichever has `h5py`. `render.ps1` runs it once before starting its jobs.
+
+The NumPy decoder matches GNM's own `ExpressionSampler` (TensorFlow) to within 5e-7 for the same latents.
 
 ### Frames
 
@@ -98,7 +117,7 @@ Then random frames:
 - the tongue in a cheek;
 - brows (raised, inner or outer, frowned or pinched, on one side or both);
 - the tongue out in any direction, extension and jaw opening, often to the corners, or just its tip;
-- semantic-sampler expressions, when given.
+- GNM's semantic expressions (above), 15% of these frames.
 
 Every frame carries its person as `identity`, so the universal model's anchors come from the same face.
 
@@ -111,13 +130,45 @@ Every label is measured from the posed mesh, never copied from what the frame as
 | visibility | any tongue vertex past the lips, by more than 1 mm | out |
 | extension | how far the tongue reaches past the lips' front at its own sideways position (the mouth curves back toward its corners) | interpolated through 2.5 mm -> 0.25, 8 mm -> 0.5, 20 mm -> 1, as the capture poses grade it |
 | horizontal, vertical | the unit vector of the tongue's centreline from where it crosses the lips to its tip, against the person's own straight-out tongue (which droops over the lower lip and is labelled 0, as in the capture poses). Measured in the head's frame, so headset tilt doesn't turn into direction. Positive is the person's right and up. No direction under 3 mm past the lips | a sine of 0.55 sideways, or 0.75 up or down |
-| cheek_puff_left/right, cheek_suck_left/right | the cheek region's most-moved third, along the neutral face's normals, against the person's neutral, after a 1 mm dead zone (an open jaw stretches the cheeks in about a millimetre) | 6 mm out, or 3 mm in |
-| brow_inner_up / brow_outer_up | the medial or lateral half of each brow rising, after a 0.5 mm dead zone | 6 mm |
+| cheek_puff_left/right, cheek_suck_left/right | the cheek region's most-moved third, along the neutral face's normals, against the person's neutral, after a 1 mm dead zone (an open jaw stretches the cheeks in about a millimetre) | 6 mm out, or 6 mm in |
+| brow_inner_up / brow_outer_up | the medial or lateral half of each brow rising, after a 0.5 mm dead zone | 4 mm |
 | brow_lowerer | the whole brow falling | 4 mm |
 | brow_pinch | the medial half moving toward the middle | 3 mm |
 | jaw_open | the front teeth's gap against the neutral one | 22 mm wider |
 
+The full scales for the cheeks, brows and jaw come from what GNM's semantic sampler does on a range of people (median over 6 people, 16 samples of each class):
+
+| Class | Moves |
+| --- | --- |
+| BLOW | cheeks out 5.9 mm |
+| SUCK | cheeks in 6.8 mm |
+| STRETCH_FACE | front teeth 21.6 mm apart; inner brows up 3.7 mm |
+| SURPRISE | inner brows up 1.6 mm |
+| COMPRESS_FACE | brows down 3.6 mm |
+
+The cheek deformers' full puff and suck move the cheek about 7 mm, to match.
+
 A shown tongue whose part past the lips sinks more than 4 mm under the skin around the mouth (through a lip or the chin) is drawn again, up to 8 times, as in tongue-synth. `metadata.json` counts the redraws by pose (`rejected_poses`), and each sample keeps the depth (`synthetic.tongue_depth_mm`).
+
+## Tuning the labels
+
+The scales above are what each label's 1 means. They're in `gnm_head.SCALES`, and a JSON file passed as `--label-scales` overrides any of them, for example `{"suck_full_mm": 5.0}`.
+
+Every sample keeps what its labels were graded from (`synthetic.measured`: millimetres moved, and the tongue's direction). So `relabel.py` grades a set again with other scales in seconds, without rendering it again:
+
+```
+python tools/face-synth/relabel.py <recordings or packed sets>... --label-scales scales.json
+```
+
+To tune the scales against real people, with a real five-camera recording and its face setup:
+
+1. Train the universal model on the synthetic set alone.
+2. Score it on the real recording: `evaluate_face <model> <recording> --enrollment <face setup>`.
+3. Read the `gain` column, the least-squares slope of prediction against the real labels on frames where the output is active.
+   - About 1: the synthetic 1 matches the real one.
+   - 0.7: the model, which learned the synthetic scale, reads real full expressions as 0.7. The real movement is smaller than the synthetic full scale, so multiply that scale by about 0.7.
+4. Relabel and train again, until the gains settle near 1.
+5. Put the scales you settle on in `SCALES`.
 
 ## Cameras
 
@@ -143,8 +194,12 @@ To compare renders with a real recording, tile both with `python tools/tongue-sy
 A recording in the `vrft-tongue-capture-v1` format:
 
 - **Frames:** `cameras: [0, 1, 2, 3, 4]`, 2000 x 400 strips, 800 KB a frame.
-- **`samples.jsonl`:** the 12 tongue `targets` (cheek puffs at 10 and 11), the `face` labels, `identity`, `anchor` on face setup poses, `dot` (so training keeps every frame), and a `synthetic` block with the prototype weights, deformers, gaze and tongue measurements.
-- **`metadata.json`:** carries the generator, GNM version, cameras' sources, seed and redraws.
+- **`samples.jsonl`:**
+  - the 12 tongue `targets` (cheek puffs at 10 and 11) and the `face` labels;
+  - `identity`, and `anchor` on face setup poses;
+  - `dot`, so training keeps every frame;
+  - a `synthetic` block: the prototype weights, deformers, gaze, the semantic class if any, the `measured` values the labels come from, and the tongue's depth.
+- **`metadata.json`:** carries the generator, GNM version, cameras' sources, seed, the semantic sampler's classes, the label scales and the redraws.
 
 Pack rendered recordings at a model's input size before training on them or shipping them:
 
@@ -176,7 +231,14 @@ As for tongue-synth, judge a set by what users get, not by training on the set a
 
 Compare the scores (`evaluate_face`, or `evaluate` for the pair) with and without the set.
 
-`python tools/face-synth/test_gnm_head.py` checks the poses and labels on the real GNM head: a neutral face labels nothing, each brow moves on its own side, puffs, sucks and the jaw label as asked, and the tongue reads straight, left, right and up.
+`python tools/face-synth/test_gnm_head.py` checks the poses and labels on the real GNM head:
+
+- a neutral face labels nothing;
+- each brow moves on its own side;
+- puffs, sucks and the jaw label as asked;
+- the tongue reads straight, left, right and up;
+- labels are the measurements graded with the scales, and `relabel.py` grades a recording again;
+- semantic expressions label as their class: blow puffs, suck sucks, `tongue_center` shows the tongue, stretch face opens the jaw, compress face lowers the brows, and a pucker isn't a cheek suck.
 
 ## Limits
 
@@ -185,4 +247,4 @@ Compare the scores (`evaluate_face`, or `evaluate` for the pair) with and withou
 - **Tongue:**
   - GNM's tongue is weak sideways and passes through closed lips if the tongue and lower-face coefficients are drawn independently. Here the tongue comes from fitted prototypes with the lips parted, sideways poses from a bend, and anything through the face is redrawn.
   - Curl, roll and the other tongue shapes stay 0.
-- **Labels:** the full-scale constants above set what 1 means; they are a judgment, not a measurement of real people.
+- **Labels:** the full scales come from GNM's sampler, which is fitted to scans of real faces, not from real headset users. Tune them against a real face setup (Tuning the labels).

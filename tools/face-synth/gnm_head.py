@@ -23,6 +23,7 @@ top, as in tools/tongue-synth. Every label is then measured from the posed
 geometry, never taken from what was asked for.
 """
 
+import json
 import math
 import os
 import urllib.request
@@ -46,19 +47,11 @@ TONGUE = np.arange(350, 382)
 # many standard deviations along its own direction.
 MAX_SIGMA = 4.0
 
-# What a label of 1 means, in metres of movement against the person's own
-# neutral face (or, for the tongue, past the lips), and the movement that
-# still counts as 0: an open jaw stretches the cheeks in about a millimetre,
-# and a frown lifts nothing.
-PUFF_FULL = 0.006
-SUCK_FULL = 0.003
-CHEEK_DEAD = 0.001
+# The brow prototypes' movements, in metres (geometry, not labels).
 BROW_RAISE_FULL = 0.006
 BROW_LOWER_FULL = 0.004
 PINCH_FULL = 0.003
-BROW_DEAD = 0.0005
-JAW_FULL = 0.022
-# Tongue extension: protrusion past the lips' front (metres) to label, as
+# Tongue extension: protrusion past the lips' front (mm) to label, as
 # the capture poses grade it: just the tip 0.25, half out 0.5 (about 8 mm),
 # fully out 1 (about 2 cm).
 EXTENSION_MM = (0.0, 2.5, 8.0, 20.0)
@@ -95,6 +88,44 @@ def fetch(path, url=GNM_URL):
             out.write(chunk)
     os.replace(partial, path)
     return path
+
+
+# GNM's semantic expression sampler, the decoder half of a conditional VAE
+# (gnm/shape/semantic_sampler.py): a 64-d latent and a one-hot class in, 383
+# expression coefficients out. Its classes, in the decoder's order.
+SEMANTIC_CLASSES = (
+    "surprise", "disgust", "suck", "compress_face", "stretch_face", "happy", "squint", "platysma",
+    "blow", "funneler", "smile_wide", "corners_down", "pucker", "wink_left", "wink_right",
+    "mouth_left", "mouth_right", "lips_roll_in", "snarl", "tongue_center",
+)
+
+
+class SemanticSampler:
+    """GNM's semantic expression sampler in NumPy, from the decoder weights
+    `semantic_decoder.py` converts (no TensorFlow): Dense layers, ReLU but
+    for the last."""
+
+    def __init__(self, path):
+        with np.load(path) as data:
+            self.layers = [(data[f"kernel_{i}"].astype(np.float32), data[f"bias_{i}"].astype(np.float32))
+                           for i in range(int(data["layers"]))]
+            self.classes = tuple(str(name) for name in data["classes"])
+        self.latent = self.layers[0][0].shape[0] - len(self.classes)
+
+    def decode(self, z, weights):
+        """Expressions for latents `z` (n, 64) and class weights (n, 20)."""
+        x = np.concatenate([np.asarray(z, np.float32), np.asarray(weights, np.float32)], axis=1)
+        for i, (kernel, bias) in enumerate(self.layers):
+            x = x @ kernel + bias
+            if i < len(self.layers) - 1:
+                x = np.maximum(x, 0.0)
+        return x
+
+    def sample(self, name, rng, count=1):
+        """`count` expressions of class `name`, as GNM's sample_expression."""
+        weights = np.zeros((count, len(self.classes)), np.float32)
+        weights[:, self.classes.index(name)] = 1.0
+        return self.decode(rng.normal(size=(count, self.latent)), weights)
 
 
 def smoothstep(edge0, edge1, x):
@@ -352,8 +383,8 @@ class Deformers:
         skin[marks.skin] = 1.0
         self.fields = {}
         for name, side, (out, back, up), radii, size in (
-                ("puff_left", 1.0, (0.012, -0.012, 0.004), (0.02, 0.026, 0.03), 0.012),
-                ("puff_right", -1.0, (0.012, -0.012, 0.004), (0.02, 0.026, 0.03), 0.012),
+                ("puff_left", 1.0, (0.012, -0.012, 0.004), (0.02, 0.026, 0.03), 0.0093),
+                ("puff_right", -1.0, (0.012, -0.012, 0.004), (0.02, 0.026, 0.03), 0.0093),
                 ("bulge_left", 1.0, (0.006, -0.004, -0.004), (0.012, 0.014, 0.016), 0.009),
                 ("bulge_right", -1.0, (0.006, -0.004, -0.004), (0.012, 0.014, 0.016), 0.009)):
             centre = np.array([side * (marks.mouth_width + out), marks.stomion + up, marks.lip_front + back])
@@ -363,8 +394,10 @@ class Deformers:
     def apply(self, vertices, frame):
         """`vertices` with the frame's cheeks and tongue deformations."""
         out = vertices.copy()
-        out += (frame.get("puff_left", 0.0) - 0.6 * frame.get("suck_left", 0.0)) * self.fields["puff_left"]
-        out += (frame.get("puff_right", 0.0) - 0.6 * frame.get("suck_right", 0.0)) * self.fields["puff_right"]
+        # A full puff or suck moves the cheek about 7 mm, as GNM's semantic
+        # sampler's BLOW and SUCK do (README.md, Labels).
+        out += (frame.get("puff_left", 0.0) - frame.get("suck_left", 0.0)) * self.fields["puff_left"]
+        out += (frame.get("puff_right", 0.0) - frame.get("suck_right", 0.0)) * self.fields["puff_right"]
         out += frame.get("bulge_left", 0.0) * self.fields["bulge_left"]
         out += frame.get("bulge_right", 0.0) * self.fields["bulge_right"]
         bend, lift, stretch = frame.get("bend", 0.0), frame.get("lift", 0.0), frame.get("stretch", 0.0)
@@ -464,8 +497,50 @@ def placement(eye_centres, pitch, yaw, roll, eyes):
     return r, np.asarray(eyes, float) - r @ centre
 
 
-def labels(vertices, neutral, rotation_matrix, marks, normals):
-    """Labels measured from geometry. `vertices` and `neutral` are in the
+# The label scales, by name: what each label's 1 (and 0) means. They're a
+# judgment, not a measurement of real people, so they can be overridden
+# (`render_face.py --label-scales`, `relabel.py`) and tuned against a real
+# face setup (README.md, Tuning the labels).
+SCALES = {
+    "visible_past_mm": VISIBLE_PAST * 1000,
+    "extension_mm": list(EXTENSION_MM),
+    "extension_label": list(EXTENSION_LABEL),
+    "horizontal_full": HORIZONTAL_FULL,
+    "vertical_full": VERTICAL_FULL,
+    # Movement against the person's own neutral face, in mm, that labels 1,
+    # and the movement that still labels 0: an open jaw stretches the
+    # cheeks in about a millimetre, and a frown lifts nothing. Set from GNM's
+    # semantic sampler, which is trained on scans of real faces (median over
+    # people): BLOW pushes the cheeks out 5.9 mm, SUCK pulls them in 6.8 mm,
+    # STRETCH_FACE opens the front teeth 21.6 mm and raises the inner brows
+    # 3.7 mm, COMPRESS_FACE lowers them 3.6 mm.
+    "puff_full_mm": 6.0,
+    "suck_full_mm": 6.0,
+    "cheek_dead_mm": 1.0,
+    "brow_raise_full_mm": 4.0,
+    "brow_lower_full_mm": 4.0,
+    "pinch_full_mm": 3.0,
+    "brow_dead_mm": 0.5,
+    "jaw_full_mm": 22.0,
+}
+
+
+def scales(overrides=None):
+    """SCALES with `overrides` (a mapping, or a JSON file's path) applied;
+    an unknown name is an error, so a typo can't pass silently."""
+    if overrides is None:
+        return dict(SCALES)
+    if not isinstance(overrides, dict):
+        overrides = json.loads(Path(overrides).read_text())
+    unknown = sorted(set(overrides) - set(SCALES))
+    if unknown:
+        raise ValueError(f"unknown label scales {unknown}; known: {sorted(SCALES)}")
+    return {**SCALES, **overrides}
+
+
+def measure(vertices, neutral, rotation_matrix, marks, normals):
+    """What the labels are graded from, measured from geometry, in mm (and
+    the tongue's direction as sines). `vertices` and `neutral` are in the
     head's frame; everything is turned into the headset frame by
     `rotation_matrix` before measuring, as the cameras see it."""
     r = rotation_matrix
@@ -475,53 +550,74 @@ def labels(vertices, neutral, rotation_matrix, marks, normals):
     forward = r @ np.array([0.0, 0.0, 1.0])
     out = {}
 
-    # Tongue: its tip (the point farthest from its root) against the lips.
-    tongue = v[marks.tongue]
-    lips = v[marks.lips]
-    # How far past the lips it reaches: its farthest point ahead of them,
-    # which on a tongue hanging over the lower lip isn't the tip.
-    past = float(beyond_lips(tongue, lips, left, forward).max())
-    visible = past > VISIBLE_PAST
-    out["visibility"] = 1.0 if visible else 0.0
-    out["extension"] = float(np.interp(past * 1000, EXTENSION_MM, EXTENSION_LABEL)) if visible else 0.0
-    out["horizontal"] = out["vertical"] = 0.0
-    # Measured in the head's own frame against the person's straight-out
-    # tongue, which is as they hold it whichever way the headset sits.
+    # Tongue: how far past the lips it reaches: its farthest point ahead of
+    # them, which on a tongue hanging over the lower lip isn't the tip.
+    past = float(beyond_lips(v[marks.tongue], v[marks.lips], left, forward).max())
+    out["tongue_past_lips_mm"] = round(past * 1000, 3)
+    # Its direction, in the head's own frame against the person's
+    # straight-out tongue, which is as they hold it whichever way the
+    # headset sits. None under DIRECTION_PAST past the lips.
     angles = tongue_angles(vertices, marks) if past > DIRECTION_PAST else None
-    if visible and angles is not None:
-        sideways, rise = angles[0] - marks.straight[0], angles[1] - marks.straight[1]
-        out["horizontal"] = float(np.clip(sideways / HORIZONTAL_FULL, -1, 1))
-        out["vertical"] = float(np.clip(rise / VERTICAL_FULL, -1, 1))
-    out["tongue_past_lips_mm"] = round(past * 1000, 2)
+    out["tongue_sideways"] = None if angles is None else round(float(angles[0] - marks.straight[0]), 5)
+    out["tongue_rise"] = None if angles is None else round(float(angles[1] - marks.straight[1]), 5)
 
-    # Cheeks, along the neutral face's normals.
+    # Cheeks, along the neutral face's normals: the core of the cheek, the
+    # part that moved most either way.
     nn = normals @ r.T
     for side in ("left", "right"):
         region = marks.cheeks[side]
         moved = ((v[region] - n0[region]) * nn[region]).sum(1)
-        # The core of the cheek: the part that moved most either way.
         core = moved[np.argsort(-np.abs(moved))[: max(8, len(moved) // 3)]]
-        mean = float(core.mean())
-        out[f"cheek_puff_{side}"] = float(np.clip((mean - CHEEK_DEAD) / (PUFF_FULL - CHEEK_DEAD), 0, 1))
-        out[f"cheek_suck_{side}"] = float(np.clip((-mean - CHEEK_DEAD) / (SUCK_FULL - CHEEK_DEAD), 0, 1))
+        out[f"cheek_{side}_mm"] = round(float(core.mean()) * 1000, 4)
 
     # Brows: the medial and lateral halves' rise, and the medial half
     # moving toward the middle.
     for side, (sign, medial, lateral) in marks.brows.items():
-        rise_medial = float(((v[medial] - n0[medial]) @ up).mean())
-        rise_lateral = float(((v[lateral] - n0[lateral]) @ up).mean())
-        inward = float(((v[medial] - n0[medial]) @ (-sign * left)).mean())
-        graded = lambda moved, full: float(np.clip((moved - BROW_DEAD) / (full - BROW_DEAD), 0, 1))
-        out[f"brow_inner_up_{side}"] = graded(rise_medial, BROW_RAISE_FULL)
-        out[f"brow_outer_up_{side}"] = graded(rise_lateral, BROW_RAISE_FULL)
-        out[f"brow_lowerer_{side}"] = graded(-(rise_medial + rise_lateral) / 2, BROW_LOWER_FULL)
-        out[f"brow_pinch_{side}"] = graded(inward, PINCH_FULL)
+        out[f"brow_medial_rise_{side}_mm"] = round(float(((v[medial] - n0[medial]) @ up).mean()) * 1000, 4)
+        out[f"brow_lateral_rise_{side}_mm"] = round(float(((v[lateral] - n0[lateral]) @ up).mean()) * 1000, 4)
+        out[f"brow_inward_{side}_mm"] = round(float(((v[medial] - n0[medial]) @ (-sign * left)).mean()) * 1000, 4)
 
     # The jaw: the gap between the front teeth, against the neutral one.
     def gap(points):
         return float((points[marks.upper_front] @ up).mean() - (points[marks.lower_front] @ up).mean())
-    out["jaw_open"] = float(np.clip((gap(v) - gap(n0)) / JAW_FULL, 0, 1))
+    out["jaw_gap_mm"] = round((gap(v) - gap(n0)) * 1000, 3)
     return out
+
+
+def grade(measured, scale=None):
+    """Labels from `measure`'s measurements and the label scales."""
+    k = scale or SCALES
+    out = {}
+    past = measured["tongue_past_lips_mm"]
+    visible = past > k["visible_past_mm"]
+    out["visibility"] = 1.0 if visible else 0.0
+    out["extension"] = float(np.interp(past, k["extension_mm"], k["extension_label"])) if visible else 0.0
+    out["horizontal"] = out["vertical"] = 0.0
+    if visible and measured["tongue_sideways"] is not None:
+        out["horizontal"] = float(np.clip(measured["tongue_sideways"] / k["horizontal_full"], -1, 1))
+        out["vertical"] = float(np.clip(measured["tongue_rise"] / k["vertical_full"], -1, 1))
+    out["tongue_past_lips_mm"] = round(past, 2)
+
+    def graded(moved, full, dead):
+        return float(np.clip((moved - dead) / (full - dead), 0, 1))
+    for side in ("left", "right"):
+        cheek = measured[f"cheek_{side}_mm"]
+        out[f"cheek_puff_{side}"] = graded(cheek, k["puff_full_mm"], k["cheek_dead_mm"])
+        out[f"cheek_suck_{side}"] = graded(-cheek, k["suck_full_mm"], k["cheek_dead_mm"])
+    for side in ("left", "right"):
+        medial, lateral = measured[f"brow_medial_rise_{side}_mm"], measured[f"brow_lateral_rise_{side}_mm"]
+        dead = k["brow_dead_mm"]
+        out[f"brow_inner_up_{side}"] = graded(medial, k["brow_raise_full_mm"], dead)
+        out[f"brow_outer_up_{side}"] = graded(lateral, k["brow_raise_full_mm"], dead)
+        out[f"brow_lowerer_{side}"] = graded(-(medial + lateral) / 2, k["brow_lower_full_mm"], dead)
+        out[f"brow_pinch_{side}"] = graded(measured[f"brow_inward_{side}_mm"], k["pinch_full_mm"], dead)
+    out["jaw_open"] = float(np.clip(measured["jaw_gap_mm"] / k["jaw_full_mm"], 0, 1))
+    return out
+
+
+def labels(vertices, neutral, rotation_matrix, marks, normals, scale=None):
+    """Labels measured from geometry: `grade(measure(...))`."""
+    return grade(measure(vertices, neutral, rotation_matrix, marks, normals), scale)
 
 
 def tongue_depth(vertices, normals, marks):

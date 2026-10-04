@@ -15,11 +15,13 @@ cameras (`"cameras": [0, 1, 2, 3, 4]`, 2000 x 400 strips) under
   weights download on first use to `.local/gnm/gnm_head.npz`.
 - **Expressions**: named prototypes fitted to GNM's expression blocks (jaw,
   lips, brows, tongue), plus tools/tongue-synth's cheek swellings and a
-  sideways tongue bend, with small random expression noise. Optionally,
-  expressions precomputed from GNM's semantic sampler
-  (`precompute_expressions.py`, `--expressions`).
-- **Labels**: measured from the posed mesh (`gnm_head.labels`), never
-  copied from what was asked for: the tongue's visibility, extension and
+  sideways tongue bend, with small random expression noise, and a share
+  of expressions from GNM's semantic sampler (BLOW, SUCK, PUCKER,
+  MOUTH_LEFT, TONGUE_CENTER and the rest), run in NumPy from the weights
+  `semantic_decoder.py` converts.
+- **Labels**: measured from the posed mesh (`gnm_head.measure`, then graded
+  by `gnm_head.grade` with the label scales), never copied from what was
+  asked for: the tongue's visibility, extension and
   direction from its tip and centreline against the lips, cheek puff and
   suck from the cheeks' movement along the neutral face's normals, brows
   from the brow regions, and jaw open from the front teeth's gap.
@@ -40,6 +42,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -244,14 +247,22 @@ ENROLLMENT = [
 ]
 
 
+# The share of random frames drawn from GNM's semantic sampler, when it's
+# available.
+SEMANTIC_SHARE = 0.15
+
+
 def sample_frame(rng, semantic):
-    weights = np.array([w for w, _ in SCENARIOS] + ([0.1] if semantic else []))
-    index = int(rng.choice(len(weights), p=weights / weights.sum()))
+    weights = np.array([w for w, _ in SCENARIOS], float)
+    weights /= weights.sum()
+    if semantic is not None:
+        weights = np.append(weights * (1 - SEMANTIC_SHARE), SEMANTIC_SHARE)
+    index = int(rng.choice(len(weights), p=weights))
     if index == len(SCENARIOS):
-        name = str(rng.choice(sorted(semantic)))
-        vectors = semantic[name]
+        name = str(rng.choice(semantic.classes))
         spec = frame(f"Semantic: {name}", lower=0.0, eyes=0.0)
-        spec["expression"] = vectors[rng.integers(len(vectors))]
+        spec["expression"] = semantic.sample(name, rng)[0]
+        spec["semantic"] = name
     else:
         spec = SCENARIOS[index][1](rng)
     spec["step"] = index
@@ -459,14 +470,45 @@ def build_scene(look, sensor, cameras, gnm, prototypes, engine):
 
 # ---------------------------------------------------------------- output
 
-def labelled(head, vertices, r):
-    measured = gh.labels(vertices, head.neutral, r, head.marks, head.normals)
+def graded(measured, scale):
+    """The sample's tongue `targets` and `face` labels from measurements."""
+    values = gh.grade(measured, scale)
     targets = [0.0] * len(TARGETS)
     for column, name in enumerate(TARGETS):
-        if name in measured:
-            targets[column] = round(measured[name], 5)
-    face = {name: round(measured[name], 5) for name in FACE_LABELS}
-    return targets, face, measured
+        if name in values:
+            targets[column] = round(values[name], 5)
+    face = {name: round(values[name], 5) for name in FACE_LABELS}
+    return targets, face
+
+
+def labelled(head, vertices, r, scale):
+    measured = gh.measure(vertices, head.neutral, r, head.marks, head.normals)
+    return (*graded(measured, scale), measured)
+
+
+def semantic_sampler(path, enabled):
+    """GNM's semantic sampler from `path`, converted first by
+    semantic_decoder.py with a Python that has h5py when it's missing; None,
+    with a warning, when that can't be done."""
+    if not enabled:
+        return None
+    if not path.is_file():
+        script = HERE / "semantic_decoder.py"
+        tried = []
+        for python in filter(None, [os.environ.get("VRFT_PYTHON"), "python3", "python", "py"]):
+            if not shutil.which(python):
+                continue
+            tried.append(python)
+            done = subprocess.run([python, str(script), "--out", str(path)], capture_output=True, text=True)
+            if done.returncode == 0 and path.is_file():
+                print(f"face-synth: converted GNM's semantic sampler with {python}", flush=True)
+                break
+        if not path.is_file():
+            print(f"face-synth: WARNING: no semantic expressions: {path} is missing and no Python with h5py "
+                  f"could make it (tried {tried or 'none on PATH'}). Run `pip install h5py numpy` and "
+                  f"`python tools/face-synth/semantic_decoder.py`, or pass --no-semantic.", flush=True)
+            return None
+    return gh.SemanticSampler(path)
 
 
 def main():
@@ -483,8 +525,11 @@ def main():
     parser.add_argument("--no-enrollment", action="store_true", help="skip each person's face setup poses")
     parser.add_argument("--gnm", type=Path, default=repo / ".local" / "gnm" / "gnm_head.npz",
                         help="the GNM head file; downloaded there when missing")
-    parser.add_argument("--expressions", type=Path,
-                        help="semantic-sampler expressions from precompute_expressions.py")
+    parser.add_argument("--semantic", type=Path, default=repo / ".local" / "gnm" / "semantic_decoder.npz",
+                        help="GNM's semantic sampler, from semantic_decoder.py; converted there when missing")
+    parser.add_argument("--no-semantic", action="store_true", help="no semantic-sampler expressions")
+    parser.add_argument("--label-scales", type=Path,
+                        help="a JSON file overriding gnm_head.SCALES, what each label's 1 means")
     parser.add_argument("--calibration", type=Path,
                         default=repo / ".local" / "headset-calibration" / "ft_calib.scio.json",
                         help="the headset's ft_calib.scio.json; nominal values when it's missing")
@@ -504,10 +549,8 @@ def main():
 
     gnm = gh.Gnm(gh.fetch(args.gnm))
     prototypes = gh.Prototypes(gnm)
-    semantic = {}
-    if args.expressions:
-        with np.load(args.expressions) as data:
-            semantic = {name: data[name] for name in data.files}
+    semantic = semantic_sampler(args.semantic, not args.no_semantic)
+    scale = gh.scales(args.label_scales)
     cameras, sources = load_cameras(args.calibration, camera_ids)
     rng = np.random.default_rng(args.seed)
     people = args.identities or max(1, math.ceil(args.count / 40))
@@ -524,8 +567,9 @@ def main():
             "generator": "tools/face-synth/render_face.py", "version": 1, "seed": args.seed,
             "identities": people, "blender": bpy.app.version_string, "faces": f"GNM head v{gnm.version}",
             "cameras": dict(zip(VIEWS, sources)), "pinhole": rt.PINHOLE, "samples": rt.SAMPLES,
-            "engine": args.engine, "semantic": sorted(semantic), "enrollment": not args.no_enrollment,
-            "labels": "measured from geometry (tools/face-synth/gnm_head.py)",
+            "engine": args.engine, "enrollment": not args.no_enrollment,
+            "semantic": None if semantic is None else {"classes": list(semantic.classes), "share": SEMANTIC_SHARE},
+            "labels": "measured from geometry (tools/face-synth/gnm_head.py)", "label_scales": scale,
         },
     }
     (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
@@ -552,7 +596,7 @@ def main():
                     r, _ = head.place(look["pitch"] + rng.normal(0, 1.0), look["yaw"] + rng.normal(0, 0.7),
                                       look["roll"] + rng.normal(0, 0.7),
                                       list(np.add(look["eyes"], rng.normal(0, 0.001, 3))))
-                    targets, face, measured = labelled(head, vertices, r)
+                    targets, face, measured = labelled(head, vertices, r, scale)
                     sunk = gh.tongue_depth(vertices, gnm.normals(vertices), head.marks) if targets[0] else 0.0
                     if sunk <= gh.TONGUE_DEPTH or attempt == TONGUE_ATTEMPTS:
                         break
@@ -580,7 +624,10 @@ def main():
                     "synthetic": {"weights": {k: round(float(v), 3) for k, v in current["weights"].items()},
                                   "deform": {k: round(float(v), 4) for k, v in current["deform"].items()},
                                   "gaze": current.get("gaze"),
-                                  "tongue_past_lips_mm": measured["tongue_past_lips_mm"],
+                                  "semantic": current.get("semantic"),
+                                  # What the labels are graded from: relabel.py
+                                  # grades them again with other scales.
+                                  "measured": measured,
                                   "tongue_depth_mm": round(sunk * 1000, 2)},
                 }
                 if slot:

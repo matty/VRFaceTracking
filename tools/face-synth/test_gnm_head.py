@@ -3,11 +3,15 @@
     python tools/face-synth/test_gnm_head.py
 
 Needs NumPy and the GNM head file: `VRFT_GNM`, else `.local/gnm/gnm_head.npz`
-(render_face.py downloads it there). Skipped without it.
+(render_face.py downloads it there). Skipped without it. The semantic
+sampler's checks also need `.local/gnm/semantic_decoder.npz`
+(semantic_decoder.py).
 """
 
+import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,8 +20,10 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import gnm_head as gh  # noqa: E402
+import relabel  # noqa: E402
 
 PATH = Path(os.environ.get("VRFT_GNM", HERE.parents[1] / ".local" / "gnm" / "gnm_head.npz"))
+SEMANTIC = HERE.parents[1] / ".local" / "gnm" / "semantic_decoder.npz"
 
 
 @unittest.skipUnless(PATH.is_file(), f"no GNM head at {PATH}")
@@ -89,6 +95,54 @@ class GnmHeadTest(unittest.TestCase):
             self.assertLess(left["horizontal"], -0.5)
             up, _ = self.measure(person, {**gh.STRAIGHT_OUT, "tongue_up": 0.7}, {"lift": 0.6, "stretch": 0.006})
             self.assertGreater(up["vertical"], 0.5)
+
+    def test_labels_grade_the_measurements_with_the_scales(self):
+        neutral, marks, _, normals = self.people[0]
+        posed = self.gnm.posed(neutral, self.prototypes.mix({"brow_inner_up_left": 1.0, "jaw_open": 0.6}))
+        measured = gh.measure(posed, neutral, np.eye(3), marks, normals)
+        json.dumps(measured)  # samples keep it
+        self.assertEqual(gh.labels(posed, neutral, np.eye(3), marks, normals), gh.grade(measured))
+        halved = gh.scales({"brow_raise_full_mm": gh.SCALES["brow_raise_full_mm"] * 2})
+        self.assertLess(gh.grade(measured, halved)["brow_inner_up_left"], gh.grade(measured)["brow_inner_up_left"])
+        with self.assertRaises(ValueError):
+            gh.scales({"puff_ful_mm": 5.0})
+
+    def test_relabel_grades_a_recording_again(self):
+        neutral, marks, deformers, normals = self.people[1]
+        posed = deformers.apply(self.gnm.posed(neutral, self.prototypes.mix({})), {"suck_left": 0.5})
+        measured = gh.measure(posed, neutral, np.eye(3), marks, normals)
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "metadata.json").write_text(json.dumps({"synthetic": {}}))
+            stale = {"targets": [0.0] * 12, "face": {"cheek_suck_left": 0.0, "jaw_open": 0.0}, "dot": [0, 0],
+                     "synthetic": {"measured": measured}}
+            old = {"targets": [0.0] * 12, "face": {}}
+            (folder / "samples.jsonl").write_text(json.dumps(stale) + "\n" + json.dumps(old) + "\n")
+            total, changed, skipped = relabel.relabel(folder, gh.scales())
+            self.assertEqual((total, changed, skipped), (2, 1, 1))
+            first = json.loads((folder / "samples.jsonl").read_text().splitlines()[0])
+            self.assertAlmostEqual(first["face"]["cheek_suck_left"], gh.grade(measured)["cheek_suck_left"], 4)
+            self.assertGreater(first["face"]["cheek_suck_left"], 0.3)
+            scale = json.loads((folder / "metadata.json").read_text())["synthetic"]["label_scales"]
+            self.assertEqual(scale, gh.scales())
+
+    @unittest.skipUnless(SEMANTIC.is_file(), f"no semantic sampler at {SEMANTIC}")
+    def test_semantic_expressions_label_as_their_class(self):
+        sampler = gh.SemanticSampler(SEMANTIC)
+        self.assertEqual(sampler.classes, gh.SEMANTIC_CLASSES)
+        neutral, marks, _, normals = self.people[2]
+        rng = np.random.default_rng(5)
+
+        def mean(name, label):
+            return np.mean([gh.labels(self.gnm.posed(neutral, e.astype(np.float32)), neutral, np.eye(3), marks,
+                                      normals)[label] for e in sampler.sample(name, rng, 12)])
+        self.assertGreater(mean("blow", "cheek_puff_left"), 0.5)
+        self.assertGreater(mean("suck", "cheek_suck_right"), 0.5)
+        self.assertGreater(mean("tongue_center", "visibility"), 0.5)
+        self.assertGreater(mean("stretch_face", "jaw_open"), 0.5)
+        self.assertGreater(mean("compress_face", "brow_lowerer_left"), 0.5)
+        self.assertLess(mean("pucker", "cheek_suck_left"), 0.3, "a kiss isn't a cheek suck")
+        self.assertLess(mean("blow", "visibility"), 0.1)
 
     def test_the_head_sits_by_its_eyes(self):
         centres = self.gnm.eye_centres(np.zeros(self.gnm.identity_dim, np.float32))

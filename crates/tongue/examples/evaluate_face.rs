@@ -1,7 +1,8 @@
 //! Scores a universal face model on a five-camera recording it may not have
 //! trained on, read against a face setup: visibility accuracy, and for every
 //! labelled output its mean absolute error over all frames and over the
-//! frames where it is active. Developer tool:
+//! frames where it is active, and its gain there (the least-squares slope of
+//! prediction against label: under 1 reads short). Developer tool:
 //!
 //! cargo run -p vrft-tongue --release --example evaluate_face -- <model-dir or checkpoint> <recording-dir> [--enrollment <face setup recording>] [--every N] [--cpu]
 //!
@@ -77,6 +78,9 @@ fn main() -> Result<()> {
     let outputs = FACE_TARGETS.len();
     let mut error = vec![(0.0f64, 0usize); outputs];
     let mut active_error = vec![(0.0f64, 0usize); outputs];
+    // Per output, sums of prediction x label and label squared over active
+    // frames: their ratio is the least-squares gain of the prediction.
+    let mut gain = vec![(0.0f64, 0.0f64); outputs];
     let (mut correct, mut total) = (0usize, 0usize);
     for (sample, prediction) in samples.iter().zip(predictions) {
         let values = prediction?.values;
@@ -95,6 +99,8 @@ fn main() -> Result<()> {
             if label[output].abs() > 0.1 {
                 active_error[output].0 += difference;
                 active_error[output].1 += 1;
+                gain[output].0 += f64::from(values[output] * label[output]);
+                gain[output].1 += f64::from(label[output] * label[output]);
             }
         }
     }
@@ -103,8 +109,8 @@ fn main() -> Result<()> {
         correct as f64 / total.max(1) as f64
     );
     println!(
-        "{:<22} {:>8} {:>8} {:>8} {:>8}",
-        "output", "mae", "frames", "active", "frames"
+        "{:<22} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "output", "mae", "frames", "active", "frames", "gain"
     );
     for (output, name) in FACE_TARGETS.iter().enumerate().skip(1) {
         let (sum, count) = error[output];
@@ -112,11 +118,17 @@ fn main() -> Result<()> {
             continue;
         }
         let (active, active_count) = active_error[output];
+        let (along, squared) = gain[output];
         println!(
-            "{name:<22} {:>8.3} {count:>8} {:>8.3} {active_count:>8}",
+            "{name:<22} {:>8.3} {count:>8} {:>8.3} {active_count:>8} {:>8.3}",
             sum / count as f64,
             if active_count > 0 {
                 active / active_count as f64
+            } else {
+                f64::NAN
+            },
+            if squared > 0.0 {
+                along / squared
             } else {
                 f64::NAN
             }

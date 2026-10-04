@@ -4,8 +4,9 @@
 # Blender is $env:VRFT_BLENDER, else the newest stable Blender Launcher build.
 # -Jobs runs that many Blender processes side by side, each writing its own
 # recording; training takes them all. -CameraIds names the eye and brow
-# cameras in the calibration file, -Expressions a precompute_expressions.py
-# file, and -Engine cycles renders on the CPU.
+# cameras in the calibration file, -LabelScales a JSON file of label scales,
+# and -Engine cycles renders on the CPU. GNM's semantic sampler is converted
+# first (semantic_decoder.py, needs a Python with h5py) unless -NoSemantic.
 param(
     [int]$Count = 200,
     [int]$Seed = 0,
@@ -13,7 +14,8 @@ param(
     [string]$Out = "",
     [string]$Calibration = "",
     [string]$CameraIds = "",
-    [string]$Expressions = "",
+    [string]$LabelScales = "",
+    [switch]$NoSemantic,
     [ValidateSet("eevee", "cycles")][string]$Engine = "eevee",
     [int]$Jobs = 1,
     [switch]$Fast
@@ -35,7 +37,23 @@ if ($Out) { $common += @("--out", $Out) }
 if ($Calibration) { $common += @("--calibration", $Calibration) }
 if ($Fast) { $common += "--fast" }
 if ($CameraIds) { $common += @("--camera-ids", $CameraIds) }
-if ($Expressions) { $common += @("--expressions", $Expressions) }
+if ($LabelScales) { $common += @("--label-scales", $LabelScales) }
+if ($NoSemantic) {
+    $common += "--no-semantic"
+} else {
+    # Converted once here, so parallel jobs don't each try.
+    $decoder = Join-Path $PSScriptRoot "../../.local/gnm/semantic_decoder.npz"
+    if (-not (Test-Path $decoder)) {
+        $python = if ($env:VRFT_PYTHON) { $env:VRFT_PYTHON } else { "python" }
+        try { & $python (Join-Path $PSScriptRoot "semantic_decoder.py") --out $decoder } catch { }
+    }
+    if (Test-Path $decoder) {
+        $common += @("--semantic", $decoder)
+    } else {
+        Write-Warning "GNM's semantic sampler isn't converted (needs a Python with h5py); rendering without it."
+        $common += "--no-semantic"
+    }
+}
 $common += @("--engine", $Engine)
 $filter = "^face-synth:|Error|Traceback"
 
