@@ -29,7 +29,7 @@ COLUMNS = [("model", "Model"), ("runtime", "Runtime"), ("device", "Device"), ("t
 
 
 def run(command, threads):
-    env = dict(os.environ, RAYON_NUM_THREADS=str(threads))
+    env = dict(os.environ, RAYON_NUM_THREADS=str(threads), VRFT_ONNX_THREADS=str(threads))
     done = subprocess.run(command, capture_output=True, text=True, env=env)
     if done.returncode:
         sys.stderr.write(done.stderr)

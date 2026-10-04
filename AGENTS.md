@@ -38,6 +38,12 @@ CI does not run these, so run them yourself when you touch the area:
 - Threads are named (`output`, `local-api`, `quest-pro-tongue`, ...), so Process Explorer's Threads tab shows which one is busy.
 - Logging: `RUST_LOG=info,vrft_d=debug`.
 - Env overrides: `VRFT_QUEST_PRO_ADDR`, `VRFT_TONGUE_MODEL_DIR`, `VRFT_FACE_MODEL` (a universal face checkpoint), `VRFT_TONGUE_DEVICE`, `VRFT_EYE_CALIBRATION`.
+- Tongue model inference runs on ONNX Runtime when its library is found (`crates/tongue/src/onnx/`), else on Burn:
+  - The library is `onnxruntime.dll` beside `vrft_d.exe` (releases ship it with `DirectML.dll`), `.local/onnxruntime/` for a development build (`tools/onnxruntime/fetch.ps1`), or `VRFT_ONNXRUNTIME`.
+  - The graphs are built from the safetensors weights at load. On the CPU a model calibrates on its first 48 frames, switches to int8 in the background and saves `<checkpoint>.int8.onnx` beside the checkpoint.
+  - The universal face model goes int8 except its tongue tail; the stereo pair stays float, because int8 moves its directions by a few hundredths.
+  - `VRFT_INFERENCE=burn` uses Burn; `VRFT_ONNX_THREADS` sets the CPU threads per model; `VRFT_ONNX_INT8=0` keeps every model float, `all` quantizes every model whole.
+  - The tongue device setting `auto` runs ONNX Runtime on the CPU, so the game keeps the GPU; `gpu` uses DirectML.
 - Over USB: `adb forward tcp:27274 tcp:27274`, then `VRFT_QUEST_PRO_ADDR=127.0.0.1:27274`.
 - Ports:
   - 27273: relay, on the headset's loopback
