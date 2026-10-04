@@ -24,15 +24,34 @@ use vrft_quest_pro_protocol::CameraLayout;
 use vrft_quest_pro_protocol::{
     routes, BuiltinStatus, CaptureMode, Coverage, ExportModel, FrameQuery, ImportModel,
     ModelActivated, Models, RecordedPose, Recording, RecordingDeleted, RecordingId, RenameModel,
-    ReviewRequest, ReviewSaved, SavedModel, TrainRequest, TrainerRequest, TrainingCancelled,
-    TrainingProgress, TrainingReport, TrainingStage, TrainingStarted, TrainingStatus,
-    TransferStatus, MOUTH_CAMERAS,
+    ReviewRequest, ReviewSaved, SavedModel, TrainRequest, TrainerArchitecture, TrainerRequest,
+    TrainingCancelled, TrainingProgress, TrainingReport, TrainingStage, TrainingStarted,
+    TrainingStatus, TransferStatus, MOUTH_CAMERAS,
 };
 use vrft_tongue::Role;
 
 /// Whether `dir` holds both halves of a model pair.
 pub fn complete_pair(dir: &Path) -> bool {
     Role::Gate.find(dir).is_some() && Role::Direction.find(dir).is_some()
+}
+
+/// Whether `dir` holds a universal face model.
+pub fn has_face_model(dir: &Path) -> bool {
+    dir.join(vrft_tongue::universal::FILE_NAME).is_file()
+}
+
+/// Whether `dir` holds a model inference can use: a pair, or a universal
+/// face model, which runs beside the built-in pair.
+pub fn complete_model(dir: &Path) -> bool {
+    complete_pair(dir) || has_face_model(dir)
+}
+
+fn architecture(dir: &Path) -> TrainerArchitecture {
+    if has_face_model(dir) && !complete_pair(dir) {
+        TrainerArchitecture::UniversalFace
+    } else {
+        TrainerArchitecture::StereoPair
+    }
 }
 type ApiError = (StatusCode, String);
 fn bad(error: impl ToString) -> ApiError {
@@ -161,7 +180,7 @@ pub fn routes(manager: TrainingManager) -> Router {
         .with_state(manager)
 }
 
-fn safe_child(root: &Path, id: &str) -> Result<PathBuf, String> {
+pub(crate) fn safe_child(root: &Path, id: &str) -> Result<PathBuf, String> {
     if id.is_empty()
         || id.len() > 120
         || !id
@@ -439,7 +458,11 @@ async fn start(
     }
     let base = crate::camera::base_model_dir(&manager.root).map_err(bad)?;
     // The synthetic examples keep what the user's recordings don't show.
-    recordings.extend(builtin::examples_dir(&manager.root));
+    // They hold the pair's 224 px mouth views, which the face model can't
+    // read.
+    if request.architecture == TrainerArchitecture::StereoPair {
+        recordings.extend(builtin::examples_dir(&manager.root));
+    }
     // Training runs in a child vrft_d, so cancelling can simply end it.
     let trainer = std::env::current_exe().map_err(bad)?;
     let id = format!(
@@ -459,6 +482,7 @@ async fn start(
         device: request.device,
         base_model_dir: base,
         recordings,
+        architecture: request.architecture,
     };
     save_json(
         &output.join("request.json"),
@@ -652,6 +676,7 @@ pub fn selected_dir(
 async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, ApiError> {
     let mut result = vec![SavedModel {
         id: "demo".into(),
+        architecture: TrainerArchitecture::StereoPair,
         name: Some("Built-in model".into()),
         report: None,
     }];
@@ -665,10 +690,11 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
             }
             let path = entry.path();
             if let Ok(report) = read_json(&path.join("report.json")) {
-                if complete_pair(&path) {
+                if complete_model(&path) {
                     let report: Option<TrainingReport> = serde_json::from_value(report).ok();
                     result.push(SavedModel {
                         id: entry.file_name().to_string_lossy().into_owned(),
+                        architecture: architecture(&path),
                         name: report
                             .as_ref()
                             .map(|report| report.name.clone())
@@ -698,7 +724,7 @@ async fn delete_model(
         return Err(bad("The built-in model can't be deleted"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
-    if !path.join("report.json").is_file() && !complete_pair(&path) {
+    if !path.join("report.json").is_file() && !complete_model(&path) {
         return Err(bad("Not a trained model"));
     }
     let in_use = request.id == active_id(&manager.root);
@@ -737,6 +763,7 @@ async fn rename_model(
     save_json(&report_path, &report).map_err(bad)?;
     Ok(Json(SavedModel {
         id: request.id,
+        architecture: architecture(&path),
         name: Some(name.to_owned()),
         report: serde_json::from_value(report).ok(),
     }))
@@ -765,7 +792,7 @@ fn select_model(root: &Path, id: &str) -> Result<(), String> {
     if id != "demo" {
         let path = safe_child(&root.join(".local/tongue-models"), id)?;
         read_json(&path.join("report.json"))?;
-        if !complete_pair(&path) {
+        if !complete_model(&path) {
             return Err("Model pair is incomplete".into());
         }
     }
@@ -776,6 +803,18 @@ fn select_model(root: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_face_model_alone_is_a_model() {
+        let root = test_root("face-only");
+        let dir = root.join(".local/tongue-models/face");
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!complete_model(&dir));
+        fs::write(dir.join(vrft_tongue::universal::FILE_NAME), b"weights").unwrap();
+        assert!(complete_model(&dir) && !complete_pair(&dir));
+        assert_eq!(architecture(&dir), TrainerArchitecture::UniversalFace);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn reject_path_traversal_before_filesystem_access() {
         for id in ["", "..", "../capture", "C:\\file", "a/b", "a.b"] {

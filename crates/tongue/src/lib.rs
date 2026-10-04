@@ -9,6 +9,7 @@ pub mod model;
 pub mod preprocess;
 pub mod recordings;
 pub mod train;
+pub mod universal;
 
 pub use backend::Accelerator;
 pub use checkpoint::{Checkpoint, Role};

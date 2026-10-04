@@ -26,12 +26,18 @@ tongue:
     en: "Expression poses"
   mode_negatives_about:
     en: "Tongue in, other expressions · about 2 min"
+  mode_enrollment:
+    en: "Face setup"
+  mode_enrollment_about:
+    en: "Your own neutral, puffs and tongue directions · about 1 min"
   extra_follow:
     en: "Best for direction tracking, and each run takes a new route. Watch this window from the headset."
   extra_direction:
     en: "Try this if left and right, or up and down, jump between the extremes."
   extra_negatives:
     en: "Try this if your tongue shows when it shouldn't, such as while talking or smiling."
+  extra_enrollment:
+    en: "With the headset's five cameras on: the universal face model reads every frame against these poses. The newest one is used."
   tip_aim:
     en: "Aim for what the prompt asks, such as “tip only” or “half out”, rather than the extreme. The positions in between matter."
   tip_cameras:
@@ -364,6 +370,14 @@ tongue:
     en: "Device"
   device_about:
     en: "Automatic uses the GPU when one works, and the CPU otherwise. Choosing GPU won't fall back to the CPU."
+  architecture:
+    en: "Model"
+  architecture_about:
+    en: "The tongue pair reads the mouth cameras. The universal face model reads all five cameras, for the brows, cheeks and tongue, and runs while the headset sends them."
+  architecture_pair:
+    en: "Tongue pair"
+  architecture_face:
+    en: "Universal face"
   training_passes:
     en: "Training passes"
   training_passes_about:

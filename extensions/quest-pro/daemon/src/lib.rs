@@ -62,7 +62,7 @@ fn train_tongue(arguments: &[String]) -> anyhow::Result<()> {
         options.epochs = epochs.parse().context("--epochs must be a whole number")?;
     }
     if let Some(rate) = value("--learning-rate") {
-        options.learning_rate = rate.parse().context("--learning-rate must be a number")?;
+        options.learning_rate = Some(rate.parse().context("--learning-rate must be a number")?);
     }
     if let Some(layers) = value("--layers") {
         options.trainable = layers.parse().map_err(anyhow::Error::msg)?;

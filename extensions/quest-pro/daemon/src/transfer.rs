@@ -296,7 +296,7 @@ fn export(
         &fs::read(model.join("report.json")).map_err(|_| "That model isn't there any more")?,
     )
     .map_err(|e| e.to_string())?;
-    if !crate::training::complete_pair(&model) {
+    if !crate::training::complete_model(&model) {
         return Err("That model's files are incomplete".into());
     }
     if !folder.is_dir() {
@@ -635,7 +635,7 @@ fn check(base: &Path, manifest: &Manifest, progress: &mut Progress) -> Result<()
     }
 
     let model = base.join(MODEL_DIR);
-    if !crate::training::complete_pair(&model) {
+    if !crate::training::complete_model(&model) {
         return Err("The export's model is missing half of its pair".into());
     }
     let report =

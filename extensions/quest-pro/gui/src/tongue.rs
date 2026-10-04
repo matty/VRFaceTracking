@@ -5,8 +5,8 @@
 //! browser.
 use crate::daemon::{
     BuiltinStage, BuiltinStatus, CaptureCommand, CaptureMode, CaptureStatus, Coverage, Models,
-    QuestProClient, Recording, SavedModel, TrainRequest, TrainingDevice, TrainingProgress,
-    TrainingStage, TrainingStatus, TransferKind, TransferStatus, CHEEK_POSES,
+    QuestProClient, Recording, SavedModel, TrainRequest, TrainerArchitecture, TrainingDevice,
+    TrainingProgress, TrainingStage, TrainingStatus, TransferKind, TransferStatus, CHEEK_POSES,
 };
 use crate::live::{CameraFeed, QuestProState};
 use crate::speech::Speaker;
@@ -87,7 +87,7 @@ const UNTICKED_FILE: &str = ".local/tongue-unticked.json";
 type Text = fn() -> Cow<'static, str>;
 
 /// The recordings the daemon can guide: its mode, name, and what it's for.
-const MODES: [(CaptureMode, Text, Text); 4] = [
+const MODES: [(CaptureMode, Text, Text); 5] = [
     (
         CaptureMode::Core,
         || t!("tongue.mode_core"),
@@ -108,6 +108,11 @@ const MODES: [(CaptureMode, Text, Text); 4] = [
         || t!("tongue.mode_negatives"),
         || t!("tongue.mode_negatives_about"),
     ),
+    (
+        CaptureMode::Enrollment,
+        || t!("tongue.mode_enrollment"),
+        || t!("tongue.mode_enrollment_about"),
+    ),
 ];
 
 fn mode_name(mode: Option<CaptureMode>) -> Cow<'static, str> {
@@ -118,7 +123,7 @@ fn mode_name(mode: Option<CaptureMode>) -> Cow<'static, str> {
 }
 
 /// The optional recordings, each with an icon and when it helps.
-const EXTRAS: [(CaptureMode, IconName, Text); 3] = [
+const EXTRAS: [(CaptureMode, IconName, Text); 4] = [
     (CaptureMode::Follow, IconName::Route, || {
         t!("tongue.extra_follow")
     }),
@@ -127,6 +132,9 @@ const EXTRAS: [(CaptureMode, IconName, Text); 3] = [
     }),
     (CaptureMode::Negatives, IconName::MessageCircle, || {
         t!("tongue.extra_negatives")
+    }),
+    (CaptureMode::Enrollment, IconName::ScanFace, || {
+        t!("tongue.extra_enrollment")
     }),
 ];
 
@@ -328,6 +336,8 @@ pub struct TongueTraining {
     chosen_step: Option<Step>,
     show_advanced: bool,
     device: Device,
+    /// The stereo pair, or the universal face model.
+    architecture: TrainerArchitecture,
     name: Entity<InputState>,
     epochs: Entity<InputState>,
     /// The trained model being renamed, and its new name.
@@ -442,6 +452,7 @@ impl TongueTraining {
             chosen_step: None,
             show_advanced: false,
             device: Device::Automatic,
+            architecture: TrainerArchitecture::StereoPair,
             name,
             epochs,
             renaming: None,
@@ -1335,6 +1346,7 @@ impl TongueTraining {
             recordings: self.ticked().iter().map(|r| r.id.clone()).collect(),
             device: self.device.wire(),
             epochs,
+            architecture: self.architecture,
         };
         self.train_message = None;
         self.failed_job = None;
@@ -2958,6 +2970,38 @@ impl TongueTraining {
                         cx.notify();
                     }))
             }));
+        let architectures = h_flex()
+            .gap_0p5()
+            .p(px(3.))
+            .rounded(px(9.))
+            .bg(palette::sunken())
+            .border_1()
+            .border_color(palette::line())
+            .children(
+                [
+                    (
+                        TrainerArchitecture::StereoPair,
+                        t!("tongue.architecture_pair"),
+                    ),
+                    (
+                        TrainerArchitecture::UniversalFace,
+                        t!("tongue.architecture_face"),
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (architecture, label))| {
+                    Button::new(("architecture", index))
+                        .small()
+                        .ghost()
+                        .selected(self.architecture == architecture)
+                        .label(label)
+                        .on_click(cx.listener(move |section, _, _, cx| {
+                            section.architecture = architecture;
+                            cx.notify();
+                        }))
+                }),
+            );
         // Folded away along the card's foot, for what most people leave alone.
         let advanced = v_flex()
             .mx(px(-22.))
@@ -3021,6 +3065,12 @@ impl TongueTraining {
                             t!("tongue.device"),
                             Some(t!("tongue.device_about")),
                             devices,
+                            cx,
+                        ))
+                        .child(option_row(
+                            t!("tongue.architecture"),
+                            Some(t!("tongue.architecture_about")),
+                            architectures,
                             cx,
                         ))
                         .child(option_row(

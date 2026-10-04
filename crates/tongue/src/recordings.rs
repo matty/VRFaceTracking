@@ -9,7 +9,7 @@
 //! five-camera stream, all five since. The tongue pair reads the mouth pair
 //! of either.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -40,6 +40,16 @@ pub struct Sample {
     pub native: Option<f32>,
     /// A follow-the-dot frame, whose label moves with the dot.
     pub moving: bool,
+    /// Labels for the universal face model's outputs beyond the tongue, by
+    /// name (see `universal::FACE_TARGETS`): each one given is labelled.
+    pub face: BTreeMap<String, f32>,
+    /// The enrollment slot this frame shows, such as `neutral`, when it was
+    /// recorded as one (the one-minute face setup, or a rendered set's
+    /// enrollment poses).
+    pub anchor: Option<String>,
+    /// Whose face this is, in a rendered set of many; recordings are one
+    /// person's.
+    pub identity: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +69,10 @@ struct Line {
     targets: Vec<f32>,
     native_tongue_out: Option<f32>,
     dot: Option<serde_json::Value>,
+    #[serde(default)]
+    face: BTreeMap<String, f32>,
+    anchor: Option<String>,
+    identity: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -156,6 +170,16 @@ impl Recording {
                     );
                 }
             }
+            if line
+                .face
+                .values()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            {
+                bail!(
+                    "Invalid face labels for sample {index} in {}",
+                    dir.display()
+                );
+            }
             if excluded.contains(&line.step) {
                 continue;
             }
@@ -167,6 +191,9 @@ impl Recording {
                 cheeks_labelled,
                 native: line.native_tongue_out,
                 moving: line.dot.is_some_and(|dot| !dot.is_null()),
+                face: line.face,
+                anchor: line.anchor,
+                identity: line.identity,
             });
         }
         Ok(Self {

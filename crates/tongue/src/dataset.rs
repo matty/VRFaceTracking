@@ -74,7 +74,7 @@ fn spread(count: usize, keep: usize) -> Vec<usize> {
 }
 
 /// The pose, or for follow-the-dot frames the direction the label points.
-fn sampling_key(sample: &Sample) -> String {
+pub(crate) fn sampling_key(sample: &Sample) -> String {
     if !sample.moving || sample.targets[0] < 0.5 {
         return sample.pose.clone();
     }
@@ -90,7 +90,7 @@ fn sampling_key(sample: &Sample) -> String {
 }
 
 /// Which samples of one recording are used.
-fn select(samples: &[Sample]) -> Vec<&Sample> {
+pub(crate) fn select(samples: &[Sample]) -> Vec<&Sample> {
     let mut steps: Vec<(u64, Vec<&Sample>)> = vec![];
     for sample in samples {
         match steps.iter_mut().find(|(step, _)| *step == sample.step) {
@@ -387,6 +387,9 @@ mod tests {
             cheeks_labelled: true,
             native: Some(targets[0]),
             moving,
+            face: Default::default(),
+            anchor: None,
+            identity: None,
         }
     }
 
