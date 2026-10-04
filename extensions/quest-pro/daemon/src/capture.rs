@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -339,7 +339,222 @@ const FOLLOW_RESTS: [(&str, &str); 4] = [
 const REST_SECONDS: f32 = 3.0;
 const REST_SETTLE: f32 = 1.0;
 
-const MODE_NAMES: &str = "core, direction, negatives, or follow";
+const MODE_NAMES: &str = "core, direction, negatives, follow, or enrollment";
+
+/// The one-minute face setup, after QFT+'s: a neutral face, then each pose
+/// the universal face model reads frames against, held for
+/// [`ENROLL_HOLD`] seconds after [`ENROLL_RAMP`] to get into it, with a
+/// short rest between. The tongue's directions follow straight out without
+/// a rest, since it stays out; together they fit how the wearer's tongue
+/// reads each way. Two brow poses at the end label the brows for personal
+/// training. Every saved frame is labelled with its slot (`anchor`).
+const ENROLL_RAMP: f32 = 1.0;
+const ENROLL_HOLD: f32 = 2.0;
+const ENROLL_REST: f32 = 1.0;
+/// The setup's poses: name, instruction, slot, the tongue and cheek
+/// labels, face labels, and whether a rest follows.
+type EnrollPose = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    [f32; 12],
+    &'static [(&'static str, f32)],
+    bool,
+);
+const BROWS_RESTING: [(&str, f32); 8] = [
+    ("brow_inner_up_left", 0.0),
+    ("brow_inner_up_right", 0.0),
+    ("brow_outer_up_left", 0.0),
+    ("brow_outer_up_right", 0.0),
+    ("brow_lowerer_left", 0.0),
+    ("brow_lowerer_right", 0.0),
+    ("brow_pinch_left", 0.0),
+    ("brow_pinch_right", 0.0),
+];
+const NEUTRAL_FACE: [(&str, f32); 11] = [
+    ("jaw_open", 0.0),
+    ("cheek_suck_left", 0.0),
+    ("cheek_suck_right", 0.0),
+    ("brow_inner_up_left", 0.0),
+    ("brow_inner_up_right", 0.0),
+    ("brow_outer_up_left", 0.0),
+    ("brow_outer_up_right", 0.0),
+    ("brow_lowerer_left", 0.0),
+    ("brow_lowerer_right", 0.0),
+    ("brow_pinch_left", 0.0),
+    ("brow_pinch_right", 0.0),
+];
+const ENROLL_POSES: [EnrollPose; 15] = [
+    (
+        "Relax and look ahead",
+        "Keep your face still and relaxed.",
+        Some("neutral"),
+        NEUTRAL,
+        &NEUTRAL_FACE,
+        true,
+    ),
+    (
+        "Open your mouth wide",
+        "As wide as is comfortable.",
+        Some("jaw_open"),
+        NEUTRAL,
+        &[("jaw_open", 1.0)],
+        true,
+    ),
+    (
+        "Kiss",
+        "Push your lips forward into a kiss.",
+        Some("pucker"),
+        NEUTRAL,
+        &[],
+        true,
+    ),
+    (
+        "Puff both cheeks",
+        "Fill with air, lips sealed.",
+        Some("puff"),
+        puff(1.0, 1.0),
+        &[],
+        true,
+    ),
+    (
+        "Puff only your left cheek",
+        "Move the air into your left cheek, lips sealed.",
+        Some("puff_left"),
+        puff(1.0, 0.0),
+        &[],
+        true,
+    ),
+    (
+        "Puff only your right cheek",
+        "Move the air into your right cheek, lips sealed.",
+        Some("puff_right"),
+        puff(0.0, 1.0),
+        &[],
+        true,
+    ),
+    (
+        "Stick your tongue out",
+        "Straight out, as far as is comfortable.",
+        Some("tongue_out"),
+        out(1.0, 0.0, 0.0),
+        &[],
+        false,
+    ),
+    (
+        "Point your tongue up",
+        "Keep it out, tip up toward your nose.",
+        Some("tongue_up"),
+        out(1.0, 0.0, 1.0),
+        &[],
+        false,
+    ),
+    (
+        "Point your tongue down",
+        "Keep it out, tip down toward your chin.",
+        Some("tongue_down"),
+        out(1.0, 0.0, -1.0),
+        &[],
+        false,
+    ),
+    (
+        "Point your tongue left",
+        "Keep it out. Your left, as you feel it.",
+        Some("tongue_left"),
+        out(1.0, -1.0, 0.0),
+        &[],
+        false,
+    ),
+    (
+        "Point your tongue right",
+        "Keep it out. Your right, as you feel it.",
+        Some("tongue_right"),
+        out(1.0, 1.0, 0.0),
+        &[],
+        true,
+    ),
+    (
+        "Suck in your cheeks",
+        "Pull both cheeks in between your teeth.",
+        Some("suck"),
+        NEUTRAL,
+        &[("cheek_suck_left", 1.0), ("cheek_suck_right", 1.0)],
+        true,
+    ),
+    (
+        "Raise both eyebrows",
+        "As if surprised.",
+        None,
+        NEUTRAL,
+        &[
+            ("brow_inner_up_left", 1.0),
+            ("brow_inner_up_right", 1.0),
+            ("brow_outer_up_left", 1.0),
+            ("brow_outer_up_right", 1.0),
+            ("brow_lowerer_left", 0.0),
+            ("brow_lowerer_right", 0.0),
+            ("brow_pinch_left", 0.0),
+            ("brow_pinch_right", 0.0),
+        ],
+        true,
+    ),
+    (
+        "Frown",
+        "Pull your brows down and together, as if annoyed.",
+        None,
+        NEUTRAL,
+        &[
+            ("brow_inner_up_left", 0.0),
+            ("brow_inner_up_right", 0.0),
+            ("brow_outer_up_left", 0.0),
+            ("brow_outer_up_right", 0.0),
+            ("brow_lowerer_left", 1.0),
+            ("brow_lowerer_right", 1.0),
+            ("brow_pinch_left", 1.0),
+            ("brow_pinch_right", 1.0),
+        ],
+        true,
+    ),
+    (
+        "Relax again",
+        "Let your face go loose and still.",
+        None,
+        NEUTRAL,
+        &BROWS_RESTING,
+        false,
+    ),
+];
+
+/// The face setup's steps, about a minute in all.
+fn enrollment_steps() -> Vec<Step> {
+    let mut steps = vec![];
+    for (name, instruction, slot, targets, face, rest) in ENROLL_POSES {
+        steps.push(Step {
+            name: name.into(),
+            instruction: instruction.into(),
+            seconds: ENROLL_RAMP + ENROLL_HOLD,
+            settle: ENROLL_RAMP,
+            targets: Some(targets),
+            path: None,
+            anchor: slot,
+            face: (!face.is_empty()).then(|| face.iter().copied().collect()),
+        });
+        if rest {
+            // All settle, so nothing is saved.
+            steps.push(Step {
+                name: "Relax".into(),
+                instruction: "Let your face go loose.".into(),
+                seconds: ENROLL_REST,
+                settle: ENROLL_REST,
+                targets: Some(NEUTRAL),
+                path: None,
+                anchor: None,
+                face: None,
+            });
+        }
+    }
+    steps
+}
 
 /// One prompt of a guided recording. Held poses have fixed `targets`;
 /// follow-the-dot rounds have a `path` of `[seconds, horizontal, vertical]`
@@ -354,6 +569,12 @@ struct Step {
     targets: Option<[f32; 12]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<Vec<[f32; 3]>>,
+    /// The face setup slot this step shows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor: Option<&'static str>,
+    /// Labels for the universal face model's other outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    face: Option<BTreeMap<&'static str, f32>>,
 }
 
 impl Step {
@@ -365,6 +586,8 @@ impl Step {
             settle: SETTLE_SECONDS,
             targets: Some(pose.targets),
             path: None,
+            anchor: None,
+            face: None,
         }
     }
 
@@ -460,6 +683,8 @@ fn follow_steps(seed: u64) -> Vec<Step> {
             settle: FOLLOW_READY,
             targets: None,
             path: Some(path),
+            anchor: None,
+            face: None,
         });
         let (name, instruction) = FOLLOW_RESTS[round % FOLLOW_RESTS.len()];
         steps.push(Step {
@@ -469,6 +694,8 @@ fn follow_steps(seed: u64) -> Vec<Step> {
             settle: REST_SETTLE,
             targets: Some(NEUTRAL),
             path: None,
+            anchor: None,
+            face: None,
         });
     }
     steps
@@ -478,6 +705,9 @@ fn follow_steps(seed: u64) -> Vec<Step> {
 fn steps_for(name: &str, seed: u64) -> Option<(&'static str, Vec<Step>)> {
     if name == "follow" {
         return Some(("follow", follow_steps(seed)));
+    }
+    if name == "enrollment" {
+        return Some(("enrollment", enrollment_steps()));
     }
     MODES
         .into_iter()
@@ -507,6 +737,10 @@ struct Sample<'a> {
     captured_unix_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     dot: Option<[f32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    face: Option<&'a BTreeMap<&'static str, f32>>,
 }
 
 struct Session {
@@ -525,6 +759,8 @@ struct Session {
     /// Why the recording paused by itself, if it did.
     pause_reason: Option<PauseReason>,
     last_frame_at: Instant,
+    /// Where a finished face setup is recorded as the one in use.
+    enrollment_file: Option<PathBuf>,
 }
 
 impl Session {
@@ -559,6 +795,10 @@ fn captures_root() -> Result<PathBuf, String> {
     let root = std::env::current_dir().map_err(|e| e.to_string())?;
     Ok(root.join(".local/tongue-captures"))
 }
+
+/// Names the face setup in use: `{"recording": "<id>"}`, the id being its
+/// folder under `.local/tongue-captures`.
+pub const ENROLLMENT_FILE: &str = ".local/face-enrollment.json";
 
 #[derive(Clone, Default)]
 pub struct CaptureManager(Arc<Mutex<Inner>>);
@@ -629,6 +869,13 @@ impl CaptureManager {
             paused_at: None,
             pause_reason: None,
             last_frame_at: Instant::now(),
+            enrollment_file: (mode == "enrollment")
+                .then(|| {
+                    std::env::current_dir()
+                        .map(|root| root.join(ENROLLMENT_FILE))
+                        .ok()
+                })
+                .flatten(),
         });
         inner.message = "Recording started. Follow each prompt.".into();
         log::info!("Tongue capture started: mode={mode}");
@@ -795,6 +1042,8 @@ impl CaptureManager {
             native_tongue_out: native,
             captured_unix_ms: unix_ms(received_at),
             dot,
+            anchor: prompt.anchor,
+            face: prompt.face.as_ref(),
         };
         let result = (|| -> std::io::Result<()> {
             session.frames.write_all(&pixels)?;
@@ -895,6 +1144,24 @@ fn finish(inner: &mut Inner, message: &str) {
             inner.message = format!("Recording stopped: saving failed ({error}).");
         } else {
             inner.message = format!("{message} {} frames saved.", session.samples);
+        }
+        // A face setup with frames becomes the one in use.
+        if let (Some(file), true) = (&session.enrollment_file, session.samples > 0) {
+            let id = session
+                .directory
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let written = fs::write(
+                file,
+                serde_json::to_vec_pretty(&serde_json::json!({"recording": id})).unwrap(),
+            );
+            match written {
+                Ok(()) => log::info!("Face setup {id} is now in use"),
+                Err(error) => {
+                    inner.message = format!("Face setup saved, but not put in use ({error}).")
+                }
+            }
         }
         inner.last_directory = Some(session.directory);
         inner.last_samples = session.samples;
@@ -1011,6 +1278,7 @@ mod tests {
             paused_at: None,
             pause_reason: None,
             last_frame_at: Instant::now(),
+            enrollment_file: None,
         });
         manager.set_module_loaded(true);
         manager.update_native(0.);
@@ -1134,6 +1402,55 @@ mod tests {
             CameraLayout::all()
         );
         remove_test_directory(root);
+    }
+
+    #[test]
+    fn the_face_setup_takes_about_a_minute_and_labels_its_slots() {
+        let steps = enrollment_steps();
+        let seconds: f32 = steps.iter().map(|step| step.seconds).sum();
+        assert!((50.0..=70.0).contains(&seconds), "{seconds}");
+        let slots: Vec<&str> = steps.iter().filter_map(|step| step.anchor).collect();
+        for slot in [
+            "neutral",
+            "jaw_open",
+            "pucker",
+            "puff",
+            "tongue_out",
+            "suck",
+        ] {
+            assert!(slots.contains(&slot), "{slot}");
+        }
+        for slot in ["tongue_up", "tongue_down", "tongue_left", "tongue_right"] {
+            assert!(slots.contains(&slot), "{slot}");
+        }
+        // Rests record nothing.
+        assert!(steps
+            .iter()
+            .filter(|step| step.name == "Relax")
+            .all(|step| step.settle >= step.seconds));
+
+        let (manager, directory) = manager_with("enrollment");
+        let pointer = directory.join("face-enrollment.json");
+        manager
+            .0
+            .lock()
+            .unwrap()
+            .session
+            .as_mut()
+            .unwrap()
+            .enrollment_file = Some(pointer.clone());
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
+        manager.stop();
+        let labels = saved_labels(&directory);
+        assert_eq!(labels[0]["anchor"], "neutral");
+        assert_eq!(labels[0]["face"]["jaw_open"], 0.0);
+        let pointer: serde_json::Value =
+            serde_json::from_slice(&fs::read(pointer).unwrap()).unwrap();
+        assert_eq!(
+            pointer["recording"],
+            directory.file_name().unwrap().to_string_lossy().as_ref()
+        );
+        remove_test_directory(directory);
     }
 
     #[test]
@@ -1419,6 +1736,8 @@ mod tests {
             settle: 1.5,
             targets: None,
             path: Some(path),
+            anchor: None,
+            face: None,
         };
         let (targets, dot) = step.label(0.5 + FOLLOW_LAG);
         assert!((targets[2] - 0.5).abs() < 1e-5);

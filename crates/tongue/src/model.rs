@@ -28,20 +28,21 @@ const SIGNED: [&str; 3] = ["horizontal", "vertical", "twist"];
 /// Named weights, as in a PyTorch state dict.
 pub type Weights = HashMap<String, TensorData>;
 
-struct Reader<'a> {
-    weights: &'a mut Weights,
-    /// Make up freshly initialised weights instead of reading them.
-    fresh: bool,
+pub(crate) struct Reader<'a> {
+    pub(crate) weights: &'a mut Weights,
+    /// Make up freshly initialised weights for any the state dict lacks
+    /// instead of failing.
+    pub(crate) fresh: bool,
 }
 
 impl Reader<'_> {
-    fn take<B: Backend, const D: usize>(
+    pub(crate) fn take<B: Backend, const D: usize>(
         &mut self,
         name: &str,
         shape: [usize; D],
         device: &B::Device,
     ) -> Result<Tensor<B, D>> {
-        if self.fresh {
+        if self.fresh && !self.weights.contains_key(name) {
             return Ok(fresh(shape, device));
         }
         let data = self
@@ -62,7 +63,10 @@ impl Reader<'_> {
 
 /// PyTorch's default initialisation for a convolution or linear weight or
 /// bias: uniform within 1/sqrt(fan in).
-fn fresh<B: Backend, const D: usize>(shape: [usize; D], device: &B::Device) -> Tensor<B, D> {
+pub(crate) fn fresh<B: Backend, const D: usize>(
+    shape: [usize; D],
+    device: &B::Device,
+) -> Tensor<B, D> {
     use burn::tensor::Distribution;
     let fan_in: usize = if D == 1 {
         192
@@ -73,7 +77,11 @@ fn fresh<B: Backend, const D: usize>(shape: [usize; D], device: &B::Device) -> T
     Tensor::random(shape, Distribution::Uniform(-bound, bound), device)
 }
 
-fn save<B: Backend, const D: usize>(out: &mut Weights, name: String, tensor: Tensor<B, D>) {
+pub(crate) fn save<B: Backend, const D: usize>(
+    out: &mut Weights,
+    name: String,
+    tensor: Tensor<B, D>,
+) {
     out.insert(name, tensor.into_data().convert::<f32>());
 }
 
@@ -133,7 +141,7 @@ pub struct Norm<B: Backend> {
 
 impl<B: Backend> Norm<B> {
     fn load(r: &mut Reader, name: &str, channels: usize, device: &B::Device) -> Result<Self> {
-        if r.fresh {
+        if r.fresh && !r.weights.contains_key(&format!("{name}.weight")) {
             let ones = || Tensor::ones([channels], device);
             let zeros = || Tensor::zeros([channels], device);
             return Ok(Self {
@@ -296,7 +304,7 @@ impl<B: Backend> Stage<B> {
         ]
     }
 
-    fn load(
+    pub(crate) fn load(
         r: &mut Reader,
         prefix: &str,
         start: usize,
@@ -311,26 +319,26 @@ impl<B: Backend> Stage<B> {
         })
     }
 
-    fn save(&self, prefix: &str, start: usize, out: &mut Weights) {
+    pub(crate) fn save(&self, prefix: &str, start: usize, out: &mut Weights) {
         let [conv, norm, residual] = Self::names(prefix, start);
         self.down.save([&conv, &norm], out);
         self.residual.save(&residual, out);
     }
 
-    fn fold(self) -> Self {
+    pub(crate) fn fold(self) -> Self {
         Self {
             down: self.down.fold(),
             residual: self.residual.fold(),
         }
     }
 
-    fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub(crate) fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
         self.residual.forward(silu(self.down.forward(input)))
     }
 }
 
 /// Encoder stages: (first nn.Sequential index, [in, out, kernel], stride).
-const ENCODER: [(usize, [usize; 3], usize); 4] = [
+pub(crate) const ENCODER: [(usize, [usize; 3], usize); 4] = [
     (0, [1, 32, 5], 2),
     (4, [32, 64, 3], 2),
     (8, [64, 96, 3], 2),

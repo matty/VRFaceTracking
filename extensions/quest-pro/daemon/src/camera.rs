@@ -20,11 +20,12 @@ use std::time::{Duration, Instant};
 use vrft_api::{UnifiedExpressions, UnifiedTrackingData};
 use vrft_extension::FrameHook;
 use vrft_quest_pro_protocol::{
-    routes, CameraLayout, CaptureCommand, CaptureRequest, Headset, Mismatch, ModelStatus,
-    OutputStatus, PupilMark, Status, TongueSource, Update, BROW_CAMERA, EYE_CAMERAS, FRAME_HEIGHT,
-    FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS, PUPILS_HEADER, STRIP_BYTES, STRIP_WIDTH,
-    VIEW_BYTES,
+    routes, CameraLayout, CaptureCommand, CaptureRequest, FaceModelStatus, FaceValue, Headset,
+    Mismatch, ModelStatus, OutputStatus, PupilMark, Status, TongueSource, Update, BROW_CAMERA,
+    EYE_CAMERAS, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS, PUPILS_HEADER,
+    STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
 };
+use vrft_tongue::universal::{Enrollment, FaceModel, FACE_TARGETS};
 use vrft_tongue::{Accelerator, Role, TongueModel, CHEEK_COLUMNS};
 
 const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
@@ -194,6 +195,33 @@ impl From<std::io::Error> for Disconnect {
     }
 }
 
+/// Outputs of the universal face model.
+const FACE_OUTPUTS: usize = FACE_TARGETS.len();
+
+/// What VRFT sends from the universal face model besides the tongue and
+/// cheek puffs, by index into `FACE_TARGETS`.
+const FACE_SHAPES: [(usize, UnifiedExpressions); 11] = [
+    (6, UnifiedExpressions::CheekSuckLeft),
+    (7, UnifiedExpressions::CheekSuckRight),
+    (8, UnifiedExpressions::JawOpen),
+    (9, UnifiedExpressions::BrowInnerUpLeft),
+    (10, UnifiedExpressions::BrowInnerUpRight),
+    (11, UnifiedExpressions::BrowOuterUpLeft),
+    (12, UnifiedExpressions::BrowOuterUpRight),
+    (13, UnifiedExpressions::BrowLowererLeft),
+    (14, UnifiedExpressions::BrowLowererRight),
+    (15, UnifiedExpressions::BrowPinchLeft),
+    (16, UnifiedExpressions::BrowPinchRight),
+];
+
+/// The universal face model's outputs for a frame, after smoothing.
+#[derive(Clone)]
+struct FaceReading {
+    values: [f32; FACE_OUTPUTS],
+    /// Which outputs it was trained for; the others are left to the module.
+    enabled: [bool; FACE_OUTPUTS],
+}
+
 #[derive(Clone)]
 struct TonguePrediction {
     sequence: u64,
@@ -208,6 +236,8 @@ struct TonguePrediction {
     threshold: f32,
     /// Whether the model has learned cheek puffs.
     cheeks: bool,
+    /// Set when the universal face model made this prediction.
+    face: Option<FaceReading>,
 }
 
 type TongueState = Arc<RwLock<Option<TonguePrediction>>>;
@@ -222,6 +252,7 @@ struct OutputSnapshot {
     values: [f32; 12],
     cheek_source: TongueSource,
     cheek_puffs: [f32; 2],
+    face: Vec<FaceValue>,
 }
 
 type OutputState = Arc<RwLock<Option<OutputSnapshot>>>;
@@ -314,6 +345,7 @@ impl QuestProOverlay {
             .filter(|_| settings.mouth_model);
         let cheek_source = apply_cheeks(data, fresh.as_ref(), &settings);
         let cheek_puffs = CHEEK_SHAPES.map(|shape| data.shapes[shape as usize].weight);
+        let face = apply_face(data, fresh.as_ref(), &settings);
         let Some(prediction) = fresh else {
             if self.active {
                 if settings.mouth_model {
@@ -332,6 +364,7 @@ impl QuestProOverlay {
                 values: tongue_values(data),
                 cheek_source,
                 cheek_puffs,
+                face,
             });
             return;
         };
@@ -364,6 +397,7 @@ impl QuestProOverlay {
             values,
             cheek_source,
             cheek_puffs,
+            face,
         });
         if self.last_diagnostic.elapsed() >= Duration::from_secs(5) {
             info!(
@@ -400,6 +434,34 @@ fn apply_cheeks(
     TongueSource::EnhancedModel
 }
 
+/// Sends the universal face model's cheek suck, jaw and brows while it is
+/// fresh and the setting is on, for each output it was trained for; the
+/// tracking module's values stay otherwise. Returns what was sent.
+fn apply_face(
+    data: &mut UnifiedTrackingData,
+    prediction: Option<&TonguePrediction>,
+    settings: &QuestProSettings,
+) -> Vec<FaceValue> {
+    let Some(face) = prediction
+        .and_then(|prediction| prediction.face.as_ref())
+        .filter(|_| settings.face_expressions)
+    else {
+        return vec![];
+    };
+    FACE_SHAPES
+        .iter()
+        .filter(|(index, _)| face.enabled[*index])
+        .map(|&(index, shape)| {
+            let value = face.values[index].clamp(0.0, 1.0);
+            data.shapes[shape as usize].weight = value;
+            FaceValue {
+                expression: format!("{shape:?}"),
+                value,
+            }
+        })
+        .collect()
+}
+
 /// Combines camera and native visibility as the reference hub's modes do.
 /// Without native tracking (no module, or it is silent) every mode uses the
 /// camera alone.
@@ -434,21 +496,32 @@ fn smoothing_alpha(strength: f32, elapsed_s: f64) -> f32 {
     (1.0 - (-elapsed_s / time_constant).exp()) as f32
 }
 
-#[derive(Default)]
-struct TongueSmoother {
-    value: Option<[f32; MODEL_HEADS]>,
+struct Smoother<const N: usize> {
+    value: Option<[f32; N]>,
     last_headset_ns: u64,
     last_received_at: Option<Instant>,
 }
 
-impl TongueSmoother {
+impl<const N: usize> Default for Smoother<N> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            last_headset_ns: 0,
+            last_received_at: None,
+        }
+    }
+}
+
+type TongueSmoother = Smoother<MODEL_HEADS>;
+
+impl<const N: usize> Smoother<N> {
     fn update(
         &mut self,
-        raw: [f32; MODEL_HEADS],
+        raw: [f32; N],
         headset_ns: u64,
         received_at: Instant,
         strength: f32,
-    ) -> [f32; MODEL_HEADS] {
+    ) -> [f32; N] {
         // Prefer the headset clock; network delivery adds jitter.
         let elapsed = if headset_ns > self.last_headset_ns && self.last_headset_ns != 0 {
             Some((headset_ns - self.last_headset_ns) as f64 / 1e9)
@@ -522,6 +595,8 @@ struct FeedState {
     mismatch: Option<Mismatch>,
     /// Why the tongue model is not running, shown in the preview.
     model_error: Option<String>,
+    /// The universal face model, while inference runs.
+    face_model: Option<FaceModelStatus>,
     /// When the headset is next tried, while backing off after a failure.
     retry_at: Option<Instant>,
 }
@@ -722,6 +797,7 @@ fn status(preview: &PreviewState) -> Status {
             values: snapshot.values,
             cheek_source: snapshot.cheek_source,
             cheek_puffs: snapshot.cheek_puffs,
+            face: snapshot.face.clone(),
         });
     Status {
         status: state.status.clone(),
@@ -752,6 +828,7 @@ fn status(preview: &PreviewState) -> Status {
         headset: state.headset.clone(),
         headset_mismatch: state.mismatch.clone(),
         model_error: state.model_error.clone(),
+        face_model: state.face_model.clone(),
         model,
         output,
         eyes,
@@ -1332,10 +1409,119 @@ fn model_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     // A trained model in use runs without the built-in one.
     let dir = crate::training::selected_dir(&cwd, || base_model_dir(&cwd))?;
-    if !crate::training::complete_pair(&dir) {
-        return Err(format!("incomplete tongue model pair in {}", dir.display()));
+    if crate::training::complete_pair(&dir) {
+        return Ok(dir);
     }
-    Ok(dir)
+    // A universal face model alone: the built-in pair reads the mouth
+    // cameras whenever the five cameras don't stream.
+    if crate::training::has_face_model(&dir) {
+        return base_model_dir(&cwd);
+    }
+    Err(format!("incomplete tongue model pair in {}", dir.display()))
+}
+
+/// The universal face model to run on five-camera frames, and the face
+/// setup to enroll, as the model in use and `.local/face-enrollment.json`
+/// say. `VRFT_FACE_MODEL` names a checkpoint to use instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FaceChoice {
+    model: Option<PathBuf>,
+    enrollment: Option<String>,
+}
+
+impl FaceChoice {
+    fn current(cwd: &Path) -> Self {
+        use vrft_tongue::universal::FILE_NAME;
+        // The model in use's folder; for the built-in model, that's where
+        // a built-in face model would sit beside the pair.
+        let model = match std::env::var_os("VRFT_FACE_MODEL") {
+            Some(path) => Some(PathBuf::from(path)),
+            None => crate::training::selected_dir(cwd, || base_model_dir(cwd))
+                .ok()
+                .map(|dir| dir.join(FILE_NAME))
+                .filter(|path| path.is_file()),
+        };
+        let enrollment = std::fs::read(cwd.join(crate::capture::ENROLLMENT_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value["recording"].as_str().map(str::to_owned));
+        Self { model, enrollment }
+    }
+}
+
+/// The universal face model, loaded with the wearer's face setup.
+struct FaceRuntime {
+    choice: FaceChoice,
+    model: Option<FaceModel>,
+    status: FaceModelStatus,
+}
+
+impl FaceRuntime {
+    fn start(cwd: &Path, choice: FaceChoice) -> Self {
+        let mut status = FaceModelStatus {
+            enrollment: choice.enrollment.clone(),
+            ..FaceModelStatus::default()
+        };
+        let Some(path) = &choice.model else {
+            return Self {
+                choice,
+                model: None,
+                status,
+            };
+        };
+        let loaded = FaceModel::load(path, Accelerator::from_env()).and_then(|mut model| {
+            if let Some(id) = &choice.enrollment {
+                let dir = crate::training::safe_child(&cwd.join(".local/tongue-captures"), id)
+                    .map_err(anyhow::Error::msg)?;
+                match Enrollment::from_recording(&dir).and_then(|setup| model.enroll(&setup)) {
+                    Ok(()) => {}
+                    // Without its setup the model still runs, reading every
+                    // anchor as missing.
+                    Err(error) => warn!("Quest Pro face: face setup {id} unusable ({error:#})"),
+                }
+            }
+            Ok(model)
+        });
+        let model = match loaded {
+            Ok(model) => {
+                let info = model.info();
+                info!(
+                    "Quest Pro face: loaded {} device={} enrolled={:?} tongue_map={} untrained={:?}",
+                    path.display(),
+                    info.device,
+                    info.enrolled,
+                    info.tongue_map,
+                    info.disabled_targets
+                );
+                status.loaded = true;
+                status.device = Some(info.device.clone());
+                status.enrolled = info.enrolled.clone();
+                status.tongue_map = info.tongue_map;
+                status.disabled_targets = info.disabled_targets.clone();
+                Some(model)
+            }
+            Err(error) => {
+                warn!("Quest Pro face: model unavailable ({error:#}); the mouth pair runs alone");
+                status.error = Some(format!("{error:#}"));
+                None
+            }
+        };
+        Self {
+            choice,
+            model,
+            status,
+        }
+    }
+}
+
+/// The universal face model's tongue and cheek puffs as the pair's twelve
+/// heads: visibility, extension, horizontal, vertical, no shapes, puffs.
+fn face_as_heads(face: &[f32; FACE_OUTPUTS]) -> [f32; MODEL_HEADS] {
+    let mut heads = [0.0; MODEL_HEADS];
+    heads[..4].copy_from_slice(&face[..4]);
+    heads[CHEEK_COLUMNS[0]] = face[4];
+    heads[CHEEK_COLUMNS[1]] = face[5];
+    heads
 }
 
 fn start_model(dir: &std::path::Path) -> Result<TongueModel, String> {
@@ -1413,7 +1599,8 @@ struct InferenceContext<'a> {
 }
 
 /// Runs the pair in `dir` on each new frame until VRFT stops or another
-/// model is selected.
+/// model is selected, and the universal face model, when there is one, on
+/// each five-camera frame instead.
 fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), String> {
     let mut model = start_model(dir)?;
     let InferenceContext {
@@ -1423,6 +1610,10 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
         running,
     } = context;
     feed.write().unwrap().model_error = None;
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let mut face = FaceRuntime::start(&cwd, FaceChoice::current(&cwd));
+    feed.write().unwrap().face_model = Some(face.status.clone());
+    let mut face_smoother = Smoother::<FACE_OUTPUTS>::default();
     let (camera_weight, threshold) = (model.info().camera_weight, model.info().threshold);
     let cheeks = CHEEK_COLUMNS.iter().all(|&column| {
         let name = vrft_tongue::TARGETS[column];
@@ -1440,7 +1631,15 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
     while running.load(Ordering::SeqCst) {
         if last_selection_check.elapsed() >= Duration::from_secs(1) {
             if model_dir().is_ok_and(|selected| selected != dir) {
+                feed.write().unwrap().face_model = None;
                 return Ok(());
+            }
+            // A new face model or face setup loads in place.
+            let choice = FaceChoice::current(&cwd);
+            if choice != face.choice {
+                face = FaceRuntime::start(&cwd, choice);
+                face_smoother = Smoother::default();
+                feed.write().unwrap().face_model = Some(face.status.clone());
             }
             last_selection_check = Instant::now();
         }
@@ -1449,7 +1648,10 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             info!("Quest Pro tongue: mouth model turned off; unloading it");
             return Ok(());
         }
-        let frame = feed.read().unwrap().latest.clone();
+        let (frame, strip) = {
+            let feed = feed.read().unwrap();
+            (feed.latest.clone(), feed.strip.clone())
+        };
         let Some(frame) = frame else {
             thread::sleep(Duration::from_millis(10));
             continue;
@@ -1459,15 +1661,67 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             continue;
         }
         let started = Instant::now();
-        let values = model
-            .predict(&frame.pixels)
-            .map_err(|error| format!("{error:#}"))?;
+        let strength = settings.get().tongue_smoothing;
+        // Five cameras and a face model: it reads the whole strip. Otherwise
+        // the pair reads the mouth cameras, as before.
+        let strip = strip.filter(|strip| strip.sequence == frame.sequence);
+        let face_result = match (face.model.as_mut(), strip) {
+            (Some(face_model), Some(strip)) => Some(face_model.predict(&strip.pixels)),
+            _ => None,
+        };
+        let face_values = match face_result {
+            Some(Ok(prediction)) => face.model.as_ref().map(|model| (prediction.values, model)),
+            Some(Err(error)) => {
+                warn!("Quest Pro face: inference failed ({error:#}); the mouth pair takes over");
+                face.status.error = Some(format!("{error:#}"));
+                face.status.loaded = false;
+                face.model = None;
+                None
+            }
+            None => None,
+        };
+        let face_active = face_values.is_some();
+        if face.status.active != face_active {
+            face.status.active = face_active;
+            if face_active {
+                info!("Quest Pro face: five cameras live; the universal face model runs");
+            }
+            feed.write().unwrap().face_model = Some(face.status.clone());
+        }
+        let (values, face_reading, frame_weight, frame_threshold, frame_cheeks) = match face_values
+        {
+            Some((raw, face_model)) => {
+                let enabled: [bool; FACE_OUTPUTS] =
+                    std::array::from_fn(|index| face_model.enabled(index));
+                let smoothed =
+                    face_smoother.update(raw, frame.headset_ns, frame.received_at, strength);
+                let info = face_model.info();
+                (
+                    face_as_heads(&raw),
+                    Some(FaceReading {
+                        values: smoothed,
+                        enabled,
+                    }),
+                    info.camera_weight,
+                    info.threshold,
+                    enabled[4] && enabled[5],
+                )
+            }
+            None => (
+                model
+                    .predict(&frame.pixels)
+                    .map_err(|error| format!("{error:#}"))?,
+                None,
+                camera_weight,
+                threshold,
+                cheeks,
+            ),
+        };
         if let Some(previous) = last_sequence {
             dropped_frames += frame.sequence.saturating_sub(previous.saturating_add(1));
         }
         last_sequence = Some(frame.sequence);
         let inference_ms = started.elapsed().as_secs_f32() * 1000.0;
-        let strength = settings.get().tongue_smoothing;
         let smoothed = smoother.update(values, frame.headset_ns, frame.received_at, strength);
         *latest.write().unwrap() = Some(TonguePrediction {
             sequence: frame.sequence,
@@ -1476,9 +1730,10 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             received_at: frame.received_at,
             inference_ms,
             dropped_frames,
-            camera_weight,
-            threshold,
-            cheeks,
+            camera_weight: frame_weight,
+            threshold: frame_threshold,
+            cheeks: frame_cheeks,
+            face: face_reading,
         });
         if last_log.elapsed() >= Duration::from_secs(5) {
             info!(
@@ -1656,6 +1911,7 @@ mod tests {
             camera_weight: 0.95,
             threshold: 0.85,
             cheeks: true,
+            face: None,
         }
     }
 
@@ -1796,6 +2052,90 @@ mod tests {
             let output = overlay.output.read().unwrap().clone().unwrap();
             assert_eq!(output.cheek_source, TongueSource::TrackingModule);
         }
+    }
+
+    fn face_reading() -> FaceReading {
+        let mut values = [0.0; FACE_OUTPUTS];
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = index as f32 / 20.0;
+        }
+        let mut enabled = [true; FACE_OUTPUTS];
+        // Never trained: the frown.
+        enabled[15] = false;
+        enabled[16] = false;
+        FaceReading { values, enabled }
+    }
+
+    #[test]
+    fn the_face_model_sends_what_it_learned_while_fresh() {
+        let mut fresh = prediction(Instant::now());
+        fresh.face = Some(face_reading());
+        let mut data = UnifiedTrackingData::default();
+        data.shapes[UnifiedExpressions::BrowPinchLeft as usize].weight = 0.33;
+        let mut overlay = overlay(Some(fresh.clone()));
+        overlay.apply(&mut data);
+        assert_eq!(
+            data.shapes[UnifiedExpressions::BrowInnerUpLeft as usize].weight,
+            9.0 / 20.0
+        );
+        assert_eq!(
+            data.shapes[UnifiedExpressions::CheekSuckRight as usize].weight,
+            7.0 / 20.0
+        );
+        assert_eq!(
+            data.shapes[UnifiedExpressions::BrowPinchLeft as usize].weight,
+            0.33,
+            "an output it never learned stays the module's"
+        );
+        let output = overlay.output.read().unwrap().clone().unwrap();
+        assert_eq!(output.face.len(), 9);
+        assert!(output
+            .face
+            .iter()
+            .any(|value| value.expression == "JawOpen" && value.value == 0.4));
+
+        // Stale, or turned off: the module's values stay.
+        for mut overlay in [
+            self::overlay(Some(TonguePrediction {
+                received_at: Instant::now() - Duration::from_secs(1),
+                ..fresh.clone()
+            })),
+            overlay_with(
+                Some(fresh.clone()),
+                QuestProSettings {
+                    face_expressions: false,
+                    ..QuestProSettings::default()
+                },
+            ),
+        ] {
+            let mut data = UnifiedTrackingData::default();
+            data.shapes[UnifiedExpressions::BrowInnerUpLeft as usize].weight = 0.7;
+            overlay.apply(&mut data);
+            assert_eq!(
+                data.shapes[UnifiedExpressions::BrowInnerUpLeft as usize].weight,
+                0.7
+            );
+            assert!(overlay
+                .output
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .face
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn the_face_models_tongue_and_puffs_fill_the_pairs_heads() {
+        let values = face_reading().values;
+        let heads = face_as_heads(&values);
+        assert_eq!(heads[..4], values[..4]);
+        assert!(heads[4..10].iter().all(|value| *value == 0.0));
+        assert_eq!(
+            (heads[CHEEK_COLUMNS[0]], heads[CHEEK_COLUMNS[1]]),
+            (values[4], values[5])
+        );
     }
 
     #[test]

@@ -35,7 +35,9 @@ use crate::infer::guarded;
 use crate::model::{TongueNet, Trainable, Weights, FEATURES, OUTPUT_BIAS, OUTPUT_WEIGHT};
 use crate::recordings::Recording;
 use crate::{CHEEK_COLUMNS, TARGETS};
-use vrft_quest_pro_protocol::{ReportCalibration, TrainingProgress, TrainingReport, TrainingStage};
+use vrft_quest_pro_protocol::{
+    ReportCalibration, TrainerArchitecture, TrainingProgress, TrainingReport, TrainingStage,
+};
 
 // Loss weights follow Qpro-Enhanced-FT's train_tongue_model.py.
 /// Hidden-tongue hard negatives get extra authority against false
@@ -100,17 +102,29 @@ pub use vrft_quest_pro_protocol::TrainerRequest as Request;
 pub struct Options {
     pub epochs: usize,
     pub batch_size: usize,
-    pub learning_rate: f64,
+    /// When unset, each architecture's own: [`PAIR_LEARNING_RATE`] for the
+    /// stereo pair, `universal::train::LEARNING_RATE` for the face model.
+    pub learning_rate: Option<f64>,
     pub trainable: Trainable,
+    /// The universal face model starts from this face checkpoint instead of
+    /// the base pair's encoder, such as one pretrained elsewhere.
+    pub init: Option<PathBuf>,
+    /// The universal face model's input size; tests use a smaller one.
+    pub image_size: Option<usize>,
 }
+
+/// Fine-tuning the stereo pair, which starts trained.
+pub const PAIR_LEARNING_RATE: f64 = 1e-4;
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             epochs: 12,
             batch_size: 12,
-            learning_rate: 1e-4,
+            learning_rate: None,
             trainable: Trainable::All,
+            init: None,
+            image_size: None,
         }
     }
 }
@@ -119,7 +133,7 @@ impl Default for Options {
 /// another process has either file open (VRFT's status poll reads
 /// progress.json every second, and antivirus may be scanning the new file);
 /// those holds last milliseconds, so retry briefly.
-fn write_json(path: &Path, value: &Value) -> Result<()> {
+pub(crate) fn write_json(path: &Path, value: &Value) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
     for attempt in 0.. {
@@ -134,12 +148,12 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
     unreachable!()
 }
 
-struct Progress {
-    output: PathBuf,
+pub(crate) struct Progress {
+    pub(crate) output: PathBuf,
 }
 
 impl Progress {
-    fn report(&self, progress: TrainingProgress) {
+    pub(crate) fn report(&self, progress: TrainingProgress) {
         let value = serde_json::to_value(&progress).expect("progress serializes");
         // progress.json only feeds the app; never lose a run over it.
         if let Err(error) = write_json(&self.output.join("progress.json"), &value) {
@@ -211,7 +225,10 @@ impl Tracker<'_> {
 /// Runs a training request, writing the new pair, `report.json` and
 /// `progress.json` into `output`, which must be a new folder.
 pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
-    if options.epochs == 0 || options.batch_size == 0 || options.learning_rate <= 0.0 {
+    if options.epochs == 0
+        || options.batch_size == 0
+        || options.learning_rate.is_some_and(|rate| rate <= 0.0)
+    {
         bail!("Training settings must be positive");
     }
     std::fs::create_dir_all(output)?;
@@ -255,6 +272,16 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
             .iter()
             .map(|path| Recording::open(path))
             .collect::<Result<Vec<_>>>()?;
+        if request.architecture == TrainerArchitecture::UniversalFace {
+            return crate::universal::train::run(
+                &request,
+                &recordings,
+                &output,
+                options,
+                &progress,
+                accelerator,
+            );
+        }
         let labels = Frames::load(&recordings, None)?;
         let enabled = labels.trainable_targets()?;
         let job = Job {
@@ -459,7 +486,8 @@ impl Job<'_> {
                 }
                 let mut grads = GradientsParams::from_grads(loss.backward(), &model);
                 clip_gradients(&model, &mut grads, MAX_GRADIENT_NORM);
-                model = optimizer.step(self.options.learning_rate, model, grads);
+                let rate = self.options.learning_rate.unwrap_or(PAIR_LEARNING_RATE);
+                model = optimizer.step(rate, model, grads);
                 tracker.update(focus, epoch, (batch + 1) as f64 / batches as f64, false);
             }
         }
@@ -727,7 +755,7 @@ fn disabled_names(enabled: &[bool; TARGETS.len()]) -> Vec<String> {
 /// Scales every gradient so their combined L2 norm is at most `max_norm`,
 /// like `torch.nn.utils.clip_grad_norm_` (Burn's own clipping is per
 /// parameter).
-fn clip_gradients<B: AutodiffBackend, M: AutodiffModule<B>>(
+pub(crate) fn clip_gradients<B: AutodiffBackend, M: AutodiffModule<B>>(
     model: &M,
     grads: &mut GradientsParams,
     max_norm: f32,
@@ -878,7 +906,7 @@ fn best_runs(scores: &[f64], best: f64) -> Vec<(usize, usize)> {
 /// Only the user's own frames count when there are any: synthetic ones
 /// have no tracking module TongueOut, and the camera is surer of them than
 /// of real faces.
-fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
+pub(crate) fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
     let thresholds: Vec<f64> = (0..86).map(|i| (10 + i) as f64 / 100.0).collect();
     let recorded = frames.records.iter().any(|record| !record.synthetic);
     let (camera, records): (Vec<f64>, Vec<&Record>) = camera

@@ -13,5 +13,5 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 nvidia-smi -L
 cd "$ROOT/src"
-cargo build --release -p vrft-tongue --features cuda --example train --example evaluate --example probe
+cargo build --release -p vrft-tongue --features cuda --example train --example evaluate --example evaluate_face --example probe
 echo "built"

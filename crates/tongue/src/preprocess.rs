@@ -74,6 +74,14 @@ impl AreaResize {
     /// `out` (size * size bytes).
     pub fn view(&self, strip: &[u8], view: usize, out: &mut [u8]) {
         assert_eq!(strip.len(), FRAME_BYTES);
+        self.view_of(strip, STRIP_WIDTH, view, out);
+    }
+
+    /// Resizes the `view`th 400 px view of a strip `width` pixels wide,
+    /// such as one of the five cameras of a 2000 px strip, into `out`.
+    pub fn view_of(&self, strip: &[u8], width: usize, view: usize, out: &mut [u8]) {
+        assert_eq!(strip.len(), width * VIEW);
+        assert!((view + 1) * VIEW <= width);
         assert_eq!(out.len(), self.size * self.size);
         let size = self.size;
         let mut row = vec![0f32; size];
@@ -85,7 +93,7 @@ impl AreaResize {
             }
         };
         for tap in &self.taps {
-            let source = &strip[tap.source * STRIP_WIDTH + view * VIEW..][..VIEW];
+            let source = &strip[tap.source * width + view * VIEW..][..VIEW];
             row.fill(0.0);
             for x in &self.taps {
                 row[x.destination] += source[x.source] as f32 * x.alpha;

@@ -5,7 +5,12 @@
 #
 #   test <recording>                  the recording every job is scored on
 #   base <model dir>                  the pair every job starts from
+#   architecture universal-face-v1    optional: train the universal face model
+#   enrollment <recording>            optional: the face setup it's scored with
 #   <name> <epochs> <rate> <layers> <recording>[,<recording>...]
+#
+# For the universal face model, <layers> is ignored and <rate> may be
+# "default" (3e-4).
 #
 # Each job's pair, report.json, training log and score end up in
 # /workspace/vrft/results/<name>/. A job whose report already exists is
@@ -15,13 +20,15 @@ ROOT=/workspace/vrft
 export PATH="$HOME/.cargo/bin:$PATH"
 BIN="$ROOT/src/target/release/examples"
 GPUS=$(nvidia-smi -L | wc -l)
-test="" base=""
+test="" base="" architecture="spatial-stereo-resnet-v2" enrollment=""
 names=() lines=()
 while read -r first rest; do
     case "$first" in
     "" | "#"*) ;;
     test) test="$ROOT/data/$rest" ;;
     base) base="$ROOT/data/$rest" ;;
+    architecture) architecture="$rest" ;;
+    enrollment) enrollment="$ROOT/data/$rest" ;;
     *) names+=("$first"); lines+=("$rest") ;;
     esac
 done < "$1"
@@ -36,11 +43,13 @@ train() {
     local list
     list=$(echo "$recordings" | tr ',' '\n' | sed "s#^#$ROOT/data/#" |
         python3 -c 'import json, sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
-    echo "{\"name\": \"$name\", \"device\": \"gpu\", \"base_model_dir\": \"$base\", \"recordings\": $list}" \
+    echo "{\"name\": \"$name\", \"device\": \"gpu\", \"base_model_dir\": \"$base\", \"recordings\": $list, \"architecture\": \"$architecture\"}" \
         > "$out/request.json"
     echo "$name: training on GPU $gpu"
+    local rate_flag=(--learning-rate "$rate")
+    [ "$rate" = default ] && rate_flag=()
     CUDA_VISIBLE_DEVICES=$gpu "$BIN/train" --request "$out/request.json" --output "$out" \
-        --epochs "$epochs" --learning-rate "$rate" --layers "$layers" > "$out/training.log" 2>&1 ||
+        --epochs "$epochs" "${rate_flag[@]}" --layers "$layers" > "$out/training.log" 2>&1 ||
         echo "$name: training failed, see $out/training.log"
 }
 
@@ -56,7 +65,10 @@ wait
 for name in "${names[@]}"; do
     out="$ROOT/results/$name"
     echo "=== $name"
-    if [ -e "$out/report.json" ]; then
+    if [ -e "$out/report.json" ] && [ "$architecture" = universal-face-v1 ]; then
+        "$BIN/evaluate_face" "$out" "$test" ${enrollment:+--enrollment "$enrollment"} |
+            tee "$out/score.txt" | tail -20
+    elif [ -e "$out/report.json" ]; then
         "$BIN/evaluate" "$out" "$test" | tee "$out/score.txt" | tail -3
     else
         tail -3 "$out/training.log"

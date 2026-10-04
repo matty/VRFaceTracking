@@ -37,7 +37,7 @@ CI does not run these, so run them yourself when you touch the area:
 - Tongue training runs below normal priority while `VRChat.exe` runs, checked every 2 s (`extensions/quest-pro/daemon/src/priority.rs`).
 - Threads are named (`output`, `local-api`, `quest-pro-tongue`, ...), so Process Explorer's Threads tab shows which one is busy.
 - Logging: `RUST_LOG=info,vrft_d=debug`.
-- Env overrides: `VRFT_QUEST_PRO_ADDR`, `VRFT_TONGUE_MODEL_DIR`, `VRFT_TONGUE_DEVICE`, `VRFT_EYE_CALIBRATION`.
+- Env overrides: `VRFT_QUEST_PRO_ADDR`, `VRFT_TONGUE_MODEL_DIR`, `VRFT_FACE_MODEL` (a universal face checkpoint), `VRFT_TONGUE_DEVICE`, `VRFT_EYE_CALIBRATION`.
 - Over USB: `adb forward tcp:27274 tcp:27274`, then `VRFT_QUEST_PRO_ADDR=127.0.0.1:27274`.
 - Ports:
   - 27273: relay, on the headset's loopback

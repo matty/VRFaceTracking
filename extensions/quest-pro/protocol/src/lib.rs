@@ -285,6 +285,9 @@ pub struct Status {
     /// Why the tongue model isn't running.
     pub model_error: Option<String>,
     pub model: Option<ModelStatus>,
+    /// The universal face model, which runs on five-camera frames when
+    /// there is one.
+    pub face_model: Option<FaceModelStatus>,
     pub output: Option<OutputStatus>,
     pub eyes: EyeStatus,
     /// Yaw and pitch in degrees that VRFT sends for its left and right eye,
@@ -361,6 +364,36 @@ pub struct ModelStatus {
     pub threshold: f32,
 }
 
+/// The universal face model.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaceModelStatus {
+    /// Loaded and ready for five-camera frames.
+    pub loaded: bool,
+    /// Why it isn't loaded.
+    pub error: Option<String>,
+    pub device: Option<String>,
+    /// The face setup's slots it reads, and the setup's recording; empty
+    /// without one.
+    pub enrolled: Vec<String>,
+    pub enrollment: Option<String>,
+    /// Whether the face setup fitted the wearer's tongue directions.
+    pub tongue_map: bool,
+    /// Outputs it wasn't trained for.
+    pub disabled_targets: Vec<String>,
+    /// Whether the latest prediction came from it rather than the pair.
+    pub active: bool,
+}
+
+/// One expression VRFT sends from the universal face model.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaceValue {
+    /// The VRCFT Unified Expressions name, such as `BrowInnerUpLeft`.
+    pub expression: String,
+    pub value: f32,
+}
+
 /// Where the tongue, or the cheek puffs, VRFT sends came from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TongueSource {
@@ -386,6 +419,9 @@ pub struct OutputStatus {
     pub cheek_source: TongueSource,
     /// CheekPuffLeft and CheekPuffRight as sent.
     pub cheek_puffs: [f32; 2],
+    /// What the universal face model sends besides the tongue and cheek
+    /// puffs (cheek suck, jaw, brows), while it runs.
+    pub face: Vec<FaceValue>,
 }
 
 /// Independent per-eye gaze.
@@ -483,6 +519,9 @@ pub struct Settings {
     /// Keep the pupil size where it is while the headset reports the eyes
     /// closed, rather than measuring the lids.
     pub pupil_hold_closed: bool,
+    /// Send the brows, cheek suck and jaw from the universal face model
+    /// while it runs.
+    pub face_expressions: bool,
 }
 
 impl Default for Settings {
@@ -499,6 +538,7 @@ impl Default for Settings {
             pupils: true,
             pupil_smoothing: 40.0,
             pupil_hold_closed: true,
+            face_expressions: true,
         }
     }
 }
@@ -528,6 +568,8 @@ pub struct SettingsPatch {
     pub pupil_smoothing: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pupil_hold_closed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face_expressions: Option<bool>,
 }
 
 /// How the camera model's visibility confidence combines with the tracking
@@ -579,10 +621,19 @@ pub enum CaptureMode {
     Negatives,
     /// Follow a moving dot.
     Follow,
+    /// The one-minute face setup: the poses the universal face model reads
+    /// each frame against.
+    Enrollment,
 }
 
 impl CaptureMode {
-    pub const ALL: [CaptureMode; 4] = [Self::Core, Self::Direction, Self::Negatives, Self::Follow];
+    pub const ALL: [CaptureMode; 5] = [
+        Self::Core,
+        Self::Direction,
+        Self::Negatives,
+        Self::Follow,
+        Self::Enrollment,
+    ];
 
     /// The name in URLs, recordings' metadata and ids.
     pub fn name(self) -> &'static str {
@@ -591,6 +642,7 @@ impl CaptureMode {
             Self::Direction => "direction",
             Self::Negatives => "negatives",
             Self::Follow => "follow",
+            Self::Enrollment => "enrollment",
         }
     }
 
@@ -796,6 +848,19 @@ impl TrainingDevice {
     }
 }
 
+/// Which model a training run makes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrainerArchitecture {
+    /// The stereo tongue pair (gate and direction), from the mouth cameras.
+    #[default]
+    #[serde(rename = "spatial-stereo-resnet-v2")]
+    StereoPair,
+    /// The universal face model, from all five cameras, conditioned on the
+    /// wearer's face setup.
+    #[serde(rename = "universal-face-v1")]
+    UniversalFace,
+}
+
 /// Trains a personal model from recordings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -806,6 +871,7 @@ pub struct TrainRequest {
     pub device: TrainingDevice,
     /// 1 to 60.
     pub epochs: u32,
+    pub architecture: TrainerArchitecture,
 }
 
 /// What the daemon asks the trainer (`vrft_d train-tongue`) for, in the new
@@ -816,10 +882,13 @@ pub struct TrainerRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub device: TrainingDevice,
-    /// The model pair training starts from.
+    /// The model pair training starts from. The universal face model takes
+    /// its encoder from the direction model.
     pub base_model_dir: PathBuf,
     /// The recordings' folders.
     pub recordings: Vec<PathBuf>,
+    #[serde(default)]
+    pub architecture: TrainerArchitecture,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1032,6 +1101,8 @@ pub struct Models {
 pub struct SavedModel {
     /// `demo` for the built-in model, else `<unix ms>-<pid>`.
     pub id: String,
+    /// What it is: the stereo pair, or the universal face model.
+    pub architecture: TrainerArchitecture,
     pub name: Option<String>,
     pub report: Option<TrainingReport>,
 }

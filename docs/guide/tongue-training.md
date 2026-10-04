@@ -52,17 +52,51 @@ They download with the built-in model, once (about 123 MB, VRFaceTracking's `ton
 
 The model has two more outputs, one per cheek, on the direction model. Unlike the tongue's, they are labelled on every frame, with the tongue in or out: 1 for the puffed cheek in the cheek poses and in **Cheeks puffed**, 0 everywhere else, including the tongue pushing into a cheek. The built-in model has no cheek outputs, and fine-tuning changes weights too gently to grow new ones from nothing, so each cheek's output is first fitted by least squares on the direction model's features for the labelled frames (each pose weighted equally), fine-tuned with the rest of the model, then fitted again on the fine-tuned features. Models trained before cheek puffs load with them switched off.
 
+## Universal face model (five cameras)
+
+With the headset app's **All five cameras** on, VRFT can also run a *universal face model* (`universal-face-v1`, `crates/tongue/src/universal/`). It reads all five cameras, the eyes, the mouth and the brow, and adds the brows (inner up, outer up, lowerer and pinch, each side), cheek suck and jaw open to the tongue and cheek puffs. It follows the design of QFT+'s universal face model, rebuilt in VRFT's own code and trained from VRFT's own v8 encoder rather than QFT+'s weights:
+
+- every camera view, shrunk to 128 px, goes through the first three stages of the v8 encoder, shared by all five;
+- the mouth cameras then go through two separate copies of the encoder's last stage: one gives a 512-wide mouth embedding, the other the tongue's visibility, extension and direction;
+- the eye and brow cameras go through a third copy, which gives a 480-wide brow embedding;
+- the mouth outputs (cheek puffs, cheek suck, jaw open) read the mouth embedding against your own face setup poses, and the brows read the brow embedding against your own neutral face. Any pose you didn't record is replaced by a learned stand-in, so the model works without a face setup too.
+
+**Face setup.** Under **Extra recordings**, **Face setup** takes about a minute:
+
+- a relaxed neutral face;
+- mouth wide open, a kiss, both cheeks puffed, then each cheek on its own;
+- the tongue straight out, then up, down, left and right;
+- cheeks sucked in, eyebrows raised, a frown.
+
+The newest face setup is the one in use (`.local/face-enrollment.json`), and the model reloads with it within a second. The face setup does three things:
+
+- its poses become the model's reference poses for you;
+- the five held tongue poses fit how your tongue reads each way (a ridge regression on the mouth embedding, gains capped at 2), which then sets the tongue's direction;
+- its frames are labelled, so they also train a personal model.
+
+**Training.** Under **Advanced options**, set **Model** to **Universal face**. Training starts from the built-in pair's encoder, and each pose is sampled equally within each face. Each training frame is read against frames of the same face's setup poses, from the same recording session or the same rendered person. Poses are left out at random, and sometimes all of them, so the model also learns to work without them.
+
+An output is trained only once the recordings label it enough: 8 active and 20 resting frames, for example. Anything not trained is sent from the tracking module as before.
+
+Brows need five-camera recordings: a face setup, or rendered sets. Recordings of the mouth cameras alone still train the tongue and cheeks. The tongue's visibility threshold is chosen as for the pair.
+
+A universal model trains for many more passes than fine-tuning the pair; train it on a GPU (see [tools/tongue-remote](../../tools/tongue-remote/README.md)).
+
+**Live.** While five-camera frames arrive and the model in use has a universal face model (`universal-face-v1.safetensors` in its folder, or beside the built-in pair, or named by `VRFT_FACE_MODEL`), it replaces the pair for the tongue and cheek puffs, and sends the brows, cheek suck and jaw it was trained for. When the headset falls back to the mouth stream, the pair takes over. Its values replace the tracking module's only while they are fresh. **Face expressions** (`face_expressions` in the Quest Pro settings) turns the brows, suck and jaw off.
+
 ## Local files
 
 - `.local/tongue-captures/<recording>/`: `frames.gray8` (each frame the views of the cameras `metadata.json` lists in `cameras`, side by side: the mouth pair, 800 × 400, or, while the headset sends all five cameras, the whole 2000 × 400 strip; recordings without `cameras` hold the mouth pair, and training reads the mouth pair of either), `samples.jsonl` (twelve labels per frame, the last two the left and right cheek puffs; ten in recordings made before cheek puffs), `metadata.json`, and optional files listing skipped (`excluded_steps.json`) and unticked (`review.json`) poses. Follow-the-dot samples also store `dot`, the dot's position at that frame; their labels use its position 0.35 seconds earlier, and `metadata.json` keeps every route so labels can be recomputed.
 - `.local/tongue-models/<run>/`: the gate and direction checkpoints (`.safetensors`), `request.json`, `progress.json`, `training.log` and `report.json`. Failed or cancelled runs never become selectable. Models trained by older versions (`.pt`) still load.
+- `.local/tongue-models/<run>/universal-face-v1.safetensors`: a universal face model, with the same `report.json`. A folder with only that runs it beside the built-in pair.
+- `.local/face-enrollment.json`: the face setup in use, `{"recording": "<recording id>"}`.
 - `.local/tongue-active.json`: the ID of the model in use. The built-in checkpoints in `models/quest-pro/` are never modified.
 
 Raw recordings, personal weights, reports and the selection are ignored by Git. If `VRFT_TONGUE_MODEL_DIR` is set, it takes priority. New models are still saved but not switched on, and model selection is disabled.
 
 ## Command line
 
-`vrft_d.exe train-tongue --request request.json --output <new-model-folder> [--epochs 12]` runs one training outside the app. The request contains `name`, `device` (`auto`, `cpu` or `gpu`), `base_model_dir`, and `recordings`, a list of recording folders. Use a new output folder for each run. The app writes these files for you.
+`vrft_d.exe train-tongue --request request.json --output <new-model-folder> [--epochs 12]` runs one training outside the app. The request contains `name`, `device` (`auto`, `cpu` or `gpu`), `base_model_dir`, `recordings`, a list of recording folders, and optionally `architecture`: `universal-face-v1` trains the universal face model instead of the pair. Use a new output folder for each run. The app writes these files for you.
 
 ## Developer checks
 

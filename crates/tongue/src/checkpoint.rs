@@ -218,29 +218,8 @@ impl Checkpoint {
     }
 
     fn load_safetensors(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let (_, header) = SafeTensors::read_metadata(&bytes)?;
-        let metadata = header
-            .metadata()
-            .as_ref()
-            .and_then(|entries| entries.get(METADATA_KEY))
-            .context("not a VRFT tongue model")?;
-        let metadata: Metadata = serde_json::from_str(metadata)?;
-        let tensors = SafeTensors::deserialize(&bytes)?;
-        let mut weights = Weights::new();
-        for (name, view) in tensors.tensors() {
-            if view.dtype() != Dtype::F32 {
-                bail!("{name} is not float32");
-            }
-            let values: Vec<f32> = view
-                .data()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| f32::from_le_bytes(*bytes))
-                .collect();
-            weights.insert(name, TensorData::new(values, view.shape().to_vec()));
-        }
+        let (metadata, weights) = read_safetensors(path)?;
+        let metadata: Metadata = serde_json::from_str(&metadata)?;
         Ok(Self { metadata, weights })
     }
 
@@ -248,39 +227,70 @@ impl Checkpoint {
     /// never sees a partial model.
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        let mut names: Vec<&String> = self.weights.keys().collect();
-        names.sort();
-        let bytes: Vec<(String, Vec<u8>, Vec<usize>)> = names
-            .into_iter()
-            .map(|name| {
-                let data = &self.weights[name];
-                let values = data
-                    .as_slice::<f32>()
-                    .map_err(|error| anyhow::anyhow!("{name}: {error:?}"))?;
-                let raw = values
-                    .iter()
-                    .flat_map(|value| value.to_le_bytes())
-                    .collect();
-                Ok((name.clone(), raw, data.shape.as_slice().to_vec()))
-            })
-            .collect::<Result<_>>()?;
-        let views = bytes
-            .iter()
-            .map(|(name, raw, shape)| {
-                Ok((
-                    name.as_str(),
-                    TensorView::new(Dtype::F32, shape.clone(), raw)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let info = HashMap::from([(
-            METADATA_KEY.to_string(),
-            serde_json::to_string(&self.metadata)?,
-        )]);
-        let serialized = safetensors::serialize(views, Some(info))?;
-        let temporary = path.with_extension("safetensors.tmp");
-        std::fs::write(&temporary, serialized)?;
-        std::fs::rename(&temporary, path)?;
-        Ok(())
+        write_safetensors(path, &self.weights, &serde_json::to_string(&self.metadata)?)
     }
+}
+
+/// A VRFT safetensors checkpoint's metadata JSON and float32 weights.
+pub(crate) fn read_safetensors(path: &Path) -> Result<(String, Weights)> {
+    let bytes = std::fs::read(path)?;
+    let (_, header) = SafeTensors::read_metadata(&bytes)?;
+    let metadata = header
+        .metadata()
+        .as_ref()
+        .and_then(|entries| entries.get(METADATA_KEY))
+        .context("not a VRFT tongue model")?
+        .clone();
+    let tensors = SafeTensors::deserialize(&bytes)?;
+    let mut weights = Weights::new();
+    for (name, view) in tensors.tensors() {
+        if view.dtype() != Dtype::F32 {
+            bail!("{name} is not float32");
+        }
+        let values: Vec<f32> = view
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        weights.insert(name, TensorData::new(values, view.shape().to_vec()));
+    }
+    Ok((metadata, weights))
+}
+
+/// Writes float32 `weights` and a metadata JSON as a safetensors file, via a
+/// temporary file so a reader never sees a partial model.
+pub(crate) fn write_safetensors(path: &Path, weights: &Weights, metadata: &str) -> Result<()> {
+    let mut names: Vec<&String> = weights.keys().collect();
+    names.sort();
+    let bytes: Vec<(String, Vec<u8>, Vec<usize>)> = names
+        .into_iter()
+        .map(|name| {
+            let data = &weights[name];
+            let values = data
+                .as_slice::<f32>()
+                .map_err(|error| anyhow::anyhow!("{name}: {error:?}"))?;
+            let raw = values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            Ok((name.clone(), raw, data.shape.as_slice().to_vec()))
+        })
+        .collect::<Result<_>>()?;
+    let views = bytes
+        .iter()
+        .map(|(name, raw, shape)| {
+            Ok((
+                name.as_str(),
+                TensorView::new(Dtype::F32, shape.clone(), raw)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let info = HashMap::from([(METADATA_KEY.to_string(), metadata.to_string())]);
+    let serialized = safetensors::serialize(views, Some(info))?;
+    let temporary = path.with_extension("safetensors.tmp");
+    std::fs::write(&temporary, serialized)?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
 }
