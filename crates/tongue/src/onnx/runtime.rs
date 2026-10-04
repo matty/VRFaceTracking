@@ -182,14 +182,31 @@ impl Session {
         inputs: &[(&str, &[usize], &[f32])],
         outputs: &[&str],
     ) -> Result<Vec<Vec<f32>>> {
+        let inputs: Vec<(&str, &[usize], Input)> = inputs
+            .iter()
+            .map(|&(name, shape, data)| (name, shape, Input::F32(data)))
+            .collect();
+        self.run_inputs(&inputs, outputs)
+    }
+
+    /// [`run`](Self::run) with inputs of either type, such as a raw camera
+    /// strip.
+    pub fn run_inputs(
+        &mut self,
+        inputs: &[(&str, &[usize], Input)],
+        outputs: &[&str],
+    ) -> Result<Vec<Vec<f32>>> {
         let mut values = Vec::with_capacity(inputs.len());
         for (name, shape, data) in inputs {
-            let tensor = TensorRef::from_array_view((shape.to_vec(), *data))
-                .map_err(|error| anyhow!("{error}"))?;
-            values.push((
-                std::borrow::Cow::Borrowed(*name),
-                ort::session::SessionInputValue::from(tensor),
-            ));
+            let value: ort::session::SessionInputValue = match data {
+                Input::F32(data) => TensorRef::from_array_view((shape.to_vec(), *data))
+                    .map_err(|error| anyhow!("{error}"))?
+                    .into(),
+                Input::U8(data) => TensorRef::from_array_view((shape.to_vec(), *data))
+                    .map_err(|error| anyhow!("{error}"))?
+                    .into(),
+            };
+            values.push((std::borrow::Cow::Borrowed(*name), value));
         }
         let results = self.inner.run(values).map_err(|error| anyhow!("{error}"))?;
         outputs
@@ -208,4 +225,11 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// One input's values.
+#[derive(Clone, Copy)]
+pub enum Input<'a> {
+    F32(&'a [f32]),
+    U8(&'a [u8]),
 }

@@ -14,7 +14,7 @@ mouth head and the brow head in NumPy. The session options are QFT+'s: one
 intra-op and one inter-op thread, no spinning, sequential, no memory
 pattern; `--threads` changes the thread count. `--fetch` downloads QFT+'s
 release package (194 MB), checks its SHA-256 and keeps only the model's two
-files, in `.local/qftplus/`.
+files, in `.local/qftplus/`, and its per-frame Python in `.local/qftplus/app/`.
 """
 
 import argparse
@@ -36,6 +36,8 @@ RELEASE = ("https://github.com/Yeusepe/QFTPlus/releases/download/v0.4.0-rc.25.2/
            "QproFaceTracking.App-0.4.0-rc.25.2-full.nupkg")
 RELEASE_SHA256 = "fffa879943724c5621ecdef42085bcb73aae19a5ccc12b5255d74220ba9bc61d"
 FILES = ("lib/app/models/universal-face-v2.area.onnx", "lib/app/models/universal-face-v2.npz")
+# QFT+'s per-frame logic (MIT), for tools/benchmark/qftplus_parity.py.
+APP_FILES = ("universal_face.py", "face_events.py", "eye_signal_filter.py", "label_capture.py")
 
 
 def fetch(out_dir):
@@ -49,6 +51,9 @@ def fetch(out_dir):
     with zipfile.ZipFile(io.BytesIO(data)) as package:
         for name in FILES:
             (out_dir / Path(name).name).write_bytes(package.read(name))
+        (out_dir / "app").mkdir(exist_ok=True)
+        for name in APP_FILES:
+            (out_dir / "app" / name).write_bytes(package.read(f"lib/app/{name}"))
     print(f"qftplus: wrote {out_dir}", file=sys.stderr, flush=True)
 
 
