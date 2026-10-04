@@ -8,7 +8,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STEP_SECONDS: f32 = 8.0;
 const SETTLE_SECONDS: f32 = 4.0;
-const FRAME_BYTES: usize = 800 * 400;
 const TARGET_NAMES: [&str; 12] = [
     "visibility",
     "extension",
@@ -486,7 +485,7 @@ fn steps_for(name: &str, seed: u64) -> Option<(&'static str, Vec<Step>)> {
         .map(|(mode, poses)| (mode, poses.iter().map(Step::held).collect()))
 }
 
-use vrft_quest_pro_protocol::{CaptureMode, PauseReason};
+use vrft_quest_pro_protocol::{CameraLayout, CaptureMode, PauseReason};
 
 /// Missing input pauses a recording; this long without it ends it.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(10);
@@ -512,6 +511,9 @@ struct Sample<'a> {
 
 struct Session {
     mode: &'static str,
+    /// The cameras each saved frame holds: the mouth pair, or all five while
+    /// the headset sends them.
+    layout: CameraLayout,
     steps: Vec<Step>,
     started: Instant,
     directory: PathBuf,
@@ -574,8 +576,13 @@ impl CaptureManager {
     }
 
     /// Starts a guided recording of `mode`, of only `poses` when there are
-    /// any.
-    pub fn start(&self, mode: &str, poses: &[String]) -> Result<CaptureStatus, String> {
+    /// any, saving the cameras in `layout`.
+    pub fn start(
+        &self,
+        mode: &str,
+        poses: &[String],
+        layout: CameraLayout,
+    ) -> Result<CaptureStatus, String> {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -606,9 +613,12 @@ impl CaptureManager {
             "followLagSeconds": FOLLOW_LAG, "steps": steps,
         });
         let (directory, frames, labels) =
-            create_capture(&captures_root()?, mode, metadata).map_err(|e| e.to_string())?;
+            create_capture(&captures_root()?, mode, &layout, metadata)
+                .map_err(|e| e.to_string())?;
+        log::info!("Tongue capture keeps cameras {:?}", layout.cameras);
         inner.session = Some(Session {
             mode,
+            layout,
             steps,
             started: Instant::now(),
             directory,
@@ -723,13 +733,35 @@ impl CaptureManager {
         status_locked(&mut inner)
     }
 
-    pub fn record(&self, sequence: u64, received_at: Instant, pixels: &[u8]) {
+    /// Saves a camera frame holding the cameras in `layout`. A recording of
+    /// the mouth pair takes it from a five-camera frame; one of all five
+    /// cameras skips mouth frames, and pauses by itself if only those come.
+    pub fn record(
+        &self,
+        sequence: u64,
+        received_at: Instant,
+        layout: &CameraLayout,
+        pixels: &[u8],
+    ) {
         let mut inner = self.0.lock().unwrap();
         let native = inner
             .native
             .and_then(|(value, at)| (at.elapsed() <= NATIVE_FRESH_FOR).then_some(value));
         let Some(session) = inner.session.as_mut() else {
             return;
+        };
+        if pixels.len() != layout.frame_bytes() {
+            return;
+        }
+        let pixels = if *layout == session.layout {
+            std::borrow::Cow::Borrowed(pixels)
+        } else {
+            match layout.select(pixels, &session.layout.cameras) {
+                Some(selected) if selected.len() == session.layout.frame_bytes() => {
+                    std::borrow::Cow::Owned(selected)
+                }
+                _ => return,
+            }
         };
         session.last_frame_at = received_at;
         // A camera frame means whatever paused the recording by itself has
@@ -749,10 +781,7 @@ impl CaptureManager {
             return;
         };
         let prompt = &session.steps[step];
-        if offset < prompt.settle
-            || pixels.len() != FRAME_BYTES
-            || session.skipped_steps.contains(&step)
-        {
+        if offset < prompt.settle || session.skipped_steps.contains(&step) {
             return;
         }
         let (targets, dot) = prompt.label(offset - prompt.settle);
@@ -768,7 +797,7 @@ impl CaptureManager {
             dot,
         };
         let result = (|| -> std::io::Result<()> {
-            session.frames.write_all(pixels)?;
+            session.frames.write_all(&pixels)?;
             serde_json::to_writer(&mut session.labels, &sample)?;
             session.labels.write_all(b"\n")?;
             session.samples += 1;
@@ -788,6 +817,7 @@ impl CaptureManager {
 fn create_capture(
     root: &Path,
     mode: &str,
+    layout: &CameraLayout,
     extra: serde_json::Value,
 ) -> std::io::Result<(PathBuf, BufWriter<File>, BufWriter<File>)> {
     fs::create_dir_all(root)?;
@@ -798,12 +828,18 @@ fn create_capture(
     fs::create_dir(&directory)?;
     let frames = BufWriter::new(File::create(directory.join("frames.gray8"))?);
     let labels = BufWriter::new(File::create(directory.join("samples.jsonl"))?);
+    // `cameras` says which views each frame holds side by side; readers from
+    // before it see `width` and `bytesPerFrame` they don't support and leave
+    // a five-camera recording alone.
     let mut metadata = serde_json::json!({
-        "format": "vrft-tongue-capture-v1", "mode": mode, "width": 800, "height": 400,
-        "bytesPerFrame": FRAME_BYTES, "targets": TARGET_NAMES,
+        "format": "vrft-tongue-capture-v1", "mode": mode, "targets": TARGET_NAMES,
     });
-    if let (Some(metadata), serde_json::Value::Object(extra)) = (metadata.as_object_mut(), extra) {
-        metadata.extend(extra);
+    for fields in [layout.metadata(), extra] {
+        if let (Some(metadata), serde_json::Value::Object(fields)) =
+            (metadata.as_object_mut(), fields)
+        {
+            metadata.extend(fields);
+        }
     }
     fs::write(
         directory.join("metadata.json"),
@@ -932,6 +968,11 @@ fn status_locked(inner: &mut Inner) -> CaptureStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vrft_quest_pro_protocol::{FRAME_BYTES, STRIP_BYTES};
+
+    fn mouth() -> CameraLayout {
+        CameraLayout::mouth()
+    }
 
     fn test_directory() -> PathBuf {
         // Tests run in parallel, and Windows' coarse clock can give two of
@@ -959,6 +1000,7 @@ mod tests {
         let (mode, steps) = steps_for(mode, 7).unwrap();
         manager.0.lock().unwrap().session = Some(Session {
             mode,
+            layout: CameraLayout::mouth(),
             started: Instant::now() - Duration::from_secs_f32(steps[0].settle),
             steps,
             directory: directory.clone(),
@@ -1000,10 +1042,10 @@ mod tests {
     #[test]
     fn skipping_excludes_frames_recorded_before_the_click() {
         let (manager, directory) = test_manager();
-        manager.record(1, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         assert_eq!(manager.status().samples, 1);
         manager.skip_current();
-        manager.record(2, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(2, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         assert_eq!(manager.stop().samples, 1);
         let exclusions: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.join("excluded_steps.json")).unwrap())
@@ -1044,13 +1086,66 @@ mod tests {
     }
 
     #[test]
+    fn five_camera_recordings_keep_every_camera_and_mouth_ones_cut_the_pair() {
+        let strip: Vec<u8> = (0..STRIP_BYTES).map(|i| ((i % 2000) / 400) as u8).collect();
+        let (manager, directory) = test_manager();
+        manager.record(1, Instant::now(), &CameraLayout::all(), &strip);
+        manager.stop();
+        let frames = fs::read(directory.join("frames.gray8")).unwrap();
+        assert_eq!(
+            frames.len(),
+            FRAME_BYTES,
+            "a mouth recording keeps the pair"
+        );
+        assert_eq!((frames[0], frames[400]), (2, 3));
+        remove_test_directory(directory);
+
+        let (manager, directory) = test_manager();
+        manager.0.lock().unwrap().session.as_mut().unwrap().layout = CameraLayout::all();
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
+        assert_eq!(manager.status().samples, 0, "mouth frames lack the brow");
+        manager.record(2, Instant::now(), &CameraLayout::all(), &strip);
+        manager.stop();
+        assert_eq!(
+            fs::read(directory.join("frames.gray8")).unwrap(),
+            strip,
+            "a five-camera recording keeps the strip"
+        );
+        remove_test_directory(directory);
+    }
+
+    #[test]
+    fn a_recordings_metadata_says_which_cameras_it_holds() {
+        let root = test_directory();
+        let (directory, ..) = create_capture(
+            &root,
+            "core",
+            &CameraLayout::all(),
+            serde_json::json!({"rounds": 1}),
+        )
+        .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("metadata.json")).unwrap()).unwrap();
+        assert_eq!(metadata["cameras"], serde_json::json!([0, 1, 2, 3, 4]));
+        assert_eq!(metadata["bytesPerFrame"], STRIP_BYTES);
+        assert_eq!(metadata["rounds"], 1);
+        assert_eq!(
+            CameraLayout::from_metadata(&metadata).unwrap(),
+            CameraLayout::all()
+        );
+        remove_test_directory(root);
+    }
+
+    #[test]
     fn a_recording_can_be_just_some_poses() {
         let manager = CaptureManager::default();
         assert!(manager
-            .start("core", &["Not a pose".into()])
+            .start("core", &["Not a pose".into()], mouth())
             .unwrap_err()
             .contains("no pose called Not a pose"));
-        assert!(manager.start("follow", &["Tongue left".into()]).is_err());
+        assert!(manager
+            .start("follow", &["Tongue left".into()], mouth())
+            .is_err());
         let (_, steps) = steps_for("core", 1).unwrap();
         let chosen = ["Tongue left".to_string(), "Tongue up".to_string()];
         let kept: Vec<_> = steps
@@ -1090,14 +1185,14 @@ mod tests {
         let (manager, directory) = test_manager();
         manager.pause();
         let before = manager.status();
-        manager.record(1, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         let after = manager.status();
         assert!(after.paused);
         assert!(!after.recording);
         assert_eq!(after.samples, 0);
         assert_eq!(before.seconds_remaining, after.seconds_remaining);
         assert!(!manager.pause().paused);
-        manager.record(2, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(2, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         assert_eq!(manager.stop().samples, 1);
         remove_test_directory(directory);
     }
@@ -1119,7 +1214,7 @@ mod tests {
         manager.0.lock().unwrap().session.as_mut().unwrap().started =
             Instant::now() - Duration::from_secs_f32(SETTLE_SECONDS + 1.0);
         manager.0.lock().unwrap().native = None;
-        manager.record(1, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         let status = manager.status();
         assert!(!status.paused);
         assert!(!status.native_recent);
@@ -1141,7 +1236,7 @@ mod tests {
         assert!(status.active && status.paused);
         assert_eq!(status.pause_reason, Some(PauseReason::CamerasStopped));
 
-        manager.record(2, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(2, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         let status = manager.status();
         assert!(!status.paused);
         assert_eq!(status.pause_reason, None);
@@ -1341,10 +1436,11 @@ mod tests {
         assert_eq!(status.pose.as_deref(), Some("Follow the dot"));
         assert!(status.path.is_some());
         assert!((status.path_elapsed.unwrap() - (FOLLOW_HOLD + 1.2)).abs() < 0.1);
-        manager.record(1, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         manager.record(
             2,
             started + Duration::from_secs_f32(0.5),
+            &mouth(),
             &vec![0; FRAME_BYTES],
         );
         manager.stop();
@@ -1365,7 +1461,7 @@ mod tests {
         let status = manager.status();
         assert_eq!(status.pose.as_deref(), Some(FOLLOW_RESTS[0].0));
         assert!(status.path.is_none() && status.recording);
-        manager.record(1, Instant::now(), &vec![0; FRAME_BYTES]);
+        manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
         manager.stop();
         let labels = saved_labels(&directory);
         assert_eq!(labels[0]["targets"][0], 0.0);

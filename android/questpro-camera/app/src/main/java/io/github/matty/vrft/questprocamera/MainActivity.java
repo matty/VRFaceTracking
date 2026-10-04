@@ -212,6 +212,18 @@ public final class MainActivity extends Activity {
         card.addView(settingRow("Independent eye gaze",
                 "Tracks each eye on its own while streaming. Meta's eye model is put back when you stop.",
                 eyeGaze));
+        card.addView(ui.rule(Ui.LINE_SOFT));
+        Ui.Toggle fiveCameras = new Ui.Toggle(this);
+        fiveCameras.setContentDescription("All five cameras");
+        fiveCameras.setChecked(Settings.isFiveCameras(this));
+        fiveCameras.setListener(checked -> {
+            // Applies from the next stream start, like the frame rates.
+            Settings.setFiveCameras(this, checked);
+        });
+        card.addView(settingRow("All five cameras",
+                "Adds the brow camera and full-rate eye cameras for VRFT versions that read them. "
+                        + "Needs about 19 MB/s at 24 fps.",
+                fiveCameras));
         return card;
     }
 
@@ -475,7 +487,8 @@ public final class MainActivity extends Activity {
      * {@code am start -f 0x24000000 -n .../.MainActivity --ez eye_enabled true
      * --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true}.
      * Values go through the same validation as the on-screen controls.
-     * {@code --ez eye_alt_probe true} has no control: it picks the alternative
+     * {@code --ez five_cameras true} turns on the five-camera stream, as its
+     * switch does. {@code --ez eye_alt_probe true} has no control: it picks the alternative
      * eye probe (see the README) from the next stream start.
      */
     private void applySettingExtras(Intent intent) {
@@ -484,6 +497,9 @@ public final class MainActivity extends Activity {
         }
         if (intent.hasExtra("eye_alt_probe")) {
             Settings.setEyeAltProbe(this, intent.getBooleanExtra("eye_alt_probe", false));
+        }
+        if (intent.hasExtra("five_cameras")) {
+            Settings.setFiveCameras(this, intent.getBooleanExtra("five_cameras", false));
         }
         if (intent.hasExtra("camera_fps")) {
             Settings.setCameraFps(this, intent.getIntExtra("camera_fps", Settings.DEFAULT_CAMERA_FPS));

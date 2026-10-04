@@ -54,7 +54,7 @@ The model has two more outputs, one per cheek, on the direction model. Unlike th
 
 ## Local files
 
-- `.local/tongue-captures/<recording>/`: `frames.gray8`, `samples.jsonl` (twelve labels per frame, the last two the left and right cheek puffs; ten in recordings made before cheek puffs), `metadata.json`, and optional files listing skipped (`excluded_steps.json`) and unticked (`review.json`) poses. Follow-the-dot samples also store `dot`, the dot's position at that frame; their labels use its position 0.35 seconds earlier, and `metadata.json` keeps every route so labels can be recomputed.
+- `.local/tongue-captures/<recording>/`: `frames.gray8` (each frame the views of the cameras `metadata.json` lists in `cameras`, side by side: the mouth pair, 800 × 400, or, while the headset sends all five cameras, the whole 2000 × 400 strip; recordings without `cameras` hold the mouth pair, and training reads the mouth pair of either), `samples.jsonl` (twelve labels per frame, the last two the left and right cheek puffs; ten in recordings made before cheek puffs), `metadata.json`, and optional files listing skipped (`excluded_steps.json`) and unticked (`review.json`) poses. Follow-the-dot samples also store `dot`, the dot's position at that frame; their labels use its position 0.35 seconds earlier, and `metadata.json` keeps every route so labels can be recomputed.
 - `.local/tongue-models/<run>/`: the gate and direction checkpoints (`.safetensors`), `request.json`, `progress.json`, `training.log` and `report.json`. Failed or cancelled runs never become selectable. Models trained by older versions (`.pt`) still load.
 - `.local/tongue-active.json`: the ID of the model in use. The built-in checkpoints in `models/quest-pro/` are never modified.
 

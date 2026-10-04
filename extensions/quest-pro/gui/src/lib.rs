@@ -55,6 +55,7 @@ pub mod pages {
 pub struct QuestProGui {
     state: Entity<QuestProState>,
     mouth_feed: Entity<CameraFeed>,
+    brow_feed: Entity<CameraFeed>,
     eye_feed: Entity<CameraFeed>,
     headset: Entity<HeadsetPage>,
     tongue: Entity<TongueTraining>,
@@ -67,6 +68,7 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
     let state = cx.new(|cx| QuestProState::new(host.daemon.clone(), cx));
     let client = state.read(cx).client();
     let mouth_feed = cx.new(|cx| CameraFeed::new(client.clone(), Camera::Mouth, cx));
+    let brow_feed = cx.new(|cx| CameraFeed::new(client.clone(), Camera::Brow, cx));
     let eye_feed = cx.new(|cx| CameraFeed::new(client, Camera::Eyes, cx));
     let launcher = host.launcher.clone();
     let headset = cx.new(|cx| HeadsetPage::new(state.clone(), window, cx));
@@ -83,6 +85,7 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
         MouthPage::new(
             state.clone(),
             mouth_feed.clone(),
+            brow_feed.clone(),
             launcher.clone(),
             window,
             cx,
@@ -114,6 +117,7 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
     Box::new(QuestProGui {
         state,
         mouth_feed,
+        brow_feed,
         eye_feed,
         headset,
         tongue,
@@ -236,6 +240,8 @@ impl GuiExtension for QuestProGui {
         });
         self.eye_feed
             .update(cx, |feed, cx| feed.set_watching(page == pages::EYES, cx));
+        self.brow_feed
+            .update(cx, |feed, cx| feed.set_watching(page == pages::MOUTH, cx));
     }
 
     fn wants_fast_status(&self, page: PageId) -> bool {

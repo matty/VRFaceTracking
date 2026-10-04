@@ -46,7 +46,7 @@ On the PC, launch the Rust daemon from its normal working directory:
 
 Open the desktop app's Quest Pro pages to see cameras 2 and 3 and the latest frame sequence. (The daemon's browser preview is turned off for now: `BROWSER_PAGES` in `extensions/quest-pro/daemon/src/camera.rs`.) Use `.\vrft_d.exe --extensions-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
 
-For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`) and can press Start or Stop (`start_probe`, `stop_probe`). Quest reuses an open panel for a new `am start`, so the extras also work while the app is already open. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
+For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`, `five_cameras`) and can press Start or Stop (`start_probe`, `stop_probe`). Quest reuses an open panel for a new `am start`, so the extras also work while the app is already open. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
 
 ```powershell
 $adb = '..\..\..\android-tools\platform-tools\adb.exe'
@@ -72,6 +72,7 @@ The app's main screen has controls that are read from `SharedPreferences` and **
 - **Camera FPS** — 12, 15, 20, 24 (default), 30, 36. Passed to the relay as `--max-fps`.
 - **Eye-camera snapshots** — Off, 1, 2, 5 (default) fps. Passed to the relay as `--eye-fps`. When on, the relay interleaves a low-rate eye-camera frame (cameras 0 + 1, `QPLIVE3` mask `0x03`, 800 × 400) into the stream, cut from the same stabilized sensor frame as the mouth frame it follows and carrying that frame's sequence and timestamp. The PC measures pupil size from them and shows them in the eye preview; it never feeds mask `0x03` frames to tongue inference or capture. At 5 fps they add about 1.6 MB/s to the stream. Before 5 became the default, the rate was saved under another key with a default of 2; a saved 2 moves to 5, any other saved rate carries over.
 - **Independent eye gaze** — a checkbox, default **on**. On firmware it doesn't support, the stream carries on without it. See below.
+- **All five cameras** — a switch, default **off**. Streams the whole sensor strip, including the brow camera, to a VRFT that reads it. See [Five-camera stream](#five-camera-stream).
 
 The relay is launched as:
 
@@ -79,10 +80,36 @@ The relay is launched as:
 questpro-camera-relay-v9 --mode mouth --max-fps <camera-fps> --eye-fps <eye-preview-fps> --injector <injector> --streamer <streamer>
 ```
 
+or, with **All five cameras** on:
+
+```
+questpro-camera-relay-v9 --mode all --eye-fps 0 --max-fps <camera-fps> --injector <injector> --streamer <streamer>
+```
+
 `--eye-fps` accepts `0`–`10` (0 disables snapshots) and is only valid alongside `--mode mouth` or `--mode face` (a mode that does not already carry cameras 0 + 1). `--injector` and `--streamer` go together; with them the relay can load the streamer again (see below).
+
+## Five-camera stream
+
+The headset's sensor strip is five 400 × 400 views side by side, 2000 × 400 in all: the eyes (cameras 0 and 1), the mouth (2 and 3, `cam07_left_mouth` and `cam08_right_mouth` in the factory calibration) and the brow (4, between the eyes). The mouth stream sends cameras 2 and 3 only (`QPLIVE3` mask `0x0c`), plus eye snapshots. With **All five cameras** on (or `--ez five_cameras true` over ADB, from the next stream start), the relay runs in its existing `all` mode and sends whole strips (`QPLIVE3` mask `0x1f`, width 2000); the relay itself is unchanged, so the native helpers need no rebuild.
+
+| Stream | Bytes per frame | At 24 fps | At 36 fps |
+| --- | --- | --- | --- |
+| Mouth (default), with 5 fps eye snapshots | 320 KB | 7.7 MB/s + 1.6 MB/s | 11.5 MB/s + 1.6 MB/s |
+| All five cameras | 800 KB | 19.2 MB/s (about 154 Mbit/s) | 28.8 MB/s (about 230 Mbit/s) |
+
+The five-camera stream needs a good 5 GHz or 6 GHz link alongside Virtual Desktop or Steam Link, or USB (`adb forward tcp:27274 tcp:27274`). Lower **Camera FPS** if frames are skipped.
+
+**Who gets which frames.** A VRFT that reads five-camera frames sends a `QPHELO1` message as it connects: the magic `QPHELO1\0`, a `u32` version (1) at byte 8, the payload's length as a `u32` at byte 12, then JSON such as `{"camera_masks":[12,3,31]}`. It is the only thing the PC ever sends. Only a connection whose hello lists `31` (`0x1f`) gets the strips as they are. Every other connection gets what the app sends without the five-camera stream: the mouth pair cut from each strip (mask `0x0c`, 800 × 400) and, at the **Eye-camera snapshots** rate, the eye pair cut from the same strip (mask `0x03`), with the strip's sequence and timestamp. The `QPSTAT1` status says `five_cameras` (the setting) and `camera_mask` (`31` or `12`, what this connection gets), and is sent again when a hello switches the connection to five cameras.
+
+**Compatibility.** No existing message changed, so the stream protocol stays 3 (`GazePackets.PROTOCOL`, and `PROTOCOLS` in VRFT):
+
+- A VRFT from before the five-camera stream never sends a hello, so with the setting on it still gets the mouth stream and eye snapshots, exactly as before. Were it sent a 2000 × 400 frame, it would reject the header (`Invalid QPLIVE3 frame header`), drop the connection and keep reconnecting with backoff without ever tracking, which is why the strips go only to a PC that asks and the setting stays off by default.
+- A headset app from before the five-camera stream never reads from the PC; the 24-byte hello of a newer VRFT sits unread in its socket, and VRFT gets the mouth stream as before.
+- A VRFT that gets strips cuts the mouth pair from each for the tongue model, the preview and recordings, cuts the eye pair at the headset's snapshot rate for the pupils, and shows the brow camera on the desktop app's **Mouth** page. Its recordings keep the whole strip and list the cameras in `metadata.json` (see the tongue training guide).
 
 ## Connection and recovery
 
+- **The PC only says hello.** Apart from the `QPHELO1` above, the PC sends nothing, so end-of-stream on its socket means it has gone.
 - **One PC at a time, newest wins.** A new connection on port 27274 replaces the current one, so a PC that vanished without closing its socket (sleep, Wi-Fi drop, daemon crash) never blocks the next session. The app also ends a connection when the PC closes it, when TCP keepalive gets no answer (probes after 10 s idle, every 3 s, 3 tries), when any write to it (frame, gaze or status) fails, and when a write takes longer than 3 s.
 - **Capture lease.** The relay renews the streamer's capture lease only while the app is connected to it. While no frames flow it checks the connection every 200 ms, so capture stops as soon as the app lets go instead of when the next frame fails to send.
 - **Relay supervision.** The app checks the relay process every 5 s and restarts it after two checks in a row find it stopped. After five restarts in one stream it gives up and shows the error; press Start again.

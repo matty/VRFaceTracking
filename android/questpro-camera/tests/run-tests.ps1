@@ -10,7 +10,7 @@ $javac = Join-Path $jdk.FullName 'bin\javac.exe'
 $java = Join-Path $jdk.FullName 'bin\java.exe'
 
 $src = Join-Path $root 'app\src\main\java\io\github\matty\vrft\questprocamera'
-$pure = @('Json.java', 'ModelPatcher.java', 'TraceParser.java', 'GazePackets.java') |
+$pure = @('Json.java', 'ModelPatcher.java', 'TraceParser.java', 'GazePackets.java', 'CameraFrames.java') |
     ForEach-Object { Join-Path $src $_ }
 $test = Join-Path $PSScriptRoot 'PureTests.java'
 $out = Join-Path $PSScriptRoot 'out'

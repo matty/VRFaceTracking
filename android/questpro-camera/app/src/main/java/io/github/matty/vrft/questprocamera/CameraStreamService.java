@@ -28,8 +28,6 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -38,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Owns the root relay and advertises a LAN stream while any app is foreground. */
@@ -57,8 +56,6 @@ public final class CameraStreamService extends Service {
     /** The injected streamer's log; it runs as the provider's user and only appends. */
     private static final String STREAMER_LOG = "/data/local/tmp/questpro-live-v9.log";
     private static final String CHANNEL = "camera_stream";
-    private static final int MOUTH_MASK = 0x0c;
-    private static final int EYE_MASK = 0x03;
     private static final String[] HELPERS = { STREAMER_NAME, INJECTOR_NAME, RELAY_NAME };
     /** A write to the PC that takes longer ends that connection; the relay allows 2 s. */
     private static final long WRITE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(3);
@@ -99,6 +96,10 @@ public final class CameraStreamService extends Service {
     private int cameraFps;
     private int eyePreviewFps;
     private boolean eyeEnabled;
+    /** Whether the relay sends all five cameras; see {@link CameraFrames}. */
+    private boolean fiveCameras;
+    /** The connection that said it reads five-camera frames, if the current one did. */
+    private volatile Socket allCamerasClient;
     // Relay supervision, only touched by the worker thread.
     private long nextRelayCheckAt;
     private int relayMisses;
@@ -151,6 +152,7 @@ public final class CameraStreamService extends Service {
         cameraFps = Settings.getCameraFps(this);
         eyePreviewFps = Settings.getEyePreviewFps(this);
         eyeEnabled = Settings.isEyeEnabled(this);
+        fiveCameras = Settings.isFiveCameras(this);
         eyePipeline = new EyePipeline(this, this::onEyeStatusChanged, this::sendGazePacket);
         NotificationManager notifications = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         notifications.createNotificationChannel(new NotificationChannel(
@@ -244,9 +246,13 @@ public final class CameraStreamService extends Service {
         runRoot(RELAY + " --stop", 10);
         synchronized (relayLock) {
             if (!running) return;
+            // With all five cameras every frame carries the eyes, so the
+            // relay sends no eye snapshots of its own; PCs that can't read
+            // five-camera frames get them cut at the snapshot rate instead.
+            String mode = fiveCameras ? " --mode all --eye-fps 0"
+                    : " --mode mouth --eye-fps " + eyePreviewFps;
             Process relay = new ProcessBuilder("su", "-c", RELAY
-                    + " --mode mouth --max-fps " + cameraFps
-                    + " --eye-fps " + eyePreviewFps
+                    + mode + " --max-fps " + cameraFps
                     + " --injector " + INJECTOR + " --streamer " + STREAMER)
                     .redirectErrorStream(true).start();
             relayProcess = relay;
@@ -319,27 +325,42 @@ public final class CameraStreamService extends Service {
                 outputOwner = client;
                 clientOut = toPc;
             }
-            watchForClose(client);
+            AtomicBoolean readsAll = new AtomicBoolean();
+            watchForClose(client, fiveCameras ? readsAll : null);
             sendStatus(); // QPSTAT1 immediately on connect
-            byte[] header = new byte[64];
-            byte[] pixels = new byte[800 * 400];
+            byte[] header = new byte[CameraFrames.HEADER_BYTES];
+            byte[] pair = new byte[2 * CameraFrames.VIEW * CameraFrames.VIEW];
+            byte[] all = new byte[CameraFrames.MAX_PIXELS];
+            byte[] cutHeader = new byte[CameraFrames.HEADER_BYTES];
+            byte[] cut = new byte[pair.length];
+            CameraFrames.EyeSchedule eyes = new CameraFrames.EyeSchedule(eyePreviewFps);
             long lastSequence = 0;
             setStatus(Phase.CONNECTED, "PC connected");
             while (running && !client.isClosed()) {
                 if (!readFully(fromRelay, header, true)) continue;
-                ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
-                int mask = fields.getInt(52);
-                if (!"QPLIVE3".equals(new String(header, 0, 7, StandardCharsets.US_ASCII))
-                        || fields.getInt(8) != 3 || fields.getInt(12) != 64
-                        || fields.getInt(32) != 800 || fields.getInt(36) != 400
-                        || fields.getInt(40) != 800 || fields.getInt(44) != 1
-                        || fields.getInt(48) != pixels.length
-                        || (mask != MOUTH_MASK && mask != EYE_MASK))
-                    throw new IOException("Unexpected relay frame format");
+                int bytes;
+                try {
+                    bytes = CameraFrames.payloadBytes(header);
+                } catch (IllegalArgumentException error) {
+                    throw new IOException(error.getMessage());
+                }
+                int mask = CameraFrames.mask(header);
+                byte[] pixels = bytes == all.length ? all : pair;
                 readFully(fromRelay, pixels, false);
-                if (!writeMessage(client, header, pixels)) break;
-                if (mask == MOUTH_MASK) {
-                    long sequence = fields.getLong(16);
+                if (mask != CameraFrames.MASK_ALL || readsAll.get()) {
+                    if (!writeMessage(client, header, pixels)) break;
+                } else {
+                    // A VRFT that can't read five-camera frames gets the
+                    // stream the relay sends without them.
+                    CameraFrames.cutPair(header, pixels, CameraFrames.MASK_MOUTH, cutHeader, cut);
+                    if (!writeMessage(client, cutHeader, cut)) break;
+                    if (eyes.due(System.nanoTime())) {
+                        CameraFrames.cutPair(header, pixels, CameraFrames.MASK_EYES, cutHeader, cut);
+                        if (!writeMessage(client, cutHeader, cut)) break;
+                    }
+                }
+                if (mask != CameraFrames.MASK_EYES) {
+                    long sequence = CameraFrames.sequence(header);
                     if (lastSequence == 0 || sequence - lastSequence >= 30) {
                         setStatus(Phase.STREAMING, "Streaming, frame " + sequence);
                         lastSequence = sequence;
@@ -392,9 +413,9 @@ public final class CameraStreamService extends Service {
 
     /** Encode and send QPSTAT1 to the current client, if any. */
     private void sendStatus() {
-        byte[] packet = GazePackets.encodeStatus(buildStatusJson());
         synchronized (outputLock) {
-            writeMessage(outputOwner, packet);
+            // Built under the lock, so it describes the connection it goes to.
+            writeMessage(outputOwner, GazePackets.encodeStatus(buildStatusJson()));
         }
     }
 
@@ -404,6 +425,12 @@ public final class CameraStreamService extends Service {
         root.put("protocol", (long) GazePackets.PROTOCOL);
         root.put("camera_fps", (long) cameraFps);
         root.put("eye_preview_fps", (long) eyePreviewFps);
+        root.put("five_cameras", fiveCameras);
+        // What this connection is sent: five-camera frames only once the PC
+        // has said it reads them.
+        Socket owner = outputOwner;
+        root.put("camera_mask", (long) (owner != null && owner == allCamerasClient
+                ? CameraFrames.MASK_ALL : CameraFrames.MASK_MOUTH));
         EyePipeline pipeline = eyePipeline;
         if (pipeline != null) root.put("eye", pipeline.getStatus().toMap());
         return Json.write(root);
@@ -419,15 +446,28 @@ public final class CameraStreamService extends Service {
     }
 
     /**
-     * The PC never sends anything, so end-of-stream or an error on its socket
-     * means it has gone; closing the socket then ends {@link #serveClient}.
+     * The PC sends nothing but, from VRFT versions that read five-camera
+     * frames, a {@code QPHELO1} as it connects, so end-of-stream or an error
+     * on its socket means it has gone; closing the socket then ends
+     * {@link #serveClient}. With {@code readsAll}, a hello that lists
+     * five-camera frames sets it, and from then on the PC gets them whole.
      */
-    private static void watchForClose(Socket client) {
+    private void watchForClose(Socket client, AtomicBoolean readsAll) {
         Thread watcher = new Thread(() -> {
             try {
                 InputStream input = client.getInputStream();
-                byte[] discard = new byte[256];
-                while (input.read(discard) >= 0) { }
+                byte[] received = new byte[256];
+                CameraFrames.Hello hello = new CameraFrames.Hello();
+                int count;
+                while ((count = input.read(received)) >= 0) {
+                    int[] masks = hello.feed(received, count);
+                    if (readsAll != null && CameraFrames.readsAllCameras(masks)) {
+                        Log.i(TAG, "This PC reads all five cameras; sending them");
+                        allCamerasClient = client;
+                        readsAll.set(true);
+                        sendStatus();
+                    }
+                }
             } catch (IOException ignored) {
                 // closed here or by the stream; either way it has ended
             } finally {

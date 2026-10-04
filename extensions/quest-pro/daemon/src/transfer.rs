@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vrft_quest_pro_protocol::{TrainingReport, TransferKind, TransferStatus, FRAME_BYTES};
+use vrft_quest_pro_protocol::{CameraLayout, TrainingReport, TransferKind, TransferStatus};
 
 /// The file that marks a folder as an exported model.
 pub const MANIFEST: &str = "vrft-tongue-model.json";
@@ -653,7 +653,13 @@ fn check(base: &Path, manifest: &Manifest, progress: &mut Progress) -> Result<()
         let frames = fs::metadata(dir.join("frames.gray8"))
             .map_err(|e| e.to_string())?
             .len();
-        if frames != samples * FRAME_BYTES as u64 {
+        let metadata: Value = fs::read(dir.join("metadata.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .ok_or_else(|| format!("Recording {} in the export has no metadata", recording.id))?;
+        let layout = CameraLayout::from_metadata(&metadata)
+            .map_err(|e| format!("Recording {} in the export: {e}", recording.id))?;
+        if frames != samples * layout.frame_bytes() as u64 {
             return Err(format!(
                 "Recording {} in the export has a frame/label count mismatch",
                 recording.id
@@ -728,6 +734,7 @@ fn copy_in(
 mod tests {
     use super::*;
     use serde_json::json;
+    use vrft_quest_pro_protocol::FRAME_BYTES;
     use vrft_tongue::Role;
 
     fn test_root(name: &str) -> PathBuf {
