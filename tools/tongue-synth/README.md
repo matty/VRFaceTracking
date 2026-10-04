@@ -4,6 +4,10 @@ Renders labelled Quest Pro mouth-camera frames with Blender, so the tongue
 model can train on more faces, mouths and tongue directions than one person
 can record.
 
+For all five inward cameras (eyes, mouth and brow) on GNM heads, with face
+labels for the universal face model, see `tools/face-synth`, which reuses this
+renderer's cameras, materials and lights.
+
 Needs Blender 4.2 or later with the **MPFB** extension (MakeHuman for
 Blender: in Blender, Edit > Preferences > Get Extensions, search MPFB).
 

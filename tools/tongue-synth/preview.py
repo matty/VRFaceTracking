@@ -1,5 +1,6 @@
 """Tiles frames of a tongue recording into one PNG, to compare synthetic
-recordings with real ones by eye. Standard library only.
+recordings with real ones by eye: the mouth pair, or all five cameras of a
+five-camera recording. Standard library only.
 
     python tools/tongue-synth/preview.py <recording dir> <out.png> [--frames 8]
 
@@ -13,7 +14,6 @@ import struct
 import zlib
 from pathlib import Path
 
-WIDTH, HEIGHT = 800, 400
 
 
 def write_png(path, width, height, rows):
@@ -36,6 +36,9 @@ def main():
     parser.add_argument("--frames", type=int, default=8)
     args = parser.parse_args()
 
+    metadata = json.loads((args.recording / "metadata.json").read_text())
+    height = metadata.get("height", 400)
+    width = metadata.get("width", 2 * height)
     samples = [json.loads(line) for line in
                (args.recording / "samples.jsonl").read_text().splitlines() if line.strip()]
     count = min(args.frames, len(samples))
@@ -43,14 +46,16 @@ def main():
     rows = []
     with open(args.recording / "frames.gray8", "rb") as frames:
         for n, index in enumerate(picks):
-            frames.seek(index * WIDTH * HEIGHT)
-            strip = frames.read(WIDTH * HEIGHT)
-            rows += [strip[r * WIDTH:(r + 1) * WIDTH] for r in range(HEIGHT)]
+            frames.seek(index * width * height)
+            strip = frames.read(width * height)
+            rows += [strip[r * width:(r + 1) * width] for r in range(height)]
             t = samples[index]["targets"]
             cheeks = t[10:12] if len(t) >= 12 else []
+            face = {k: round(v, 2) for k, v in samples[index].get("face", {}).items() if v}
             print(f"{n}: #{index} {samples[index]['pose']!r} "
-                  f"vis={t[0]:.2f} ext={t[1]:.2f} h={t[2]:+.2f} v={t[3]:+.2f} cheeks={cheeks}")
-    write_png(args.out, WIDTH, HEIGHT * count, rows)
+                  f"vis={t[0]:.2f} ext={t[1]:.2f} h={t[2]:+.2f} v={t[3]:+.2f} cheeks={cheeks}"
+                  + (f" face={face}" if face else ""))
+    write_png(args.out, width, height * count, rows)
 
 
 if __name__ == "__main__":

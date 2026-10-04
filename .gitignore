@@ -40,3 +40,4 @@ android/**/build/
 android/**/local.properties
 android/questpro-camera/diagnostics/*.so
 android/questpro-camera/tests/out/
+__pycache__/
