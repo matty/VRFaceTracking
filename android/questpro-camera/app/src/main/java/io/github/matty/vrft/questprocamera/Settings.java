@@ -23,6 +23,7 @@ public final class Settings {
     private static final int LEGACY_DEFAULT_EYE_PREVIEW_FPS = 2;
     private static final String KEY_EYE_ENABLED = "eye_enabled";
     private static final String KEY_EYE_ALT_PROBE = "eye_alt_probe";
+    private static final String KEY_FIVE_CAMERAS = "five_cameras";
 
     /** Camera FPS choices (relay {@code --max-fps}); default is 24. */
     public static final int[] CAMERA_FPS_CHOICES = {12, 15, 20, 24, 30, 36};
@@ -40,6 +41,14 @@ public final class Settings {
      * support, the stream carries on without it.
      */
     public static final boolean DEFAULT_EYE_ENABLED = true;
+
+    /**
+     * The five-camera stream: the brow camera and full-rate eye cameras
+     * beside the mouth pair. Off unless turned on: it more than doubles the
+     * stream's bandwidth, and a VRFT that can't read it gets the mouth stream
+     * anyway (see {@link CameraFrames}).
+     */
+    public static final boolean DEFAULT_FIVE_CAMERAS = false;
 
     private Settings() { }
 
@@ -92,6 +101,14 @@ public final class Settings {
 
     public static void setEyeAltProbe(Context context, boolean alternative) {
         prefs(context).edit().putBoolean(KEY_EYE_ALT_PROBE, alternative).apply();
+    }
+
+    public static boolean isFiveCameras(Context context) {
+        return prefs(context).getBoolean(KEY_FIVE_CAMERAS, DEFAULT_FIVE_CAMERAS);
+    }
+
+    public static void setFiveCameras(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_FIVE_CAMERAS, enabled).apply();
     }
 
     private static int clampToChoices(int value, int[] choices, int fallback) {

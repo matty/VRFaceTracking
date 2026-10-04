@@ -20,8 +20,8 @@ import java.util.zip.ZipFile;
 
 /**
  * Plain-JDK test harness for the Android-free classes: {@link ModelPatcher},
- * {@link TraceParser}, {@link GazePackets} (and the {@link Json} parser they
- * use). Compile with a plain javac against the pure-Java sources only and run
+ * {@link TraceParser}, {@link GazePackets}, {@link CameraFrames} (and the
+ * {@link Json} parser they use). Compile with a plain javac against the pure-Java sources only and run
  * with java; a nonzero exit code means a failure.
  */
 public final class PureTests {
@@ -38,6 +38,7 @@ public final class PureTests {
         testRefuseContractMismatch();
         testTraceParser();
         testPacketEncoders();
+        testCameraFrames();
 
         System.out.println();
         System.out.println("Checks: " + checks + "  Failures: " + failures);
@@ -243,6 +244,86 @@ public final class PureTests {
         check("a both-eyes line needs no partner", new TraceParser().parse(
                 bothLine("5000.300000", "3f800000", "00000000", "00000000",
                         "3f800000", "00000000", "00000000")) != null);
+    }
+
+    // ---- camera frames --------------------------------------------------
+
+    private static byte[] frameHeader(int mask, long sequence) {
+        int width = CameraFrames.views(mask) * CameraFrames.VIEW;
+        ByteBuffer header = ByteBuffer.allocate(64).order(ByteOrder.LITTLE_ENDIAN);
+        header.put("QPLIVE3".getBytes(StandardCharsets.US_ASCII));
+        header.putInt(8, 3).putInt(12, 64).putLong(16, sequence).putLong(24, sequence * 1000)
+                .putInt(32, width).putInt(36, 400).putInt(40, width).putInt(44, 1)
+                .putInt(48, width * 400).putInt(52, mask).putLong(56, 9);
+        return header.array();
+    }
+
+    private static void testCameraFrames() {
+        section("camera frames");
+        check("mouth frame is 800 x 400",
+                CameraFrames.payloadBytes(frameHeader(CameraFrames.MASK_MOUTH, 1)) == 320000);
+        check("eye frame is 800 x 400",
+                CameraFrames.payloadBytes(frameHeader(CameraFrames.MASK_EYES, 1)) == 320000);
+        check("five-camera frame is 2000 x 400",
+                CameraFrames.payloadBytes(frameHeader(CameraFrames.MASK_ALL, 1)) == 800000);
+        byte[] lying = frameHeader(CameraFrames.MASK_ALL, 1);
+        ByteBuffer.wrap(lying).order(ByteOrder.LITTLE_ENDIAN).putInt(32, 800);
+        check("a width that doesn't match the mask is refused", refusesFrame(lying));
+        check("face mode (3 cameras) is refused", refusesFrame(frameHeader(0x1c, 1)));
+
+        // Each pixel holds its camera number, plus its row in the low bits.
+        byte[] strip = new byte[CameraFrames.MAX_PIXELS];
+        for (int y = 0; y < 400; y++) {
+            for (int x = 0; x < 2000; x++) strip[y * 2000 + x] = (byte) ((x / 400) * 40 + (y % 40));
+        }
+        byte[] header = frameHeader(CameraFrames.MASK_ALL, 77);
+        byte[] outHeader = new byte[64];
+        byte[] out = new byte[320000];
+        CameraFrames.cutPair(header, strip, CameraFrames.MASK_MOUTH, outHeader, out);
+        check("mouth cut is a valid mouth frame", CameraFrames.payloadBytes(outHeader) == 320000
+                && CameraFrames.mask(outHeader) == CameraFrames.MASK_MOUTH);
+        check("mouth cut keeps the sequence", CameraFrames.sequence(outHeader) == 77);
+        check("mouth cut keeps the torn count",
+                ByteBuffer.wrap(outHeader).order(ByteOrder.LITTLE_ENDIAN).getLong(56) == 9);
+        check("mouth cut starts with camera 2", out[0] == 80 && out[399] == 80);
+        check("mouth cut ends with camera 3", out[400] == 120 && out[799] == 120);
+        check("mouth cut keeps rows", out[800 * 39 + 5] == 80 + 39);
+        CameraFrames.cutPair(header, strip, CameraFrames.MASK_EYES, outHeader, out);
+        check("eye cut is cameras 0 and 1", out[0] == 0 && out[400] == 40
+                && CameraFrames.mask(outHeader) == CameraFrames.MASK_EYES);
+
+        CameraFrames.Hello hello = new CameraFrames.Hello();
+        byte[] message = CameraFrames.Hello.encode("{\"camera_masks\":[12,3,31]}");
+        check("hello in pieces is incomplete", hello.feed(message, 10) == null);
+        byte[] rest = java.util.Arrays.copyOfRange(message, 10, message.length);
+        int[] masks = hello.feed(rest, rest.length);
+        check("hello lists five-camera frames", CameraFrames.readsAllCameras(masks));
+        check("a hello is read once", hello.feed(message, message.length) == null);
+        CameraFrames.Hello mouthOnly = new CameraFrames.Hello();
+        byte[] mouthHello = CameraFrames.Hello.encode("{\"camera_masks\":[12]}");
+        check("a mouth-only hello doesn't ask for five",
+                !CameraFrames.readsAllCameras(mouthOnly.feed(mouthHello, mouthHello.length)));
+        CameraFrames.Hello junk = new CameraFrames.Hello();
+        byte[] text = "GET / HTTP/1.1\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        check("anything else is ignored", junk.feed(text, text.length) == null
+                && junk.feed(message, message.length) == null);
+
+        CameraFrames.EyeSchedule schedule = new CameraFrames.EyeSchedule(5);
+        int sent = 0;
+        for (long at = 1; at <= 1_000_000_000L; at += 1_000_000_000L / 24) {
+            if (schedule.due(at)) sent++;
+        }
+        check("eye pairs at 5 fps from 24 fps frames", sent == 5);
+        check("no eye pairs at 0 fps", !new CameraFrames.EyeSchedule(0).due(1));
+    }
+
+    private static boolean refusesFrame(byte[] header) {
+        try {
+            CameraFrames.payloadBytes(header);
+            return false;
+        } catch (IllegalArgumentException expected) {
+            return true;
+        }
     }
 
     // ---- packet encoders ------------------------------------------------
