@@ -649,13 +649,7 @@ mod tests {
 
     #[test]
     fn send_addresses_are_hosts_without_ports() {
-        for good in [
-            "127.0.0.1",
-            "::1",
-            "localhost",
-            "my-pc.local",
-            "192.0.2.20",
-        ] {
+        for good in ["127.0.0.1", "::1", "localhost", "my-pc.local", "192.0.2.20"] {
             assert!(valid_host(good), "{good}");
         }
         for bad in ["127.0.0.1:9000", "my pc", "http://pc", "pc..local", "[::1]"] {
