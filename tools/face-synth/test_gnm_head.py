@@ -95,6 +95,22 @@ class GnmHeadTest(unittest.TestCase):
             self.assertLess(left["horizontal"], -0.5)
             up, _ = self.measure(person, {**gh.STRAIGHT_OUT, "tongue_up": 0.7}, {"lift": 0.6, "stretch": 0.006})
             self.assertGreater(up["vertical"], 0.5)
+            down, _ = self.measure(person, {**gh.STRAIGHT_OUT, "tongue_down": 0.7, "jaw_open": 0.9},
+                                   {"lift": -0.8, "stretch": 0.005})
+            self.assertLess(down["vertical"], -0.5)
+
+    def test_a_short_tongue_points_too(self):
+        short = {**gh.STRAIGHT_OUT, "tongue_out": 0.75}
+        for person in self.people:
+            straight, _ = self.measure(person, short)
+            self.assertTrue(3 < straight["tongue_past_lips_mm"] < 12, straight["tongue_past_lips_mm"])
+            self.assertLess(straight["extension"], 0.6)
+            self.assertLess(abs(straight["horizontal"]), 0.15)
+            self.assertLess(abs(straight["vertical"]), 0.15)
+            self.assertGreater(self.measure(person, short, {"bend": 0.9})[0]["horizontal"], 0.5)
+            self.assertLess(self.measure(person, short, {"bend": -0.9})[0]["horizontal"], -0.5)
+            self.assertGreater(self.measure(person, {**short, "tongue_up": 0.7}, {"lift": 0.8})[0]["vertical"], 0.5)
+            self.assertLess(self.measure(person, {**short, "tongue_down": 0.7}, {"lift": -0.8})[0]["vertical"], -0.3)
 
     def test_labels_grade_the_measurements_with_the_scales(self):
         neutral, marks, _, normals = self.people[0]

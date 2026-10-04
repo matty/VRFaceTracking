@@ -190,19 +190,26 @@ def brows(r):
     return frame(f"Brows: {which} {side}", weights)
 
 
-def tongue_out(r, h=None, v=None):
+def toward_ends(r):
+    """-1..1, more often near the ends: a direction is usually held."""
+    return float(r.choice([-1.0, 1.0]) * r.uniform(0, 1) ** 0.6)
+
+
+def tongue_out(r, h=None, v=None, length=None):
     """The tongue out some way: GNM's own tongue for out, up and down, a
-    bend for sideways, a stretch for the last centimetre."""
-    h = r.uniform(-1, 1) if h is None else h
-    v = r.uniform(-1, 1) if v is None else v
-    weights = {"tongue_out": r.uniform(0.5, 1.2), "jaw_open": r.uniform(0.25, 0.8) + 0.2 * max(0.0, -v),
+    bend for sideways, a stretch for the last few millimetres. `length`
+    0..1 goes from the tip just past the lips to about 2 cm out, drawn
+    evenly, so short tongues are as common as long ones."""
+    h = toward_ends(r) if h is None else h
+    v = toward_ends(r) if v is None else v
+    length = r.uniform(0, 1) if length is None else length
+    weights = {"tongue_out": 0.55 + 0.45 * length, "jaw_open": r.uniform(0.3, 0.55) + 0.35 * max(0.0, -v),
                "lips_part": r.uniform(0.6, 1.2)}
     if v > 0:
-        weights["tongue_up"] = v * r.uniform(0.3, 0.8)
+        weights["tongue_up"] = v * r.uniform(0.5, 0.9)
     else:
-        weights["tongue_down"] = -v * r.uniform(0.2, 0.6)
-    deform = {"bend": 0.9 * h, "lift": 0.6 * v if v > 0 else 0.4 * v,
-              "stretch": r.uniform(0.0, 0.009)}
+        weights["tongue_down"] = -v * r.uniform(0.5, 0.8)
+    deform = {"bend": 0.95 * h, "lift": 0.8 * v, "stretch": r.uniform(0.0, 0.005) * length}
     return frame("Tongue out", weights, deform, lower=0.15)
 
 
@@ -223,8 +230,9 @@ SCENARIOS = [
                            {"suck_left": r.uniform(0.4, 1.0), "suck_right": r.uniform(0.4, 1.0)})),
     (0.03, lambda r: frame("Tongue in a cheek", {}, {str(r.choice(["bulge_left", "bulge_right"])): r.uniform(0.5, 1.0)})),
     (0.14, brows),
-    (0.30, tongue_out),
-    (0.05, lambda r: tongue_out(r, h=r.choice([-1.0, 1.0]) * r.uniform(0.6, 1.0), v=r.uniform(-0.3, 0.3))),
+    (0.25, tongue_out),
+    # Left and right on their own, at any length.
+    (0.10, lambda r: tongue_out(r, h=r.choice([-1.0, 1.0]) * r.uniform(0.6, 1.0), v=r.uniform(-0.3, 0.3))),
     (0.04, lambda r: frame("Tongue tip", {"tongue_out": r.uniform(0.2, 0.5), "lips_part": 1.0,
                                           "jaw_open": r.uniform(0.1, 0.3)}, lower=0.15)),
 ]
@@ -239,8 +247,8 @@ ENROLLMENT = [
     ("puff_right", frame("Puff only your right cheek", {"pucker": 0.2}, {"puff_right": 0.9})),
     ("tongue_out", frame("Stick your tongue out", gh.STRAIGHT_OUT, dict(gh.STRAIGHT_STRETCH), lower=0.1)),
     ("tongue_up", frame("Point your tongue up", {**gh.STRAIGHT_OUT, "tongue_up": 0.7}, {"lift": 0.6, "stretch": 0.006}, lower=0.1)),
-    ("tongue_down", frame("Point your tongue down", {**gh.STRAIGHT_OUT, "tongue_down": 0.5, "jaw_open": 0.7},
-                          {"lift": -0.35, "stretch": 0.005}, lower=0.1)),
+    ("tongue_down", frame("Point your tongue down", {**gh.STRAIGHT_OUT, "tongue_down": 0.7, "jaw_open": 0.9},
+                          {"lift": -0.8, "stretch": 0.005}, lower=0.1)),
     ("tongue_left", frame("Point your tongue left", gh.STRAIGHT_OUT, {"bend": -0.9, "stretch": 0.006}, lower=0.1)),
     ("tongue_right", frame("Point your tongue right", gh.STRAIGHT_OUT, {"bend": 0.9, "stretch": 0.006}, lower=0.1)),
     ("suck", frame("Suck in your cheeks", {"pucker": 0.3}, {"suck_left": 0.9, "suck_right": 0.9})),

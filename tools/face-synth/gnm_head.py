@@ -58,14 +58,18 @@ EXTENSION_MM = (0.0, 2.5, 8.0, 20.0)
 EXTENSION_LABEL = (0.0, 0.25, 0.5, 1.0)
 # The tongue counts as out once its tip is this far past the lips' front.
 VISIBLE_PAST = 0.001
-# Its direction is the way its part past the lips points, from where it
-# crosses the lips' front to its tip, as a unit vector: turned this far
-# (its sine) sideways or up from the person's own straight-out tongue is
-# full left, right, up or down. GNM's tongue reaches less far sideways than
-# up. Under DIRECTION_PAST of tongue past the lips gives no direction, as
-# for "just the tip".
-HORIZONTAL_FULL = 0.55
-VERTICAL_FULL = 0.75
+# Its direction is the way its tip points from inside the mouth, as yaw and
+# pitch (degrees) against the person's own straight-out tongue of the same
+# length: turned this far is full left or right, up, or down. The face
+# setup's held poses turn about this far (40 and 51 degrees). Down has less
+# room: held straight out, a GNM tongue already points about 40 degrees
+# below level from inside the mouth, and only a long one can turn to point
+# straight down, so 35 degrees down is full. Under
+# DIRECTION_PAST of tongue past the lips gives no direction, as for "just
+# the tip".
+SIDEWAYS_FULL_DEG = 40.0
+UP_FULL_DEG = 50.0
+DOWN_FULL_DEG = 35.0
 DIRECTION_PAST = 0.003
 # A shown tongue's part past the lips may sink this far under the skin
 # (lips pressing on it); deeper, it goes through a lip or the chin.
@@ -229,14 +233,13 @@ class Landmarks:
         self.tongue = g("tongue")
         # Its root: the back of the tongue at rest.
         self.tongue_root = neutral[self.tongue][np.argmin(neutral[self.tongue, 2])].copy()
-        # Its centreline: the vertices along its middle at rest, in groups
-        # from root to tip, top and underside together. The mesh never
-        # changes, so the last group stays the tip however it moves.
+        # Its tip: the front 2 mm of its middle at rest, top and underside
+        # together. The mesh never changes, so these stay the tip however it
+        # moves.
         rest = neutral[self.tongue]
         middle = self.tongue[np.abs(rest[:, 0]) < 0.004]
-        order = middle[np.argsort(neutral[middle, 2])]
-        self.tongue_line = [part for part in np.array_split(order, 16) if len(part)]
-        self.tongue_tip = self.tongue_line[-1]
+        front = neutral[middle, 2].max()
+        self.tongue_tip = middle[neutral[middle, 2] > front - 0.002]
         self.skin = g("skin_exterior")
         near = np.linalg.norm(neutral[self.skin] - self.mouth, axis=1) < 0.09
         self.mouth_skin = self.skin[near]
@@ -248,9 +251,9 @@ class Landmarks:
             cut = np.median(offset)
             self.brows[side] = (sign, region[offset <= cut], region[offset > cut])
         self.cheeks = {side: g(f"{side}_cheek_region") for side in ("left", "right")}
-        # Which way this person's tongue points held straight out; see
-        # `straight_out`. Directions are measured from it.
-        self.straight = (0.0, 0.0)
+        # Which way this person's tongue points held straight out, by how
+        # far it's out; see `straight_out`. Directions are measured from it.
+        self.straight = None
 
 
 def ridge_fit(basis, block, target, weight, ridge, sigma=MAX_SIGMA):
@@ -416,14 +419,16 @@ class Deformers:
             tongue = tongue + np.array([0.0, 0.0, stretch]) * reach[:, None]
             # Sideways the whole front swings toward a corner from inside
             # the mouth (positive is the person's right, -x, a turn about
-            # +y); up or down only the part past the lips tips over.
-            for amount, axis, pivot, start, end in (
-                    (-bend, (0, 1, 0), m.lip_front - 0.014, at_lips - 0.012, at_lips + 0.02),
-                    (-lift, (1, 0, 0), m.lip_front - 0.002, at_lips - 0.002, at_lips + 0.016)):
+            # +y); up or down only the front tips over. Both turn fully at
+            # the tip, however far out it is, so a short tongue points too.
+            tip = float(along.max())
+            for amount, axis, pivot, span in (
+                    (-bend, (0, 1, 0), m.lip_front - 0.014, 0.032),
+                    (-lift, (1, 0, 0), m.lip_front - 0.002, 0.018)):
                 if not amount:
                     continue
                 centre = np.array([0.0, m.stomion, pivot])
-                weight = smoothstep(start, end, along)
+                weight = smoothstep(tip - span, tip, along)
                 for k in np.nonzero(weight > 0)[0]:
                     turn = rotation(axis, amount * weight[k])
                     tongue[k] = (tongue[k] - centre) @ turn.T + centre
@@ -453,39 +458,44 @@ STRAIGHT_OUT = {"tongue_out": 1.0, "jaw_open": 0.4, "lips_part": 1.0}
 STRAIGHT_STRETCH = {"stretch": 0.008}
 
 
-def tongue_angles(vertices, marks, r=np.eye(3)):
-    """Which way the tongue's part past the lips points, from where it
-    crosses the lips' front to its tip, as the unit vector's (sideways, up)
-    parts in the frame `r` turns the head into, positive toward the person's
-    right and up. `None` while less than DIRECTION_PAST of it is past the
-    lips."""
-    v = vertices @ r.T
-    up, left, forward = r @ np.array([0.0, 1.0, 0.0]), r @ np.array([1.0, 0.0, 0.0]), r @ np.array([0.0, 0.0, 1.0])
-    lips = v[marks.lips]
-    line = np.array([v[part].mean(0) for part in marks.tongue_line])
-    depth = beyond_lips(line, lips, left, forward)
-    # A tongue hanging down past the lips can have its tip back behind
-    # their front again; it's out as long as part of it is past.
-    if depth.max() <= DIRECTION_PAST:
-        return None
-    # Where the centreline crosses the lips' front.
-    k = int(np.argmax(depth > 0))
-    if k == 0:
-        exit_point = line[0]
-    else:
-        share = -depth[k - 1] / (depth[k] - depth[k - 1])
-        exit_point = line[k - 1] + share * (line[k] - line[k - 1])
-    way = line[-1] - exit_point
+def tongue_angles(vertices, marks):
+    """Which way the tongue's tip points from inside the mouth (12 mm behind
+    the lips' front), in the head's frame: (yaw, pitch) in degrees, yaw
+    positive toward the person's right, pitch positive up. Measured from a
+    point inside the mouth, so even a short tongue has a lever to point
+    with; the part past the lips alone is too small and lopsided."""
+    way = vertices[marks.tongue_tip].mean(0) - marks.mouth
     way = way / max(float(np.linalg.norm(way)), 1e-9)
-    return (float(-(way @ left)), float(way @ up))
+    yaw = math.degrees(math.asin(float(np.clip(-way[0], -1.0, 1.0))))
+    pitch = math.degrees(math.asin(float(np.clip(way[1], -1.0, 1.0))))
+    return yaw, pitch
+
+
+def tongue_past(vertices, marks):
+    """How far the tongue reaches past the lips (metres), in the head's frame."""
+    return float(beyond_lips(vertices[marks.tongue], vertices[marks.lips],
+                             np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])).max())
 
 
 def straight_out(gnm, neutral, marks, prototypes, deformers):
-    """Sets the person's straight-out tongue direction, which their
-    directions are measured from: a tongue held straight out droops over the
-    lower lip, and the capture poses label that 0, not down."""
-    pose = deformers.apply(gnm.posed(neutral, prototypes.mix(STRAIGHT_OUT)), STRAIGHT_STRETCH)
-    marks.straight = tongue_angles(pose, marks) or (0.0, 0.0)
+    """Sets the person's straight-out tongue directions, which their
+    directions are measured from, at every length from just out to fully
+    out: a tongue held straight out droops over the lower lip, more the
+    shorter it is, and the capture poses label that 0, not down."""
+    table = []
+    for amount in np.linspace(0.5, 1.25, 16):
+        for stretch in (0.0, 0.004, 0.008):
+            pose = deformers.apply(gnm.posed(neutral, prototypes.mix({**STRAIGHT_OUT, "tongue_out": float(amount)})),
+                                   {"stretch": stretch})
+            table.append((tongue_past(pose, marks), *tongue_angles(pose, marks)))
+    table.sort()
+    marks.straight = np.array(table)
+
+
+def straight_at(marks, past):
+    """The person's straight-out (yaw, pitch) for a tongue `past` metres out."""
+    table = marks.straight
+    return (float(np.interp(past, table[:, 0], table[:, 1])), float(np.interp(past, table[:, 0], table[:, 2])))
 
 
 def placement(eye_centres, pitch, yaw, roll, eyes):
@@ -505,8 +515,9 @@ SCALES = {
     "visible_past_mm": VISIBLE_PAST * 1000,
     "extension_mm": list(EXTENSION_MM),
     "extension_label": list(EXTENSION_LABEL),
-    "horizontal_full": HORIZONTAL_FULL,
-    "vertical_full": VERTICAL_FULL,
+    "sideways_full_deg": SIDEWAYS_FULL_DEG,
+    "up_full_deg": UP_FULL_DEG,
+    "down_full_deg": DOWN_FULL_DEG,
     # Movement against the person's own neutral face, in mm, that labels 1,
     # and the movement that still labels 0: an open jaw stretches the
     # cheeks in about a millimetre, and a frown lifts nothing. Set from GNM's
@@ -555,11 +566,14 @@ def measure(vertices, neutral, rotation_matrix, marks, normals):
     past = float(beyond_lips(v[marks.tongue], v[marks.lips], left, forward).max())
     out["tongue_past_lips_mm"] = round(past * 1000, 3)
     # Its direction, in the head's own frame against the person's
-    # straight-out tongue, which is as they hold it whichever way the
-    # headset sits. None under DIRECTION_PAST past the lips.
-    angles = tongue_angles(vertices, marks) if past > DIRECTION_PAST else None
-    out["tongue_sideways"] = None if angles is None else round(float(angles[0] - marks.straight[0]), 5)
-    out["tongue_rise"] = None if angles is None else round(float(angles[1] - marks.straight[1]), 5)
+    # straight-out tongue of the same length, which is as they hold it
+    # whichever way the headset sits. None under DIRECTION_PAST past the
+    # lips.
+    if past > DIRECTION_PAST:
+        (yaw, pitch), (yaw0, pitch0) = tongue_angles(vertices, marks), straight_at(marks, tongue_past(vertices, marks))
+        out["tongue_yaw_deg"], out["tongue_pitch_deg"] = round(yaw - yaw0, 3), round(pitch - pitch0, 3)
+    else:
+        out["tongue_yaw_deg"] = out["tongue_pitch_deg"] = None
 
     # Cheeks, along the neutral face's normals: the core of the cheek, the
     # part that moved most either way.
@@ -593,9 +607,10 @@ def grade(measured, scale=None):
     out["visibility"] = 1.0 if visible else 0.0
     out["extension"] = float(np.interp(past, k["extension_mm"], k["extension_label"])) if visible else 0.0
     out["horizontal"] = out["vertical"] = 0.0
-    if visible and measured["tongue_sideways"] is not None:
-        out["horizontal"] = float(np.clip(measured["tongue_sideways"] / k["horizontal_full"], -1, 1))
-        out["vertical"] = float(np.clip(measured["tongue_rise"] / k["vertical_full"], -1, 1))
+    if visible and measured["tongue_yaw_deg"] is not None:
+        pitch = measured["tongue_pitch_deg"]
+        out["horizontal"] = float(np.clip(measured["tongue_yaw_deg"] / k["sideways_full_deg"], -1, 1))
+        out["vertical"] = float(np.clip(pitch / (k["up_full_deg"] if pitch > 0 else k["down_full_deg"]), -1, 1))
     out["tongue_past_lips_mm"] = round(past, 2)
 
     def graded(moved, full, dead):

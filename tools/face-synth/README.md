@@ -78,8 +78,8 @@ There is no jaw joint: the jaw moves inside the lower-face block. Named expressi
 Other prototypes are at most 4 standard deviations long. Two kinds of movement are deformers instead, because GNM's PCA barely reaches them:
 
 - **Cheeks:** a full puff from the lower face is about 1.6 mm. Puffs and sucks swell or sink the cheeks along their normals, as tongue-synth does, and so does a tongue pushed into a cheek.
-- **Tongue sideways:** GNM's tongue reaches about 4 mm sideways at rest. A bend swings the tongue's front toward a corner from inside the mouth, and a lift tips the part past the lips up or down.
-- **Tongue length:** a stretch adds the last centimetre of protrusion.
+- **Tongue sideways:** GNM's tongue reaches about 4 mm sideways at rest. A bend swings the tongue's front toward a corner from inside the mouth, and a lift tips its front up or down. Both turn fully at the tip, however far out it is, so a short tongue points as well as a long one.
+- **Tongue length:** a stretch adds the last few millimetres of protrusion.
 
 ### Semantic expressions
 
@@ -116,7 +116,9 @@ Then random frames:
 - cheeks puffed (left, right, both) or sucked;
 - the tongue in a cheek;
 - brows (raised, inner or outer, frowned or pinched, on one side or both);
-- the tongue out in any direction, extension and jaw opening, often to the corners, or just its tip;
+- the tongue out in any direction, at any length from the tip just past the lips to about 2 cm out, drawn evenly so short tongues are as common as long ones;
+- the tongue to the left or right on its own, at any length;
+- just its tip;
 - GNM's semantic expressions (above), 15% of these frames.
 
 Every frame carries its person as `identity`, so the universal model's anchors come from the same face.
@@ -129,7 +131,7 @@ Every label is measured from the posed mesh, never copied from what the frame as
 | --- | --- | --- |
 | visibility | any tongue vertex past the lips, by more than 1 mm | out |
 | extension | how far the tongue reaches past the lips' front at its own sideways position (the mouth curves back toward its corners) | interpolated through 2.5 mm -> 0.25, 8 mm -> 0.5, 20 mm -> 1, as the capture poses grade it |
-| horizontal, vertical | the unit vector of the tongue's centreline from where it crosses the lips to its tip, against the person's own straight-out tongue (which droops over the lower lip and is labelled 0, as in the capture poses). Measured in the head's frame, so headset tilt doesn't turn into direction. Positive is the person's right and up. No direction under 3 mm past the lips | a sine of 0.55 sideways, or 0.75 up or down |
+| horizontal, vertical | which way the tongue's tip points from a point 12 mm inside the mouth, as yaw and elevation, against the person's own straight-out tongue at the same length. A straight tongue droops over the lower lip, more the shorter it is, and is labelled 0, as in the capture poses. Measured from inside the mouth, so even a short tongue has a lever to point with. Measured in the head's frame, so headset tilt doesn't turn into direction. Positive is the person's right and up. No direction under 3 mm past the lips | 40 degrees sideways, 50 up, 35 down. The face setup's left, right and up poses turn about 40 and 51 degrees. A straight tongue already points about 40 degrees below level, so down has less room |
 | cheek_puff_left/right, cheek_suck_left/right | the cheek region's most-moved third, along the neutral face's normals, against the person's neutral, after a 1 mm dead zone (an open jaw stretches the cheeks in about a millimetre) | 6 mm out, or 6 mm in |
 | brow_inner_up / brow_outer_up | the medial or lateral half of each brow rising, after a 0.5 mm dead zone | 4 mm |
 | brow_lowerer | the whole brow falling | 4 mm |
