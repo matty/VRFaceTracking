@@ -233,7 +233,8 @@ SCENARIOS = [
     (0.25, tongue_out),
     # Left and right on their own, at any length.
     (0.10, lambda r: tongue_out(r, h=r.choice([-1.0, 1.0]) * r.uniform(0.6, 1.0), v=r.uniform(-0.3, 0.3))),
-    (0.04, lambda r: frame("Tongue tip", {"tongue_out": r.uniform(0.2, 0.5), "lips_part": 1.0,
+    # The tip between the lips or just past them, up to about 4 mm.
+    (0.04, lambda r: frame("Tongue tip", {"tongue_out": r.uniform(0.58, 0.68), "lips_part": 1.0,
                                           "jaw_open": r.uniform(0.1, 0.3)}, lower=0.15)),
 ]
 
