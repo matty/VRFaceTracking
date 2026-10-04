@@ -84,6 +84,25 @@ A universal model trains for many more passes than fine-tuning the pair; train i
 
 **Live.** While five-camera frames arrive and the model in use has a universal face model (`universal-face-v1.safetensors` in its folder, or beside the built-in pair, or named by `VRFT_FACE_MODEL`), it replaces the pair for the tongue and cheek puffs, and sends the brows, cheek suck and jaw it was trained for. When the headset falls back to the mouth stream, the pair takes over. Its values replace the tracking module's only while they are fresh. **Face expressions** (`face_expressions` in the Quest Pro settings) turns the brows, suck and jaw off.
 
+### QFT+'s universal-face-v2 models (opt-in)
+
+VRFT can also run a model in QFT+'s `universal-face-v2` format, such as QFT+'s own, with QFT+'s per-frame logic ported to Rust (`crates/tongue/src/universal_v2/`). On the same frames it gives what QFT+ gives, to within 1e-6, in less time: 8.9 s against QFT+'s 15.6 s over a 452-frame replay (`tools/benchmark/qftplus_parity.py`).
+
+QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0) and private renders, so they're for **non-commercial use only**. VRFT never ships or downloads them by itself; you fetch them and point VRFT at them:
+
+1. `python tools/benchmark/qftplus.py --fetch` downloads QFT+'s release, checks it, and keeps `universal-face-v2.npz` and `universal-face-v2.area.onnx` in `.local/qftplus/`.
+2. Set `VRFT_FACE_MODEL` to the `.npz` (its `.area.onnx` must sit beside it) and restart VRFT. Both files in the folder of the model in use, or beside the built-in pair, work too; VRFT's own `universal-face-v1.safetensors` wins if both are there.
+3. Record a face setup on the Training page. The model reads its poses as QFT+'s enrolment does: the six anchors, the one-sided puffs and the tongue directions.
+
+It runs as QFT+ runs it:
+
+- **Tongue:** visible and how far out come from the tracking module's own TongueOut, through QFT+'s event layer; its direction comes from the model, fitted to your face setup's tongue poses. The **Tongue visibility** and **Smoothing** settings don't apply: the event layer has its own thresholds and smoothing.
+- **Cheeks:** puffs and sucks from the model, gated by the module's lips and tongue. Puffs split between the sides by your one-sided puffs.
+- **Brows:** lowerer and pinch from the model. The inner and outer raises are the module's own, split between the sides by the model, so they're sent only while the module sends values.
+- **Jaw:** left to the tracking module.
+
+It needs ONNX Runtime, and a tracking module sending the headset's own face tracking, as it does in QFT+. Without one the tongue never shows and the raises stay the module's.
+
 ## Local files
 
 - `.local/tongue-captures/<recording>/`: `frames.gray8` (each frame the views of the cameras `metadata.json` lists in `cameras`, side by side: the mouth pair, 800 × 400, or, while the headset sends all five cameras, the whole 2000 × 400 strip; recordings without `cameras` hold the mouth pair, and training reads the mouth pair of either), `samples.jsonl` (twelve labels per frame, the last two the left and right cheek puffs; ten in recordings made before cheek puffs), `metadata.json`, and optional files listing skipped (`excluded_steps.json`) and unticked (`review.json`) poses. Follow-the-dot samples also store `dot`, the dot's position at that frame; their labels use its position 0.35 seconds earlier, and `metadata.json` keeps every route so labels can be recomputed.

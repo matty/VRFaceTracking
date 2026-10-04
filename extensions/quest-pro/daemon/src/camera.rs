@@ -1,5 +1,6 @@
 use crate::capture::{CaptureManager, CaptureStatus};
 use crate::eye::{output_gaze, EyeOverlay, EyeProcessor, EyeState, GazePacket, GAZE_PACKET_BYTES};
+use crate::native::{self, NativeFeed};
 use crate::pupil::{PupilOverlay, PupilProcessor, PupilState};
 use crate::settings::{QuestProSettings, SettingsPatch, SettingsStore, VisibilityMode};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -26,6 +27,7 @@ use vrft_quest_pro_protocol::{
     STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
 };
 use vrft_tongue::universal::{Enrollment, FaceModel, FACE_TARGETS};
+use vrft_tongue::universal_v2::{UniversalV2, V2Frame};
 use vrft_tongue::{Accelerator, Role, TongueModel, CHEEK_COLUMNS};
 
 const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
@@ -238,6 +240,10 @@ struct TonguePrediction {
     cheeks: bool,
     /// Set when the universal face model made this prediction.
     face: Option<FaceReading>,
+    /// The model decided visibility itself (a `universal-face-v2` model's
+    /// event layer, from Meta's TongueOut): visibility is 0 or 1, extension
+    /// is what TongueOut sends, and the visibility setting doesn't apply.
+    own_visibility: bool,
 }
 
 type TongueState = Arc<RwLock<Option<TonguePrediction>>>;
@@ -269,6 +275,8 @@ pub struct QuestProOverlay {
     /// Module TongueOut before the daemon's smoothing, with arrival times, so
     /// visibility fusion can use the value closest to each camera frame.
     native_history: VecDeque<(Instant, f32)>,
+    /// The module's values by Meta's names, for a `universal-face-v2` model.
+    native: Arc<NativeFeed>,
     active: bool,
     visible_latched: bool,
     last_diagnostic: Instant,
@@ -287,6 +295,7 @@ impl FrameHook for QuestProOverlay {
         self.capture.update_native(native);
         self.pupils.see_eyes(data, &self.settings.get());
         let now = Instant::now();
+        self.native.record(data, now);
         self.native_history.push_back((now, native));
         while self
             .native_history
@@ -374,18 +383,28 @@ impl QuestProOverlay {
         }
         let native = self.native_near(prediction.received_at);
         let camera = prediction.values[0].clamp(0.0, 1.0);
-        let fused = fuse_visibility(
-            settings.tongue_visibility,
-            prediction.camera_weight,
-            camera,
-            native,
-        );
+        let fused = if prediction.own_visibility {
+            camera
+        } else {
+            fuse_visibility(
+                settings.tongue_visibility,
+                prediction.camera_weight,
+                camera,
+                native,
+            )
+        };
         self.visible_latched = if self.visible_latched {
             fused >= prediction.threshold - 0.08
         } else {
             fused >= prediction.threshold
         };
-        let values = map_tongue(&prediction.values, fused, self.visible_latched);
+        // A model that decides visibility itself sends its extension alone.
+        let shown = if prediction.own_visibility {
+            0.0
+        } else {
+            fused
+        };
+        let values = map_tongue(&prediction.values, shown, self.visible_latched);
         for (shape, value) in TONGUE_SHAPES.into_iter().zip(values) {
             data.shapes[shape as usize].weight = value;
         }
@@ -648,6 +667,8 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let pupil_state = PupilState::default();
     let inference_state: TongueState = Arc::new(RwLock::new(None));
     let output_state: OutputState = Arc::new(RwLock::new(None));
+    let native_feed = Arc::new(NativeFeed::default());
+    native::nanos(Instant::now());
     let capture = CaptureManager::default();
     let retry = Arc::new(AtomicBool::new(false));
     let training = crate::training::TrainingManager::new(root, capture.clone());
@@ -707,9 +728,18 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let worker_state = inference_state.clone();
     let worker_running = running.clone();
     let worker_settings = settings.clone();
+    let worker_native = native_feed.clone();
     thread::Builder::new()
         .name("quest-pro-tongue".into())
-        .spawn(move || inference_loop(worker_feed, worker_state, worker_settings, worker_running))
+        .spawn(move || {
+            inference_loop(
+                worker_feed,
+                worker_state,
+                worker_settings,
+                worker_native,
+                worker_running,
+            )
+        })
         .expect("couldn't start the Quest Pro tongue thread");
     let receiver_capture = capture.clone();
     let processors = Processors {
@@ -728,6 +758,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
         pupils: PupilOverlay::new(pupil_state),
         settings,
         native_history: VecDeque::new(),
+        native: native_feed,
         active: false,
         visible_latched: false,
         last_diagnostic: Instant::now(),
@@ -1422,7 +1453,9 @@ fn model_dir() -> Result<PathBuf, String> {
 
 /// The universal face model to run on five-camera frames, and the face
 /// setup to enroll, as the model in use and `.local/face-enrollment.json`
-/// say. `VRFT_FACE_MODEL` names a checkpoint to use instead.
+/// say. `VRFT_FACE_MODEL` names a checkpoint to use instead: VRFT's
+/// `.safetensors`, or a `universal-face-v2` model's `.npz` (such as QFT+'s),
+/// with its `.area.onnx` beside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FaceChoice {
     model: Option<PathBuf>,
@@ -1431,15 +1464,21 @@ struct FaceChoice {
 
 impl FaceChoice {
     fn current(cwd: &Path) -> Self {
-        use vrft_tongue::universal::FILE_NAME;
         // The model in use's folder; for the built-in model, that's where
         // a built-in face model would sit beside the pair.
         let model = match std::env::var_os("VRFT_FACE_MODEL") {
             Some(path) => Some(PathBuf::from(path)),
             None => crate::training::selected_dir(cwd, || base_model_dir(cwd))
                 .ok()
-                .map(|dir| dir.join(FILE_NAME))
-                .filter(|path| path.is_file()),
+                .and_then(|dir| {
+                    [
+                        vrft_tongue::universal::FILE_NAME,
+                        vrft_tongue::universal_v2::FILE_NAME,
+                    ]
+                    .into_iter()
+                    .map(|name| dir.join(name))
+                    .find(|path| path.is_file())
+                }),
         };
         let enrollment = std::fs::read(cwd.join(crate::capture::ENROLLMENT_FILE))
             .ok()
@@ -1449,10 +1488,55 @@ impl FaceChoice {
     }
 }
 
+/// A universal face model: VRFT's, or one in QFT+'s `universal-face-v2`
+/// format, run with QFT+'s per-frame logic.
+enum FaceEngine {
+    V1(Box<FaceModel>),
+    V2(Box<UniversalV2>),
+}
+
+impl FaceEngine {
+    fn load(path: &Path) -> anyhow::Result<Self> {
+        let accelerator = Accelerator::from_env();
+        if path.extension().is_some_and(|extension| extension == "npz") {
+            UniversalV2::load(path, accelerator).map(|model| Self::V2(Box::new(model)))
+        } else {
+            FaceModel::load(path, accelerator).map(|model| Self::V1(Box::new(model)))
+        }
+    }
+
+    fn enroll(&mut self, setup: &Enrollment) -> anyhow::Result<()> {
+        match self {
+            Self::V1(model) => model.enroll(setup),
+            Self::V2(model) => model.enroll(&setup.frames),
+        }
+    }
+
+    /// Fills in what the status shows of the loaded model.
+    fn describe(&self, status: &mut FaceModelStatus) {
+        match self {
+            Self::V1(model) => {
+                let info = model.info();
+                status.device = Some(info.device.clone());
+                status.enrolled = info.enrolled.clone();
+                status.tongue_map = info.tongue_map;
+                status.disabled_targets = info.disabled_targets.clone();
+            }
+            Self::V2(model) => {
+                status.device = Some(model.device().to_string());
+                status.enrolled = model.enrolled();
+                status.tongue_map = model.has_tongue_map();
+                // It reads the jaw but leaves it to the tracking module.
+                status.disabled_targets = vec![FACE_TARGETS[8].to_string()];
+            }
+        }
+    }
+}
+
 /// The universal face model, loaded with the wearer's face setup.
 struct FaceRuntime {
     choice: FaceChoice,
-    model: Option<FaceModel>,
+    model: Option<FaceEngine>,
     status: FaceModelStatus,
 }
 
@@ -1469,7 +1553,7 @@ impl FaceRuntime {
                 status,
             };
         };
-        let loaded = FaceModel::load(path, Accelerator::from_env()).and_then(|mut model| {
+        let loaded = FaceEngine::load(path).and_then(|mut model| {
             if let Some(id) = &choice.enrollment {
                 let dir = crate::training::safe_child(&cwd.join(".local/tongue-captures"), id)
                     .map_err(anyhow::Error::msg)?;
@@ -1484,20 +1568,19 @@ impl FaceRuntime {
         });
         let model = match loaded {
             Ok(model) => {
-                let info = model.info();
-                info!(
-                    "Quest Pro face: loaded {} device={} enrolled={:?} tongue_map={} untrained={:?}",
-                    path.display(),
-                    info.device,
-                    info.enrolled,
-                    info.tongue_map,
-                    info.disabled_targets
-                );
+                model.describe(&mut status);
                 status.loaded = true;
-                status.device = Some(info.device.clone());
-                status.enrolled = info.enrolled.clone();
-                status.tongue_map = info.tongue_map;
-                status.disabled_targets = info.disabled_targets.clone();
+                info!(
+                    "Quest Pro face: loaded {} device={:?} enrolled={:?} tongue_map={} untrained={:?}",
+                    path.display(),
+                    status.device,
+                    status.enrolled,
+                    status.tongue_map,
+                    status.disabled_targets
+                );
+                if let FaceEngine::V2(model) = &model {
+                    info!("Quest Pro face: model provenance: {}", model.provenance);
+                }
                 Some(model)
             }
             Err(error) => {
@@ -1524,6 +1607,44 @@ fn face_as_heads(face: &[f32; FACE_OUTPUTS]) -> [f32; MODEL_HEADS] {
     heads
 }
 
+/// A `universal-face-v2` frame as the pair's heads: visibility 0 or 1 (its
+/// event layer decided), extension while visible, direction, puffs.
+fn v2_as_heads(frame: &V2Frame) -> [f32; MODEL_HEADS] {
+    let mut heads = [0.0; MODEL_HEADS];
+    if frame.tongue_visible {
+        heads[0] = 1.0;
+        heads[1] = frame.tongue_extension as f32;
+        heads[2] = frame.tongue_horizontal as f32;
+        heads[3] = frame.tongue_vertical as f32;
+    }
+    heads[CHEEK_COLUMNS[0]] = frame.cheeks[0] as f32;
+    heads[CHEEK_COLUMNS[1]] = frame.cheeks[1] as f32;
+    heads
+}
+
+/// A `universal-face-v2` frame's cheek sucks and brows, already smoothed by
+/// its event layer. The brow raises go out only while Meta's own came fresh;
+/// the jaw stays the tracking module's.
+fn v2_reading(frame: &V2Frame) -> FaceReading {
+    let mut values = [0.0; FACE_OUTPUTS];
+    let mut enabled = [false; FACE_OUTPUTS];
+    for (index, value) in [(4, frame.cheeks[0]), (5, frame.cheeks[1])]
+        .into_iter()
+        .chain([(6, frame.cheeks[2]), (7, frame.cheeks[3])])
+        .chain((13..17).zip(frame.brows))
+    {
+        values[index] = value as f32;
+        enabled[index] = true;
+    }
+    if let Some(raises) = frame.raises {
+        for (index, value) in (9..13).zip(raises) {
+            values[index] = value as f32;
+            enabled[index] = true;
+        }
+    }
+    FaceReading { values, enabled }
+}
+
 fn start_model(dir: &std::path::Path) -> Result<TongueModel, String> {
     let model =
         TongueModel::load(dir, Accelerator::from_env()).map_err(|error| format!("{error:#}"))?;
@@ -1545,6 +1666,7 @@ fn inference_loop(
     feed: Shared,
     latest: TongueState,
     settings: SettingsStore,
+    native: Arc<NativeFeed>,
     running: Arc<AtomicBool>,
 ) {
     while running.load(Ordering::SeqCst) {
@@ -1569,10 +1691,12 @@ fn inference_loop(
             feed: &feed,
             latest: &latest,
             settings: &settings,
+            native: &native,
             running: &running,
         };
         let result = model_dir().and_then(|dir| run_model(&dir, &context));
         *latest.write().unwrap() = None;
+        native.want(false);
         if let Err(error) = result {
             warn!(
                 "Quest Pro tongue: model unavailable ({error}); retaining module tongue tracking"
@@ -1590,11 +1714,32 @@ fn inference_loop(
     }
 }
 
+/// What a universal face model gave for a frame.
+enum FaceOutput {
+    V1 {
+        values: [f32; FACE_OUTPUTS],
+        camera_weight: f32,
+        threshold: f32,
+    },
+    V2(V2Frame),
+}
+
+/// One frame's prediction, from whichever model made it.
+struct FrameOutput {
+    heads: [f32; MODEL_HEADS],
+    face: Option<FaceReading>,
+    camera_weight: f32,
+    threshold: f32,
+    cheeks: bool,
+    own_visibility: bool,
+}
+
 /// Shared state the inference worker reads from and publishes to.
 struct InferenceContext<'a> {
     feed: &'a Shared,
     latest: &'a TongueState,
     settings: &'a SettingsStore,
+    native: &'a NativeFeed,
     running: &'a AtomicBool,
 }
 
@@ -1607,11 +1752,13 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
         feed,
         latest,
         settings,
+        native,
         running,
     } = context;
     feed.write().unwrap().model_error = None;
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let mut face = FaceRuntime::start(&cwd, FaceChoice::current(&cwd));
+    native.want(matches!(face.model, Some(FaceEngine::V2(_))));
     feed.write().unwrap().face_model = Some(face.status.clone());
     let mut face_smoother = Smoother::<FACE_OUTPUTS>::default();
     let (camera_weight, threshold) = (model.info().camera_weight, model.info().threshold);
@@ -1638,6 +1785,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             let choice = FaceChoice::current(&cwd);
             if choice != face.choice {
                 face = FaceRuntime::start(&cwd, choice);
+                native.want(matches!(face.model, Some(FaceEngine::V2(_))));
                 face_smoother = Smoother::default();
                 feed.write().unwrap().face_model = Some(face.status.clone());
             }
@@ -1666,21 +1814,37 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
         // the pair reads the mouth cameras, as before.
         let strip = strip.filter(|strip| strip.sequence == frame.sequence);
         let face_result = match (face.model.as_mut(), strip) {
-            (Some(face_model), Some(strip)) => Some(face_model.predict(&strip.pixels)),
+            (Some(FaceEngine::V1(model)), Some(strip)) => Some(model.predict(&strip.pixels).map(
+                |prediction| FaceOutput::V1 {
+                    values: prediction.values,
+                    camera_weight: model.info().camera_weight,
+                    threshold: model.info().threshold,
+                },
+            )),
+            (Some(FaceEngine::V2(model)), Some(strip)) => Some(
+                model
+                    .update(
+                        &strip.pixels,
+                        native.latest().as_ref(),
+                        native::nanos(frame.received_at),
+                    )
+                    .map(FaceOutput::V2),
+            ),
             _ => None,
         };
-        let face_values = match face_result {
-            Some(Ok(prediction)) => face.model.as_ref().map(|model| (prediction.values, model)),
+        let face_output = match face_result {
+            Some(Ok(output)) => Some(output),
             Some(Err(error)) => {
                 warn!("Quest Pro face: inference failed ({error:#}); the mouth pair takes over");
                 face.status.error = Some(format!("{error:#}"));
                 face.status.loaded = false;
                 face.model = None;
+                native.want(false);
                 None
             }
             None => None,
         };
-        let face_active = face_values.is_some();
+        let face_active = face_output.is_some();
         if face.status.active != face_active {
             face.status.active = face_active;
             if face_active {
@@ -1688,41 +1852,63 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             }
             feed.write().unwrap().face_model = Some(face.status.clone());
         }
-        let (values, face_reading, frame_weight, frame_threshold, frame_cheeks) = match face_values
-        {
-            Some((raw, face_model)) => {
-                let enabled: [bool; FACE_OUTPUTS] =
-                    std::array::from_fn(|index| face_model.enabled(index));
+        let enabled_v1 = |index: usize| match &face.model {
+            Some(FaceEngine::V1(model)) => model.enabled(index),
+            _ => false,
+        };
+        let output = match face_output {
+            Some(FaceOutput::V1 {
+                values: raw,
+                camera_weight,
+                threshold,
+            }) => {
+                let enabled: [bool; FACE_OUTPUTS] = std::array::from_fn(enabled_v1);
                 let smoothed =
                     face_smoother.update(raw, frame.headset_ns, frame.received_at, strength);
-                let info = face_model.info();
-                (
-                    face_as_heads(&raw),
-                    Some(FaceReading {
+                FrameOutput {
+                    heads: face_as_heads(&raw),
+                    face: Some(FaceReading {
                         values: smoothed,
                         enabled,
                     }),
-                    info.camera_weight,
-                    info.threshold,
-                    enabled[4] && enabled[5],
-                )
+                    camera_weight,
+                    threshold,
+                    cheeks: enabled[4] && enabled[5],
+                    own_visibility: false,
+                }
             }
-            None => (
-                model
+            // Its event layer has smoothed it already.
+            Some(FaceOutput::V2(frame)) => FrameOutput {
+                heads: v2_as_heads(&frame),
+                face: Some(v2_reading(&frame)),
+                camera_weight: 1.0,
+                threshold: 0.5,
+                cheeks: true,
+                own_visibility: true,
+            },
+            None => FrameOutput {
+                heads: model
                     .predict(&frame.pixels)
                     .map_err(|error| format!("{error:#}"))?,
-                None,
+                face: None,
                 camera_weight,
                 threshold,
                 cheeks,
-            ),
+                own_visibility: false,
+            },
         };
         if let Some(previous) = last_sequence {
             dropped_frames += frame.sequence.saturating_sub(previous.saturating_add(1));
         }
         last_sequence = Some(frame.sequence);
         let inference_ms = started.elapsed().as_secs_f32() * 1000.0;
-        let smoothed = smoother.update(values, frame.headset_ns, frame.received_at, strength);
+        let values = output.heads;
+        let smoothed = if output.own_visibility {
+            // Keeps the smoother current for when the pair takes over.
+            smoother.update(values, frame.headset_ns, frame.received_at, 0.0)
+        } else {
+            smoother.update(values, frame.headset_ns, frame.received_at, strength)
+        };
         *latest.write().unwrap() = Some(TonguePrediction {
             sequence: frame.sequence,
             raw: values,
@@ -1730,10 +1916,11 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             received_at: frame.received_at,
             inference_ms,
             dropped_frames,
-            camera_weight: frame_weight,
-            threshold: frame_threshold,
-            cheeks: frame_cheeks,
-            face: face_reading,
+            camera_weight: output.camera_weight,
+            threshold: output.threshold,
+            cheeks: output.cheeks,
+            face: output.face,
+            own_visibility: output.own_visibility,
         });
         if last_log.elapsed() >= Duration::from_secs(5) {
             info!(
@@ -1889,6 +2076,7 @@ mod tests {
             pupils: PupilOverlay::new(PupilState::default()),
             settings,
             native_history: VecDeque::new(),
+            native: Arc::new(NativeFeed::default()),
             active: false,
             visible_latched: false,
             last_diagnostic: Instant::now(),
@@ -1912,6 +2100,7 @@ mod tests {
             threshold: 0.85,
             cheeks: true,
             face: None,
+            own_visibility: false,
         }
     }
 
@@ -2136,6 +2325,86 @@ mod tests {
             (heads[CHEEK_COLUMNS[0]], heads[CHEEK_COLUMNS[1]]),
             (values[4], values[5])
         );
+    }
+
+    fn v2_frame(visible: bool) -> V2Frame {
+        V2Frame {
+            cheeks: [0.6, 0.1, 0.0, 0.2],
+            brows: [0.3, 0.4, 0.0, 0.1],
+            raises: None,
+            tongue_visible: visible,
+            tongue_extension: 0.55,
+            tongue_horizontal: 0.3,
+            tongue_vertical: -0.2,
+        }
+    }
+
+    fn v2_prediction(frame: &V2Frame) -> TonguePrediction {
+        let heads = v2_as_heads(frame);
+        TonguePrediction {
+            raw: heads,
+            values: heads,
+            camera_weight: 1.0,
+            threshold: 0.5,
+            face: Some(v2_reading(frame)),
+            own_visibility: true,
+            ..prediction(Instant::now())
+        }
+    }
+
+    #[test]
+    fn a_v2_models_tongue_goes_out_as_its_event_layer_decided() {
+        // Agreement mode with the module's TongueOut at 0 would hide a
+        // camera-only tongue; a v2 model has already read Meta's TongueOut.
+        let settings = QuestProSettings {
+            tongue_visibility: VisibilityMode::Agreement,
+            ..QuestProSettings::default()
+        };
+        let mut overlay = overlay_with(Some(v2_prediction(&v2_frame(true))), settings);
+        let mut data = UnifiedTrackingData::default();
+        overlay.before_mutation(&data);
+        overlay.apply(&mut data);
+        // TongueOut is the extension, not visibility's 1.
+        let expected = [0.55, 0.0, 0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        for (value, expected) in shapes(&data).iter().zip(expected) {
+            assert!((value - expected).abs() < 1e-6, "{value} != {expected}");
+        }
+        assert_eq!(cheeks(&data), [0.6, 0.1]);
+    }
+
+    #[test]
+    fn a_hidden_v2_tongue_sends_nothing_but_its_cheeks_still_go_out() {
+        let mut overlay = overlay(Some(v2_prediction(&v2_frame(false))));
+        let mut data = UnifiedTrackingData::default();
+        data.shapes[UnifiedExpressions::TongueOut as usize].weight = 0.9;
+        overlay.before_mutation(&data);
+        overlay.apply(&mut data);
+        assert!(shapes(&data).iter().all(|value| *value == 0.0));
+        assert_eq!(cheeks(&data), [0.6, 0.1]);
+    }
+
+    #[test]
+    fn a_v2_model_sends_brow_raises_only_with_metas_own() {
+        let mut frame = v2_frame(true);
+        let reading = v2_reading(&frame);
+        // Sucks, lowerers and pinches; never the jaw.
+        let enabled: Vec<usize> = (0..FACE_OUTPUTS).filter(|&i| reading.enabled[i]).collect();
+        assert_eq!(enabled, [4, 5, 6, 7, 13, 14, 15, 16]);
+        assert_eq!(reading.values[7], 0.2);
+        assert_eq!(reading.values[14], 0.4);
+        frame.raises = Some([0.1, 0.2, 0.3, 0.4]);
+        let reading = v2_reading(&frame);
+        assert!((9..13).all(|index| reading.enabled[index]));
+        assert_eq!(reading.values[12], 0.4);
+        assert!(!reading.enabled[8]);
+
+        let mut overlay = overlay(Some(v2_prediction(&frame)));
+        let mut data = UnifiedTrackingData::default();
+        overlay.apply(&mut data);
+        let weight = |shape: UnifiedExpressions| data.shapes[shape as usize].weight;
+        assert_eq!(weight(UnifiedExpressions::BrowOuterUpRight), 0.4);
+        assert_eq!(weight(UnifiedExpressions::BrowLowererRight), 0.4);
+        assert_eq!(weight(UnifiedExpressions::CheekSuckRight), 0.2);
     }
 
     #[test]

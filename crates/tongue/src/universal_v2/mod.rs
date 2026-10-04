@@ -40,6 +40,8 @@ use events::{Event, FaceEvents, BROW, PUFF, SUCK, TONGUE};
 use npz::Array;
 
 pub const SCHEMA: &str = "universal-face-v2";
+/// The heads' file, as QFT+ names it; the graph is `universal-face-v2.area.onnx`.
+pub const FILE_NAME: &str = "universal-face-v2.npz";
 pub const SLOTS: [&str; 6] = [
     "neutral",
     "jaw_open",
@@ -153,6 +155,10 @@ pub struct Native {
     pub values: HashMap<String, f64>,
 }
 
+/// The neutral `q` (`[2, 256]`), the puff's axis (`[2, 256]`) and, when the
+/// one-sided puffs separate, the matrix that unmixes the sides.
+type PuffAxis = (Vec<f32>, Vec<f32>, Option<[[f64; 2]; 2]>);
+
 struct TongueMapV2 {
     mean: Vec<f32>,
     scale: Vec<f32>,
@@ -175,8 +181,7 @@ pub struct UniversalV2 {
     present: Vec<f32>,
     brow_neutral: Vec<f32>,
     brow_present: f32,
-    /// Neutral `[2, 256]`, axis `[2, 256]`, unmix.
-    puff_axis: Option<(Vec<f32>, Vec<f32>, Option<[[f64; 2]; 2]>)>,
+    puff_axis: Option<PuffAxis>,
     tongue_map: Option<TongueMapV2>,
     events: FaceEvents,
     share: BTreeMap<&'static str, f64>,
@@ -258,12 +263,32 @@ impl UniversalV2 {
             share: BTreeMap::new(),
             share_at: None,
         };
-        model.enroll(&BTreeMap::new())?;
+        // A model that needs the face setup loads without one, but gives
+        // nothing until it has one.
+        let setup = model.enroll(&BTreeMap::new());
+        if model.allows_no_enrollment {
+            setup?;
+        }
         Ok(model)
     }
 
     pub fn device(&self) -> &str {
         &self.session.device
+    }
+
+    /// The face setup's slots it holds anchors for.
+    pub fn enrolled(&self) -> Vec<String> {
+        SLOTS
+            .iter()
+            .zip(&self.present)
+            .filter(|(_, &present)| present > 0.0)
+            .map(|(slot, _)| slot.to_string())
+            .collect()
+    }
+
+    /// Whether the face setup fitted the wearer's tongue directions.
+    pub fn has_tongue_map(&self) -> bool {
+        self.tongue_map.is_some()
     }
 
     /// The graph on one strip: `q` (512), `t` (7), `w` (480).
@@ -456,6 +481,9 @@ impl UniversalV2 {
 
     /// QFT+'s `update`: one strip, the latest native sample (if any), now.
     pub fn update(&mut self, strip: &[u8], native: Option<&Native>, now: i64) -> Result<V2Frame> {
+        if !self.allows_no_enrollment && !self.present.iter().any(|&p| p > 0.0) {
+            bail!("this model needs the face setup");
+        }
         let (q, t, w) = self.run(strip)?;
         let probabilities = self.head_forward(&q, &self.anchors, &self.present);
         let mut p: HashMap<String, f64> = self
@@ -736,8 +764,9 @@ fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<[f64; 2]>) -> Option<Vec<[f64; 2]>> {
         b.swap(col, pivot);
         for row in col + 1..n {
             let f = a[row][col] / a[col][col];
-            for k in col..n {
-                a[row][k] -= f * a[col][k];
+            let (above, below) = a.split_at_mut(row);
+            for (target, source) in below[0][col..].iter_mut().zip(&above[col][col..]) {
+                *target -= f * source;
             }
             b[row][0] -= f * b[col][0];
             b[row][1] -= f * b[col][1];
