@@ -19,6 +19,9 @@ rand = "0.9"
 rayon = "1"
 burn-flex = { version = "=0.21.0", features = ["rayon", "simd"] }
 burn-store = { version = "=0.21.0", default-features = false, features = ["std", "pytorch"] }
+# universal_v2 models: NumPy heads in an .npz, pinned to their graph by SHA-256.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
 # Inference on ONNX Runtime, whose library is loaded at run time (onnx::runtime).
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-24"] }
 
