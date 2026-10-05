@@ -11,7 +11,8 @@ param(
     [string]$Out = "",
     [string]$Calibration = "",
     [int]$Jobs = 1,
-    [switch]$Fast
+    [switch]$Fast,
+    [switch]$Passes
 )
 $ErrorActionPreference = "Stop"
 
@@ -29,6 +30,7 @@ $common = @()
 if ($Out) { $common += @("--out", $Out) }
 if ($Calibration) { $common += @("--calibration", $Calibration) }
 if ($Fast) { $common += "--fast" }
+if ($Passes) { $common += "--passes" }
 $filter = "^tongue-synth:|Error|Traceback"
 
 if ($Jobs -le 1) {

@@ -226,7 +226,7 @@ const DIRECTION_POSES: [Pose; 15] = [
 
 /// Tongue-hidden poses that commonly trigger false detections, each paired
 /// with a matching visible pose, as in the reference correction set.
-const NEGATIVE_POSES: [Pose; 13] = [
+const NEGATIVE_POSES: [Pose; 14] = [
     pose(
         "Slight smile, no tongue",
         "Give a slight, relaxed smile with the tongue inside.",
@@ -267,6 +267,11 @@ const NEGATIVE_POSES: [Pose; 13] = [
         "Tongue out, smiling",
         "Smile and extend your tongue straight out.",
         out(1.0, 0.0, 0.0),
+    ),
+    pose(
+        "Tongue tip, smiling",
+        "Smile and show just the tip of your tongue.",
+        out(0.25, 0.0, 0.0),
     ),
     pose(
         "Tongue tip, jaw wide",
@@ -1612,6 +1617,13 @@ mod tests {
         }
         assert!(hidden(&NEGATIVE_POSES) >= 8);
         assert!(NEGATIVE_POSES.iter().any(|pose| pose.targets[0] == 1.0));
+        // Smiles come with the tongue in and with just its tip out, so a
+        // smile alone can't decide.
+        let smiling_tip = NEGATIVE_POSES
+            .iter()
+            .find(|pose| pose.name == "Tongue tip, smiling")
+            .unwrap();
+        assert_eq!(smiling_tip.targets[..4], [1.0, 0.25, 0.0, 0.0]);
     }
 
     #[test]

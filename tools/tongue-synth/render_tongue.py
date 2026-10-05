@@ -53,6 +53,12 @@ TARGETS = [
 PINHOLE = 700
 PINHOLE_TAN = 1.32
 SAMPLES = 16
+# `--passes`: which part each material marks in the `parts` render pass
+# (red tongue, green teeth, blue lips), for repainting and checking repaints.
+PARTS_AOV = "parts"
+PART_COLORS = {"Tongue": (1.0, 0.0, 0.0), "Teeth": (0.0, 1.0, 0.0)}
+# Depth past this (metres) is the room behind the person.
+FAR = 0.5
 # Tongue: rings along the centreline, points around each ring.
 T_ALONG, T_AROUND = 44, 28
 JAW_MAX_DEGREES = 22.0
@@ -455,6 +461,10 @@ def material(name, color, roughness):
     bsdf = next(n for n in nodes if n.type == "BSDF_PRINCIPLED")
     bsdf.inputs["Base Color"].default_value = (color, color, color, 1.0)
     bsdf.inputs["Roughness"].default_value = roughness
+    # Marks the part for `--passes`; free when the pass isn't rendered.
+    aov = nodes.new("ShaderNodeOutputAOV")
+    aov.aov_name = PARTS_AOV
+    aov.inputs["Color"].default_value = (*PART_COLORS.get(name, (0.0, 0.0, 0.0)), 1.0)
     return mat, bsdf, nodes, links
 
 
@@ -464,6 +474,9 @@ def skin_material(identity, metres_per_unit):
     bsdf.inputs["Specular IOR Level"].default_value = 0.3
     lip = nodes.new("ShaderNodeAttribute")
     lip.attribute_name = "lip"
+    parts = nodes.new("ShaderNodeCombineColor")
+    links.new(lip.outputs["Fac"], parts.inputs["Blue"])
+    links.new(parts.outputs["Color"], next(n for n in nodes if n.type == "OUTPUT_AOV").inputs["Color"])
     beard = nodes.new("ShaderNodeAttribute")
     beard.attribute_name = "beard"
     coords = nodes.new("ShaderNodeTexCoord")
@@ -1022,7 +1035,7 @@ class Head:
         self.teeth.update(frame)
 
 
-def build_scene(identity, sensor, cameras, mpfb, targets_dir):
+def build_scene(identity, sensor, cameras, mpfb, targets_dir, passes=False):
     clear_scene()
     scene = bpy.context.scene
     try:
@@ -1033,8 +1046,21 @@ def build_scene(identity, sensor, cameras, mpfb, targets_dir):
         scene.eevee.taa_render_samples = SAMPLES
     scene.render.resolution_x = scene.render.resolution_y = PINHOLE
     scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "OPEN_EXR"
-    scene.render.image_settings.color_depth = "16"
+    settings = scene.render.image_settings
+    if passes:
+        # Depth and parts as well as the image, in one multilayer EXR.
+        layer = scene.view_layers[0]
+        layer.use_pass_z = True
+        if PARTS_AOV not in layer.aovs:
+            aov = layer.aovs.add()
+            aov.name, aov.type = PARTS_AOV, "COLOR"
+        scene.render.use_compositing = False
+        if "media_type" in settings.bl_rna.properties:
+            settings.media_type = "MULTI_LAYER_IMAGE"
+        settings.file_format = "OPEN_EXR_MULTILAYER"
+    else:
+        settings.file_format = "OPEN_EXR"
+    settings.color_depth = "16" if not passes else "32"
     scene.view_settings.view_transform = "Standard"
     world = bpy.data.worlds.new("Dark")
     if bpy.app.version < (5, 0, 0):
@@ -1079,15 +1105,36 @@ def build_scene(identity, sensor, cameras, mpfb, targets_dir):
 
 # ---------------------------------------------------------------- output
 
-def render_view(scene, cam, warp, path):
+def render_view(scene, cam, warp, path, passes=False):
+    """The view's radiance; with `passes`, also its depth (metres, FAR where
+    nothing is) and parts (tongue, teeth, lips coverage), all through the lens."""
     scene.camera = cam
     scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
+    if passes:
+        return read_passes(path, warp)
     image = bpy.data.images.load(path)
     pixels = np.empty(PINHOLE * PINHOLE * 4, dtype=np.float32)
     image.pixels.foreach_get(pixels)
     bpy.data.images.remove(image)
     return sample_pinhole(pixels.reshape(PINHOLE, PINHOLE, 4)[::-1, :, 0], warp)
+
+
+def read_passes(path, warp):
+    import OpenImageIO as oiio
+    layers = {}
+    file = oiio.ImageInput.open(path)
+    part = 0
+    while file.seek_subimage(part, 0):
+        pixels = file.read_image("float")
+        for i, name in enumerate(file.spec().channelnames):
+            layers[name.split(".", 1)[1]] = pixels[..., i]
+        part += 1
+    file.close()
+    radiance = sample_pinhole(layers["Combined.R"], warp)
+    depth = sample_pinhole(np.minimum(layers["Depth.Z"], FAR), warp)
+    parts = np.stack([sample_pinhole(layers[f"{PARTS_AOV}.{c}"], warp) for c in "RGB"])
+    return radiance, depth, parts
 
 
 def blur(image, sigma):
@@ -1130,6 +1177,8 @@ def main():
     parser.add_argument("--out", type=Path, default=repo / ".local" / "tongue-captures")
     parser.add_argument("--fast", action="store_true",
                         help="half-size renders with fewer samples, for quick checks")
+    parser.add_argument("--passes", action="store_true",
+                        help="also write each frame's depth and tongue/teeth/lip masks to passes/")
     parser.add_argument("--calibration", type=Path,
                         default=repo / ".local" / "headset-calibration" / "ft_calib.scio.json",
                         help="the headset's ft_calib.scio.json; nominal values when it's missing")
@@ -1149,6 +1198,8 @@ def main():
     millis = int(time.time() * 1000)
     directory = args.out / f"{millis}-synthetic-{os.getpid()}"
     directory.mkdir(parents=True)
+    if args.passes:
+        (directory / "passes").mkdir()
     metadata = {
         "format": "vrft-tongue-capture-v1", "mode": "synthetic", "width": 800, "height": 400,
         "bytesPerFrame": 800 * 400, "targets": TARGETS,
@@ -1171,7 +1222,7 @@ def main():
             identity = sample_identity(rng, axes)
             sensor = sample_sensor(rng)
             lenses = [lens.perturbed(rng) for lens in cameras]
-            scene, head, views = build_scene(identity, sensor, lenses, mpfb, targets_dir)
+            scene, head, views = build_scene(identity, sensor, lenses, mpfb, targets_dir, args.passes)
             gain = None
             for _ in range(min(per_person, args.count - index)):
                 # A pose that sends the tongue through the face is drawn again.
@@ -1189,8 +1240,17 @@ def main():
                 head.place(identity["pitch"] + rng.normal(0, 1.0), identity["yaw"] + rng.normal(0, 0.7),
                            identity["roll"] + rng.normal(0, 0.7),
                            list(np.add(identity["eyes"], rng.normal(0, 0.001, 3))))
-                radiance = [render_view(scene, cam, warp, str(scratch / f"{n}.exr"))
+                rendered = [render_view(scene, cam, warp, str(scratch / f"{n}.exr"), args.passes)
                             for n, (cam, warp) in enumerate(views)]
+                if args.passes:
+                    radiance = [r[0] for r in rendered]
+                    # Per frame: depth in millimetres and parts in 255ths, both views.
+                    np.savez_compressed(
+                        directory / "passes" / f"{index:06d}.npz",
+                        depth=np.stack([np.round(r[1] * 1000) for r in rendered]).astype(np.uint16),
+                        parts=np.stack([np.round(np.clip(r[2], 0, 1) * 255) for r in rendered]).astype(np.uint8))
+                else:
+                    radiance = rendered
                 # Auto-exposure: part way from the last frame's gain toward
                 # this frame's, as the headset's lags behind a changing face.
                 settled = sensor["brightness"] / max(np.percentile(np.concatenate(radiance), 99), 1e-6)

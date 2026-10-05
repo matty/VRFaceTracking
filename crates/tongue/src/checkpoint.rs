@@ -71,6 +71,26 @@ impl Default for VisibilityGate {
     }
 }
 
+/// The lowest TongueOut a visible tongue is sent with when TongueOut
+/// follows the extension output.
+pub const TONGUE_OUT_FLOOR: f32 = 0.1;
+
+/// How TongueOut follows the direction model's extension output, once
+/// training found that it separates the recorded amounts of tongue out.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TongueOutMap {
+    pub scale: f64,
+    pub offset: f64,
+}
+
+impl TongueOutMap {
+    /// TongueOut for a visible tongue with this extension output.
+    pub fn tongue_out(&self, extension: f32) -> f32 {
+        (self.scale as f32 * extension.clamp(0.0, 1.0) + self.offset as f32)
+            .clamp(TONGUE_OUT_FLOOR, 1.0)
+    }
+}
+
 /// Everything a checkpoint says besides its weights.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +105,10 @@ pub struct Metadata {
     /// How a personal model was trained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal_training: Option<serde_json::Value>,
+    /// On a direction model: how TongueOut follows extension. Without it,
+    /// TongueOut is the larger of the tongue-out confidence and extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tongue_out: Option<TongueOutMap>,
 }
 
 pub struct Checkpoint {
@@ -159,6 +183,11 @@ impl Checkpoint {
         if !(0.0..=1.0).contains(&gate.camera_weight) || !(0.0..=1.0).contains(&gate.threshold) {
             bail!("tongue model visibility gate is out of range");
         }
+        if metadata.tongue_out.is_some_and(|map| {
+            !map.offset.is_finite() || !(map.scale.is_finite() && map.scale > 0.0)
+        }) {
+            bail!("tongue model TongueOut map is invalid");
+        }
         if let Some(unknown) = metadata
             .disabled_targets
             .iter()
@@ -208,6 +237,7 @@ impl Checkpoint {
             visibility_gate: field(path, "visibilityGate").unwrap_or_default(),
             disabled_targets,
             personal_training: field(path, "personalTraining"),
+            tongue_out: None,
         };
         let weights = PytorchReader::with_top_level_key(path, "modelState")?
             .into_tensors()

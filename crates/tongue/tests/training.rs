@@ -129,6 +129,7 @@ fn base_models(dir: &Path) {
                 visibility_gate: VisibilityGate::default(),
                 disabled_targets: vec![],
                 personal_training: None,
+                tongue_out: None,
             },
             weights: TongueNet::<Cpu>::init(&Default::default()).weights(),
         }
@@ -203,6 +204,126 @@ fn full_training_report_and_inference_contract() {
 
     // A finished run is never overwritten.
     assert!(run(&request, &output, &options).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 200 frames in ten 20-frame poses, long enough to hold the end of each
+/// back: three hidden, three straight ahead at graded amounts, and the four
+/// directions.
+fn held_out_labels() -> Vec<Label<'static>> {
+    let poses = [
+        ("Neutral", target(0., 0., 0., 0.)),
+        ("Smile", target(0., 0., 0., 0.)),
+        ("Jaw open", target(0., 0., 0., 0.)),
+        ("Tongue tip", target(1., 0.25, 0., 0.)),
+        ("Tongue half out", target(1., 0.5, 0., 0.)),
+        ("Tongue straight out", target(1., 1., 0., 0.)),
+        ("Tongue left", target(1., 1., -1., 0.)),
+        ("Tongue right", target(1., 1., 1., 0.)),
+        ("Tongue up", target(1., 1., 0., 1.)),
+        ("Tongue down", target(1., 1., 0., -1.)),
+    ];
+    poses
+        .into_iter()
+        .enumerate()
+        .flat_map(|(step, (pose, targets))| {
+            (0..20).map(move |_| (step as u64, pose, targets, None))
+        })
+        .collect()
+}
+
+#[test]
+fn held_back_frames_score_passes_and_calibrate() {
+    let root = temp("held-out");
+    let base = root.join("base");
+    base_models(&base);
+    let dir = root.join("recording");
+    recording(&dir, &held_out_labels(), 1);
+    let output = root.join("output");
+    run(&write_request(&root, &base, &[dir]), &output, &one_pass()).unwrap();
+
+    let report = read_json(&output.join("report.json"));
+    // The last four frames of each pose.
+    assert_eq!(report["held_out_frames"], 40, "{report}");
+    assert_eq!(report["frames"], 200);
+    assert_eq!(report["calibration"]["held_out"], true);
+    let weight = report["calibration"]["camera_weight"].as_f64().unwrap();
+    assert!((0.5..=1.0).contains(&weight), "{weight}");
+    let kept = report["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 2);
+    for (kept, focus) in kept.iter().zip(["gate", "direction"]) {
+        assert_eq!(kept["focus"], focus);
+        // The starting model's score, then the one pass's.
+        let scores = kept["scores"].as_array().unwrap();
+        assert_eq!(scores.len(), 2);
+        let epoch = kept["epoch"].as_u64().unwrap();
+        if scores[0] != scores[1] {
+            let best = if scores[1].as_f64() < scores[0].as_f64() {
+                1
+            } else {
+                0
+            };
+            assert_eq!(epoch, best, "{kept}");
+        }
+        let role = if focus == "gate" {
+            Role::Gate
+        } else {
+            Role::Direction
+        };
+        let saved = Checkpoint::load(&role.safetensors(&output)).unwrap();
+        let training = saved.metadata.personal_training.unwrap();
+        assert_eq!(training["keptEpoch"], epoch);
+        assert_eq!(training["heldOutFrames"], 40);
+        if epoch == 0 {
+            // The starting model was kept: its tongue weights are unchanged.
+            let before = Checkpoint::load(&role.safetensors(&base)).unwrap().weights;
+            for name in before.keys().filter(|name| !name.starts_with("head.6.")) {
+                assert_eq!(
+                    before[name].to_vec::<f32>().unwrap(),
+                    saved.weights[name].to_vec::<f32>().unwrap(),
+                    "{name}"
+                );
+            }
+        }
+    }
+    // The graded straight-ahead poses check whether TongueOut can follow
+    // extension, and the direction model says what was decided.
+    let tongue_out = &report["tongue_out"];
+    let amounts: Vec<f64> = tongue_out["levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|level| {
+            assert_eq!(level["frames"], 4);
+            level["amount"].as_f64().unwrap()
+        })
+        .collect();
+    assert_eq!(amounts, [0.25, 0.5, 1.0]);
+    let model = TongueModel::load(&output, Accelerator::Cpu).unwrap();
+    assert_eq!(
+        model.info().tongue_out.is_some(),
+        tongue_out["calibrated"] == true
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn short_poses_train_on_every_frame() {
+    let root = temp("no-held-out");
+    let base = root.join("base");
+    base_models(&base);
+    let dir = root.join("recording");
+    graded(&dir, 1);
+    let output = root.join("output");
+    run(&write_request(&root, &base, &[dir]), &output, &one_pass()).unwrap();
+    let report = read_json(&output.join("report.json"));
+    assert_eq!(report["held_out_frames"], 0);
+    assert_eq!(report["kept"], json!([]));
+    assert_eq!(report["tongue_out"], Value::Null);
+    assert_eq!(report["calibration"]["held_out"], false);
+    let saved = Checkpoint::load(&Role::Direction.safetensors(&output)).unwrap();
+    assert_eq!(saved.metadata.personal_training.unwrap()["keptEpoch"], 1);
+    assert!(saved.metadata.tongue_out.is_none());
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -389,6 +510,7 @@ fn models_from_before_the_cheek_heads_load_with_them_disabled() {
                 visibility_gate: VisibilityGate::default(),
                 disabled_targets: vec!["roll".into()],
                 personal_training: None,
+                tongue_out: None,
             },
             weights: weights.clone(),
         };

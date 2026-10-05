@@ -9,7 +9,7 @@ use burn::tensor::{Tensor, TensorData};
 use log::warn;
 
 use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
-use crate::checkpoint::{Checkpoint, Role};
+use crate::checkpoint::{Checkpoint, Role, TongueOutMap};
 use crate::model::TongueNet;
 use crate::onnx::{self, live::LiveSession, live::Plan};
 use crate::preprocess::{AreaResize, FRAME_BYTES};
@@ -25,6 +25,8 @@ pub struct ModelInfo {
     pub gate_size: usize,
     pub direction_size: usize,
     pub disabled_targets: Vec<String>,
+    /// How TongueOut follows extension, from the direction model.
+    pub tongue_out: Option<TongueOutMap>,
 }
 
 struct Pair<B: Backend> {
@@ -260,6 +262,7 @@ impl TongueModel {
             gate_size: gate.metadata.image_size,
             direction_size: direction.metadata.image_size,
             disabled_targets: direction.metadata.disabled_targets.clone(),
+            tongue_out: direction.metadata.tongue_out,
         };
         Ok(Self { engine, info })
     }

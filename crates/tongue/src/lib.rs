@@ -14,7 +14,7 @@ pub mod universal;
 pub mod universal_v2;
 
 pub use backend::Accelerator;
-pub use checkpoint::{Checkpoint, Role};
+pub use checkpoint::{Checkpoint, Role, TongueOutMap};
 pub use infer::{ModelInfo, TongueModel};
 
 /// Model outputs, in order: ten tongue heads, then each cheek's puff.
