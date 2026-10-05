@@ -44,7 +44,9 @@ use crate::checkpoint::{Checkpoint, Role};
 use crate::dataset::{augment, Frames, Record, ACTIVE};
 use crate::infer::guarded;
 use crate::recordings::Recording;
-use crate::train::{calibrate, clip_gradients, write_json, Options, Progress, Request};
+use crate::train::{
+    calibrate, calibration_frames, clip_gradients, write_json, Options, Progress, Request,
+};
 use crate::TARGETS;
 use vrft_quest_pro_protocol::{ReportCalibration, TrainingProgress, TrainingReport, TrainingStage};
 
@@ -197,12 +199,18 @@ impl Job<'_> {
         });
         let trained = model.valid();
         let predictions = predict_all(&trained, &frames, self.options.batch_size, &device)?;
+        let pair = as_pair_frames(&frames);
+        let indices = calibration_frames(&pair);
         let calibration = calibrate(
-            &predictions
+            &indices
                 .iter()
-                .map(|row| f64::from(row[0]))
+                .map(|&index| f64::from(predictions[index][0]))
                 .collect::<Vec<_>>(),
-            &as_pair_frames(&frames),
+            &indices
+                .iter()
+                .map(|&index| &pair.records[index])
+                .collect::<Vec<_>>(),
+            false,
         );
         let disabled: Vec<String> = FACE_TARGETS
             .iter()
@@ -258,8 +266,12 @@ impl Job<'_> {
                 camera_weight: calibration.camera_weight,
                 threshold: calibration.threshold,
                 plateau: calibration.details.get("plateau").cloned(),
+                held_out: false,
             },
             seconds: Some((started.elapsed().as_secs_f64() * 10.0).round() / 10.0),
+            held_out_frames: 0,
+            kept: vec![],
+            tongue_out: None,
         };
         write_json(
             &self.output.join("report.json"),
@@ -526,6 +538,7 @@ fn as_pair_frames(frames: &FaceFrames) -> Frames {
                     moving: false,
                     key: record.key.clone(),
                     synthetic: record.synthetic,
+                    held_out: false,
                 }
             })
             .collect(),

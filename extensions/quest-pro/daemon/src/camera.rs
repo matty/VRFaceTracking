@@ -28,7 +28,7 @@ use vrft_quest_pro_protocol::{
 };
 use vrft_tongue::universal::{Enrollment, FaceModel, FACE_TARGETS};
 use vrft_tongue::universal_v2::{UniversalV2, V2Frame};
-use vrft_tongue::{Accelerator, Role, TongueModel, CHEEK_COLUMNS};
+use vrft_tongue::{Accelerator, Role, TongueModel, TongueOutMap, CHEEK_COLUMNS};
 
 const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
 /// How often a headset app that couldn't be read is tried again while mDNS
@@ -69,6 +69,10 @@ const SKIP_MAX_BYTES: usize = 4 * 1024 * 1024;
 const MODEL_HEADS: usize = vrft_quest_pro_protocol::MODEL_HEADS;
 const _: () = assert!(vrft_tongue::TARGETS.len() == MODEL_HEADS);
 const TONGUE_FRESH_FOR: Duration = Duration::from_millis(250);
+/// A visible tongue whose visibility dips below the hysteresis band keeps
+/// its last confident values this long, so a brief miss doesn't flicker it
+/// off. Timed by camera frame arrival.
+const VISIBILITY_HOLD: Duration = Duration::from_millis(220);
 const NATIVE_HISTORY: Duration = Duration::from_millis(1000);
 /// A module TongueOut further than this from a camera frame isn't used for it.
 const NATIVE_FRESH_FOR: Duration = Duration::from_millis(200);
@@ -236,6 +240,8 @@ struct TonguePrediction {
     dropped_frames: u64,
     camera_weight: f32,
     threshold: f32,
+    /// How TongueOut follows extension, when the model was checked for it.
+    tongue_out: Option<TongueOutMap>,
     /// Whether the model has learned cheek puffs.
     cheeks: bool,
     /// Set when the universal face model made this prediction.
@@ -247,6 +253,14 @@ struct TonguePrediction {
 }
 
 type TongueState = Arc<RwLock<Option<TonguePrediction>>>;
+
+/// The last frame the tongue counted as visible on its own merit.
+#[derive(Clone, Copy)]
+struct Confident {
+    received_at: Instant,
+    fused: f32,
+    values: [f32; MODEL_HEADS],
+}
 
 #[derive(Clone)]
 struct OutputSnapshot {
@@ -279,6 +293,8 @@ pub struct QuestProOverlay {
     native: Arc<NativeFeed>,
     active: bool,
     visible_latched: bool,
+    /// Set while `visible_latched`, for [`VISIBILITY_HOLD`].
+    confident: Option<Confident>,
     last_diagnostic: Instant,
 }
 
@@ -364,6 +380,7 @@ impl QuestProOverlay {
                 }
                 self.active = false;
                 self.visible_latched = false;
+                self.confident = None;
             }
             *self.output.write().unwrap() = Some(OutputSnapshot {
                 source: TongueSource::TrackingModule,
@@ -393,18 +410,19 @@ impl QuestProOverlay {
                 native,
             )
         };
-        self.visible_latched = if self.visible_latched {
-            fused >= prediction.threshold - 0.08
-        } else {
-            fused >= prediction.threshold
-        };
+        let (fused, heads) = self.hold_visibility(&prediction, fused);
         // A model that decides visibility itself sends its extension alone.
         let shown = if prediction.own_visibility {
             0.0
         } else {
             fused
         };
-        let values = map_tongue(&prediction.values, shown, self.visible_latched);
+        let values = map_tongue(
+            &heads,
+            shown,
+            self.visible_latched,
+            prediction.tongue_out.as_ref(),
+        );
         for (shape, value) in TONGUE_SHAPES.into_iter().zip(values) {
             data.shapes[shape as usize].weight = value;
         }
@@ -428,6 +446,46 @@ impl QuestProOverlay {
             );
             self.last_diagnostic = Instant::now();
         }
+    }
+
+    /// Updates `visible_latched` from this frame's fused visibility, with
+    /// hysteresis: a visible tongue stays visible down to the threshold less
+    /// 0.08. Below that, it keeps its last confident fused visibility and
+    /// heads for up to [`VISIBILITY_HOLD`] of newer camera frames. A hidden
+    /// tongue is never made visible, and a model that decides visibility
+    /// itself is never held. Returns the fused visibility and heads to send.
+    fn hold_visibility(
+        &mut self,
+        prediction: &TonguePrediction,
+        fused: f32,
+    ) -> (f32, [f32; MODEL_HEADS]) {
+        let cutoff = if self.visible_latched {
+            prediction.threshold - 0.08
+        } else {
+            prediction.threshold
+        };
+        if fused >= cutoff {
+            self.visible_latched = true;
+            self.confident = Some(Confident {
+                received_at: prediction.received_at,
+                fused,
+                values: prediction.values,
+            });
+            return (fused, prediction.values);
+        }
+        if let Some(held) = self.confident.filter(|held| {
+            self.visible_latched
+                && !prediction.own_visibility
+                && prediction
+                    .received_at
+                    .saturating_duration_since(held.received_at)
+                    <= VISIBILITY_HOLD
+        }) {
+            return (held.fused, held.values);
+        }
+        self.visible_latched = false;
+        self.confident = None;
+        (fused, prediction.values)
     }
 }
 
@@ -571,18 +629,29 @@ fn tongue_values(data: &UnifiedTrackingData) -> [f32; 12] {
     TONGUE_SHAPES.map(|shape| data.shapes[shape as usize].weight)
 }
 
-/// Maps the ten model heads to VRFT's twelve tongue expressions. TongueOut is
+/// Maps the ten model heads to VRFT's twelve tongue expressions. TongueOut
+/// follows extension through the model's map when training found that
+/// extension separates the recorded amounts. Otherwise it is
 /// `max(fused visibility, extension)` as in the reference, so a confidently
 /// visible tongue is never shown barely out when extension under-reads.
-fn map_tongue(values: &[f32; MODEL_HEADS], fused: f32, visible: bool) -> [f32; 12] {
+fn map_tongue(
+    values: &[f32; MODEL_HEADS],
+    fused: f32,
+    visible: bool,
+    tongue_out: Option<&TongueOutMap>,
+) -> [f32; 12] {
     if !visible {
         return [0.0; 12];
     }
     let horizontal = values[2].clamp(-1.0, 1.0);
     let vertical = values[3].clamp(-1.0, 1.0);
     let twist = values[9].clamp(-1.0, 1.0);
+    let extension = values[1].clamp(0.0, 1.0);
     [
-        fused.clamp(0.0, 1.0).max(values[1].clamp(0.0, 1.0)),
+        match tongue_out {
+            Some(map) => map.tongue_out(extension),
+            None => fused.clamp(0.0, 1.0).max(extension),
+        },
         vertical.max(0.0),
         (-vertical).max(0.0),
         (-horizontal).max(0.0),
@@ -761,6 +830,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
         native: native_feed,
         active: false,
         visible_latched: false,
+        confident: None,
         last_diagnostic: Instant::now(),
     };
     Running {
@@ -1653,6 +1723,12 @@ fn start_model(dir: &std::path::Path) -> Result<TongueModel, String> {
         "Quest Pro tongue: loaded gate={} direction={} device={} camera_weight={:.2} threshold={:.2}",
         info.gate_size, info.direction_size, info.device, info.camera_weight, info.threshold
     );
+    if let Some(map) = info.tongue_out {
+        info!(
+            "Quest Pro tongue: TongueOut follows extension (scale={:.3} offset={:.3})",
+            map.scale, map.offset
+        );
+    }
     if !info.disabled_targets.is_empty() {
         info!(
             "Quest Pro tongue: model has no training for {}; those outputs stay at 0",
@@ -1730,6 +1806,8 @@ struct FrameOutput {
     face: Option<FaceReading>,
     camera_weight: f32,
     threshold: f32,
+    /// How TongueOut follows extension; only the stereo pair has one.
+    tongue_out: Option<TongueOutMap>,
     cheeks: bool,
     own_visibility: bool,
 }
@@ -1762,6 +1840,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
     feed.write().unwrap().face_model = Some(face.status.clone());
     let mut face_smoother = Smoother::<FACE_OUTPUTS>::default();
     let (camera_weight, threshold) = (model.info().camera_weight, model.info().threshold);
+    let tongue_out = model.info().tongue_out;
     let cheeks = CHEEK_COLUMNS.iter().all(|&column| {
         let name = vrft_tongue::TARGETS[column];
         !model
@@ -1873,6 +1952,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
                     }),
                     camera_weight,
                     threshold,
+                    tongue_out: None,
                     cheeks: enabled[4] && enabled[5],
                     own_visibility: false,
                 }
@@ -1883,6 +1963,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
                 face: Some(v2_reading(&frame)),
                 camera_weight: 1.0,
                 threshold: 0.5,
+                tongue_out: None,
                 cheeks: true,
                 own_visibility: true,
             },
@@ -1893,6 +1974,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
                 face: None,
                 camera_weight,
                 threshold,
+                tongue_out,
                 cheeks,
                 own_visibility: false,
             },
@@ -1918,6 +2000,7 @@ fn run_model(dir: &std::path::Path, context: &InferenceContext) -> Result<(), St
             dropped_frames,
             camera_weight: output.camera_weight,
             threshold: output.threshold,
+            tongue_out: output.tongue_out,
             cheeks: output.cheeks,
             face: output.face,
             own_visibility: output.own_visibility,
@@ -2079,6 +2162,7 @@ mod tests {
             native: Arc::new(NativeFeed::default()),
             active: false,
             visible_latched: false,
+            confident: None,
             last_diagnostic: Instant::now(),
         }
     }
@@ -2098,6 +2182,7 @@ mod tests {
             dropped_frames: 0,
             camera_weight: 0.95,
             threshold: 0.85,
+            tongue_out: None,
             cheeks: true,
             face: None,
             own_visibility: false,
@@ -2410,10 +2495,60 @@ mod tests {
     #[test]
     fn tongue_out_is_the_larger_of_visibility_and_extension() {
         let values = [1.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(map_tongue(&values, 0.9, true)[0], 0.9);
+        assert_eq!(map_tongue(&values, 0.9, true, None)[0], 0.9);
         let extended = [1.0, 0.95, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(map_tongue(&extended, 0.9, true)[0], 0.95);
-        assert_eq!(map_tongue(&values, 0.9, false), [0.0; 12]);
+        assert_eq!(map_tongue(&extended, 0.9, true, None)[0], 0.95);
+        assert_eq!(map_tongue(&values, 0.9, false, None), [0.0; 12]);
+    }
+
+    #[test]
+    fn a_checked_model_sends_tongue_out_from_extension() {
+        let map = TongueOutMap {
+            scale: 1.5,
+            offset: -0.2,
+        };
+        let tip = [1.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // A confident tongue tip reads as a tip, not fully out.
+        assert!((map_tongue(&tip, 0.95, true, Some(&map))[0] - 0.25).abs() < 1e-6);
+        let hidden_in = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(map_tongue(&hidden_in, 0.95, true, Some(&map))[0], 0.1);
+        assert_eq!(map_tongue(&tip, 0.95, false, Some(&map)), [0.0; 12]);
+    }
+
+    #[test]
+    fn a_brief_visibility_dip_holds_the_last_confident_values() {
+        let start = Instant::now();
+        let mut overlay = overlay(None);
+        let at = |ms: u64, visibility: f32, horizontal: f32| {
+            let mut prediction = prediction(start + Duration::from_millis(ms));
+            prediction.values[0] = visibility;
+            prediction.values[2] = horizontal;
+            prediction
+        };
+        // Never visible: nothing to hold.
+        let (fused, _) = overlay.hold_visibility(&at(0, 0.5, 0.0), 0.5);
+        assert!(!overlay.visible_latched);
+        assert_eq!(fused, 0.5);
+        overlay.hold_visibility(&at(10, 0.9, 0.6), 0.9);
+        assert!(overlay.visible_latched);
+        // Within the hysteresis band it stays visible on its own values.
+        let (fused, heads) = overlay.hold_visibility(&at(40, 0.8, 0.2), 0.8);
+        assert!(overlay.visible_latched);
+        assert_eq!((fused, heads[2]), (0.8, 0.2));
+        // Below it, the last confident values hold for 220 ms...
+        let (fused, heads) = overlay.hold_visibility(&at(200, 0.3, -0.5), 0.3);
+        assert!(overlay.visible_latched);
+        assert_eq!((fused, heads[2]), (0.8, 0.2));
+        let (_, heads) = overlay.hold_visibility(&at(260, 0.3, -0.5), 0.3);
+        assert!(overlay.visible_latched);
+        assert_eq!(heads[2], 0.2);
+        // ...then it counts as hidden.
+        let (fused, heads) = overlay.hold_visibility(&at(261, 0.3, -0.5), 0.3);
+        assert!(!overlay.visible_latched);
+        assert_eq!((fused, heads[2]), (0.3, -0.5));
+        // Hidden again, it needs the full threshold to show.
+        overlay.hold_visibility(&at(300, 0.8, 0.0), 0.8);
+        assert!(!overlay.visible_latched);
     }
 
     #[test]

@@ -989,6 +989,14 @@ pub struct TrainingReport {
     pub base_model_dir: String,
     pub calibration: ReportCalibration,
     pub seconds: Option<f64>,
+    /// Recorded frames held back from training to score it; 0 when there
+    /// were too few, so every frame trained and the last pass was kept.
+    pub held_out_frames: u64,
+    /// Which pass of each model was kept, when frames were held back.
+    pub kept: Vec<ReportKept>,
+    /// Whether TongueOut follows the extension output, when frames were
+    /// held back to check it.
+    pub tongue_out: Option<ReportTongueOut>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -997,6 +1005,47 @@ pub struct ReportCalibration {
     pub camera_weight: f64,
     pub threshold: f64,
     pub plateau: Option<Value>,
+    /// Chosen on frames held back from training, which also chose the
+    /// weight when each had a tracking module TongueOut.
+    pub held_out: bool,
+}
+
+/// How one model's pass was chosen on the held-back frames.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportKept {
+    /// `gate` or `direction`.
+    pub focus: String,
+    /// The pass kept; 0 is the model training started from.
+    pub epoch: u32,
+    /// The starting model's score, then each pass's; lower is better.
+    pub scores: Vec<f64>,
+}
+
+/// The check of whether the extension output separates the recorded
+/// amounts of tongue out, on held-back straight-ahead poses.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportTongueOut {
+    /// TongueOut is `scale * extension + offset`; otherwise it's the larger
+    /// of the tongue-out confidence and extension.
+    pub calibrated: bool,
+    pub scale: f64,
+    pub offset: f64,
+    pub correlation: f64,
+    /// Highest amount's mean output less the lowest's.
+    pub spread: f64,
+    pub levels: Vec<ReportLevel>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportLevel {
+    /// The amount of tongue out the poses asked for.
+    pub amount: f64,
+    /// The extension output's mean for it.
+    pub predicted: f64,
+    pub frames: u64,
 }
 
 /// The built-in model pair, and the synthetic training examples personal

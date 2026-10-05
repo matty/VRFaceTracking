@@ -44,6 +44,18 @@ const DIRECTION_SECTORS: [&str; 8] = [
     "down",
     "down right",
 ];
+/// One recorded frame in this many is held back from training to score it:
+/// the last fifth of each held pose, and every fifth block of a recording's
+/// follow-the-dot frames. Contiguous blocks keep near-identical neighbours
+/// of a held-back frame out of training.
+const HOLD_OUT_EVERY: usize = 5;
+/// Held poses with fewer frames than this all train.
+const HOLD_OUT_MIN_POSE: usize = 10;
+/// Follow-the-dot frames are held back in blocks this long.
+const HOLD_OUT_BLOCK: usize = 36;
+/// Fewer held-back tongue-out or tongue-in frames than this can't score a
+/// model, so every frame trains instead.
+const HOLD_OUT_MIN: usize = 10;
 
 pub struct Record {
     pub targets: [f32; TARGETS.len()],
@@ -54,6 +66,8 @@ pub struct Record {
     pub key: String,
     /// From a synthetic set rather than the user's own recordings.
     pub synthetic: bool,
+    /// Held back from training to score it; always recorded, never synthetic.
+    pub held_out: bool,
 }
 
 /// Evenly subsampled frames of every usable pose.
@@ -112,15 +126,52 @@ pub(crate) fn select(samples: &[Sample]) -> Vec<&Sample> {
     selected
 }
 
+/// Which of one recording's `selected` samples (in frame order) are held
+/// back: the last fifth of each held pose large enough to split, and every
+/// fifth block of its follow-the-dot frames taken as one sequence.
+fn held_back(selected: &[&Sample]) -> Vec<bool> {
+    let mut held = vec![false; selected.len()];
+    let mut poses: Vec<(u64, Vec<usize>)> = vec![];
+    let mut follow = vec![];
+    for (position, sample) in selected.iter().enumerate() {
+        if sample.moving {
+            follow.push(position);
+            continue;
+        }
+        match poses.iter_mut().find(|(step, _)| *step == sample.step) {
+            Some((_, group)) => group.push(position),
+            None => poses.push((sample.step, vec![position])),
+        }
+    }
+    for (_, group) in &poses {
+        if group.len() >= HOLD_OUT_MIN_POSE {
+            let kept = group.len() - group.len().div_ceil(HOLD_OUT_EVERY);
+            for &position in &group[kept..] {
+                held[position] = true;
+            }
+        }
+    }
+    for (order, &position) in follow.iter().enumerate() {
+        held[position] = (order / HOLD_OUT_BLOCK) % HOLD_OUT_EVERY == HOLD_OUT_EVERY - 1;
+    }
+    held
+}
+
 impl Frames {
     /// With `size` the images are resized and kept; without, only labels
-    /// are read, which is enough for coverage checks.
+    /// are read, which is enough for coverage checks. Some recorded frames
+    /// are marked held out when there are enough to score a model.
     pub fn load(recordings: &[Recording], size: Option<usize>) -> Result<Self> {
         let resize = size.map(AreaResize::new);
         let mut records = vec![];
         let mut images = vec![];
         for recording in recordings {
             let selected = select(&recording.samples);
+            let held = if recording.synthetic {
+                vec![false; selected.len()]
+            } else {
+                held_back(&selected)
+            };
             if let Some(resize) = &resize {
                 let indices: Vec<usize> = selected.iter().map(|sample| sample.index).collect();
                 let size = resize.size();
@@ -146,17 +197,33 @@ impl Frames {
                     images.push(image);
                 })?;
             }
-            records.extend(selected.into_iter().map(|sample| Record {
-                targets: sample.targets,
-                cheeks_labelled: sample.cheeks_labelled,
-                native: sample.native,
-                moving: sample.moving,
-                key: sampling_key(sample),
-                synthetic: recording.synthetic,
-            }));
+            records.extend(
+                selected
+                    .into_iter()
+                    .zip(held)
+                    .map(|(sample, held_out)| Record {
+                        targets: sample.targets,
+                        cheeks_labelled: sample.cheeks_labelled,
+                        native: sample.native,
+                        moving: sample.moving,
+                        key: sampling_key(sample),
+                        synthetic: recording.synthetic,
+                        held_out,
+                    }),
+            );
         }
         if records.is_empty() {
             bail!("No usable poses in these recordings. Record a full basic run, then train again");
+        }
+        let held = records.iter().filter(|record| record.held_out);
+        let visible = held
+            .clone()
+            .filter(|record| record.targets[0] >= 0.5)
+            .count();
+        if visible < HOLD_OUT_MIN || held.count() - visible < HOLD_OUT_MIN {
+            for record in &mut records {
+                record.held_out = false;
+            }
         }
         Ok(Self {
             records,
@@ -171,6 +238,14 @@ impl Frames {
 
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    /// Indices of the frames held back from training; empty when every
+    /// frame trains.
+    pub fn held_out(&self) -> Vec<usize> {
+        (0..self.len())
+            .filter(|&index| self.records[index].held_out)
+            .collect()
     }
 
     fn visible(&self) -> impl Iterator<Item = &Record> {
@@ -275,25 +350,28 @@ impl Frames {
         Ok(enabled)
     }
 
-    /// One pass of sample indices, each pose (key) drawn equally often,
-    /// with replacement.
+    /// One pass of the training frames' indices (every frame not held
+    /// out), each pose (key) drawn equally often, with replacement.
     pub fn balanced_order(&self, rng: &mut StdRng) -> Vec<usize> {
+        let training: Vec<usize> = (0..self.len())
+            .filter(|&index| !self.records[index].held_out)
+            .collect();
         let mut counts: HashMap<&str, usize> = HashMap::new();
-        for record in &self.records {
-            *counts.entry(&record.key).or_default() += 1;
+        for &index in &training {
+            *counts.entry(&self.records[index].key).or_default() += 1;
         }
-        let mut cumulative = Vec::with_capacity(self.len());
+        let mut cumulative = Vec::with_capacity(training.len());
         let mut total = 0f64;
-        for record in &self.records {
-            total += 1.0 / counts[record.key.as_str()] as f64;
+        for &index in &training {
+            total += 1.0 / counts[self.records[index].key.as_str()] as f64;
             cumulative.push(total);
         }
-        (0..self.len())
+        (0..training.len())
             .map(|_| {
                 let draw = rng.random::<f64>() * total;
-                cumulative
+                training[cumulative
                     .partition_point(|&value| value <= draw)
-                    .min(self.len() - 1)
+                    .min(training.len() - 1)]
             })
             .collect()
     }
@@ -418,6 +496,66 @@ mod tests {
         assert_eq!(selected.iter().filter(|s| s.pose == "Straight").count(), 90);
         assert_eq!(selected.iter().filter(|s| s.pose == "Short").count(), 0);
         assert_eq!(selected.iter().filter(|s| s.moving).count(), 5);
+    }
+
+    #[test]
+    fn the_end_of_each_pose_and_every_fifth_follow_block_are_held_back() {
+        let out = [1., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.];
+        let mut samples = vec![];
+        for index in 0..20 {
+            samples.push(sample("Straight", 0, index, out, false));
+        }
+        for index in 20..29 {
+            samples.push(sample("Short", 1, index, out, false));
+        }
+        // Two follow-the-dot rounds, taken as one sequence.
+        for index in 29..229 {
+            samples.push(sample(
+                "Follow the dot",
+                2 + index as u64 / 100,
+                index,
+                out,
+                true,
+            ));
+        }
+        let selected = select(&samples);
+        let held = held_back(&selected);
+        let held_indices = |pose: &str| -> Vec<usize> {
+            selected
+                .iter()
+                .zip(&held)
+                .filter(|(sample, held)| **held && sample.pose == pose)
+                .map(|(sample, _)| sample.index)
+                .collect()
+        };
+        assert_eq!(held_indices("Straight"), [16, 17, 18, 19]);
+        assert!(held_indices("Short").is_empty(), "too short to split");
+        assert_eq!(
+            held_indices("Follow the dot"),
+            (29 + 4 * 36..29 + 5 * 36).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn held_back_frames_never_train() {
+        let record = |held_out| Record {
+            targets: [0.0; 12],
+            cheeks_labelled: false,
+            native: None,
+            moving: false,
+            key: "Pose".into(),
+            synthetic: false,
+            held_out,
+        };
+        let frames = Frames {
+            records: (0..10).map(|index| record(index % 3 == 0)).collect(),
+            images: vec![],
+            size: 0,
+        };
+        assert_eq!(frames.held_out(), [0, 3, 6, 9]);
+        let order = frames.balanced_order(&mut StdRng::seed_from_u64(1));
+        assert_eq!(order.len(), 6);
+        assert!(order.iter().all(|&index| index % 3 != 0));
     }
 
     #[test]

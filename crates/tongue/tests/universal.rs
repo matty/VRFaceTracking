@@ -39,6 +39,7 @@ fn base_models(dir: &Path) {
                 visibility_gate: VisibilityGate::default(),
                 disabled_targets: vec![],
                 personal_training: None,
+                tongue_out: None,
             },
             weights: TongueNet::<Cpu>::init(&Default::default()).weights(),
         }

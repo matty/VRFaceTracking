@@ -1,8 +1,16 @@
 //! Personal training on the recordings the user ticks, a port of
 //! Qpro-Enhanced-FT's fine-tuning (MIT license) as VRFT's Python trainer ran
 //! it. Every run starts from the base pair and fine-tunes the gate, then the
-//! direction model, for a fixed number of passes and keeps the final
-//! weights. There is no held-out set, so no accuracy score is reported.
+//! direction model, for a fixed number of passes.
+//!
+//! As in Qpro-Enhanced-FT, some recorded frames are held back (see
+//! [`Frames::load`]): the starting model and each pass are scored on them,
+//! and the best is kept, so a run never ends worse than it started. They
+//! also choose the camera/native blend and threshold, and whether TongueOut
+//! follows the extension output. They come from the same poses as the
+//! frames trained on, so their scores flatter the model: they catch a run
+//! that got worse rather than measure tracking on a new session. With too
+//! few of them, every frame trains and the final weights are kept.
 //!
 //! The cheek puff heads are VRFT's own. The base pair has none, and the
 //! fine-tuning learning rate is far too small to grow a head from nothing,
@@ -12,6 +20,7 @@
 //! The daemon runs this in a child process (`vrft_d train-tongue`) and
 //! reads `progress.json`; cancelling kills the process.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -28,15 +37,16 @@ use rayon::prelude::*;
 use serde_json::{json, Value};
 
 use crate::backend::{Accelerator, Cpu, Gpu, GPU_NAME};
-use crate::checkpoint::{Checkpoint, Metadata, Role, VisibilityGate};
+use crate::checkpoint::{Checkpoint, Metadata, Role, TongueOutMap, VisibilityGate};
 use crate::dataset::Record;
 use crate::dataset::{augment, Frames, ACTIVE};
 use crate::infer::guarded;
 use crate::model::{TongueNet, Trainable, Weights, FEATURES, OUTPUT_BIAS, OUTPUT_WEIGHT};
 use crate::recordings::Recording;
-use crate::{CHEEK_COLUMNS, TARGETS};
+use crate::{CHEEK_COLUMNS, TARGETS, TONGUE_TARGETS};
 use vrft_quest_pro_protocol::{
-    ReportCalibration, TrainerArchitecture, TrainingProgress, TrainingReport, TrainingStage,
+    ReportCalibration, ReportKept, ReportLevel, ReportTongueOut, TrainerArchitecture,
+    TrainingProgress, TrainingReport, TrainingStage,
 };
 
 // Loss weights follow Qpro-Enhanced-FT's train_tongue_model.py.
@@ -58,14 +68,32 @@ const MAX_GRADIENT_NORM: f32 = 1.0;
 
 const THRESHOLD_LIMITS: (f64, f64) = (0.3, 0.8);
 /// Frames the model trained on cannot choose the camera/native blend: the
-/// camera looks near-perfect on them. Keep the reference's preferred weight.
+/// camera looks near-perfect on them. Without held-back frames, keep the
+/// reference's preferred weight; with them, it wins ties.
 const PREFERRED_CAMERA_WEIGHT: f64 = 0.8;
 /// The weight when any frame was recorded without a tracking module, whose
 /// TongueOut the blend would need: the camera alone.
 const CAMERA_ONLY_WEIGHT: f64 = 1.0;
+/// Camera weights held-back frames choose from, in hundredths: 0.5 to 1.
+const CAMERA_WEIGHT_RANGE: (u32, u32, u32) = (50, 100, 5);
 const GATE_FORMULA: &str = "w * camera_visibility + (1-w) * native_TongueOut";
-const GATE_SELECTION: &str = "midpoint of the widest contiguous plateau of best F1 - 0.75*FPR \
-    thresholds; weight ties prefer 0.8 then the higher camera weight; clamped to [0.3, 0.8]";
+const GATE_SELECTION: &str = "threshold: midpoint of the widest contiguous plateau of best \
+    F1 - 0.75*FPR thresholds, clamped to [0.3, 0.8]; weight 0.8, or 1.0 without tracking \
+    module TongueOut";
+const GATE_SELECTION_HELD_OUT: &str = "on held-out frames: the camera weight in [0.5, 1] with \
+    the best F1 - 0.75*FPR, ties preferring 0.8 then the higher weight; threshold: midpoint of \
+    the widest contiguous plateau of best thresholds, clamped to [0.3, 0.8]";
+/// TongueOut follows extension only when, on held-back straight-ahead
+/// poses, at least this many amounts of tongue out were asked for with at
+/// least `EXTENSION_MIN_FRAMES` frames each...
+const EXTENSION_MIN_LEVELS: usize = 3;
+const EXTENSION_MIN_FRAMES: usize = 3;
+/// ...each amount's mean output is no lower than the one before, less this...
+const EXTENSION_SLACK: f64 = 0.03;
+/// ...the highest amount's mean output is this far above the lowest's...
+const EXTENSION_MIN_SPREAD: f64 = 0.25;
+/// ...and outputs correlate with the amounts at least this well.
+const EXTENSION_MIN_CORRELATION: f64 = 0.7;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
@@ -323,6 +351,15 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
     result
 }
 
+/// A saved model's metadata, and for the report how it was chosen.
+struct Outcome {
+    metadata: Metadata,
+    /// Frames held back from training; 0 when every frame trained.
+    held_out: usize,
+    kept: Option<ReportKept>,
+    tongue_out: Option<ReportTongueOut>,
+}
+
 struct Job<'a> {
     request: &'a Request,
     recordings: &'a [Recording],
@@ -347,8 +384,8 @@ impl Job<'_> {
         };
         let base = &self.request.base_model_dir;
         let gate = guarded(|| self.train_one::<B>(base, Focus::Gate, None, &mut tracker, &device))?;
-        let calibration = gate.visibility_gate.clone();
-        guarded(|| {
+        let calibration = gate.metadata.visibility_gate.clone();
+        let direction = guarded(|| {
             self.train_one::<B>(
                 base,
                 Focus::Direction,
@@ -387,8 +424,12 @@ impl Job<'_> {
                 camera_weight: calibration.camera_weight,
                 threshold: calibration.threshold,
                 plateau: calibration.details.get("plateau").cloned(),
+                held_out: gate.held_out > 0,
             },
             seconds: Some((tracker.started.elapsed().as_secs_f64() * 10.0).round() / 10.0),
+            held_out_frames: gate.held_out as u64,
+            kept: [gate.kept, direction.kept].into_iter().flatten().collect(),
+            tongue_out: direction.tongue_out,
         };
         write_json(
             &self.output.join("report.json"),
@@ -402,10 +443,13 @@ impl Job<'_> {
         Ok(())
     }
 
-    /// Fine-tunes one checkpoint and saves it. Without a held-out set, the
-    /// gate's visibility threshold is chosen from its own predictions on the
-    /// unaugmented training frames; the direction model reuses the gate's
-    /// calibration, which is the one inference reads.
+    /// Fine-tunes one checkpoint and saves it. With held-back frames, the
+    /// starting model is pass 0 and a pass replaces the kept one only when
+    /// it scores better on them; the gate's visibility calibration and the
+    /// direction model's TongueOut map are chosen on them too. Without, the
+    /// final pass is kept and the gate is calibrated on the unaugmented
+    /// training frames. The direction model reuses the gate's calibration,
+    /// which is the one inference reads.
     fn train_one<B: AutodiffBackend>(
         &self,
         base: &Path,
@@ -413,7 +457,7 @@ impl Job<'_> {
         calibration: Option<VisibilityGate>,
         tracker: &mut Tracker,
         device: &B::Device,
-    ) -> Result<Metadata> {
+    ) -> Result<Outcome> {
         let source = focus
             .role()
             .find(base)
@@ -421,6 +465,7 @@ impl Job<'_> {
         let checkpoint = Checkpoint::load(&source)?;
         let size = checkpoint.metadata.image_size;
         let frames = Frames::load(self.recordings, Some(size))?;
+        let held = frames.held_out();
         let batch_size = self.options.batch_size;
         let fit_cheeks =
             focus == Focus::Direction && CHEEK_COLUMNS.iter().any(|&column| self.enabled[column]);
@@ -433,6 +478,16 @@ impl Job<'_> {
         }
         let mut model =
             TongueNet::<B>::from_weights(weights, device)?.freeze(self.options.trainable);
+        // Held-back scores: the starting model's, then each pass's. `kept` is
+        // the best pass so far, its score and weights.
+        let mut scores = vec![];
+        let mut kept = None;
+        if !held.is_empty() {
+            let valid = model.valid();
+            let score = self.score(&valid, &frames, &held, focus, device)?;
+            scores.push(score);
+            kept = Some((0, score, valid.weights()));
+        }
         let mut optimizer = AdamWConfig::new()
             .with_weight_decay(1e-4)
             .with_epsilon(1e-8)
@@ -490,8 +545,22 @@ impl Job<'_> {
                 model = optimizer.step(rate, model, grads);
                 tracker.update(focus, epoch, (batch + 1) as f64 / batches as f64, false);
             }
+            if let Some((_, best, _)) = &kept {
+                let valid = model.valid();
+                let score = self.score(&valid, &frames, &held, focus, device)?;
+                scores.push(score);
+                if score < *best {
+                    kept = Some((epoch, score, valid.weights()));
+                }
+            }
         }
-        let trained = model.valid();
+        let (trained, kept_epoch) = match kept {
+            Some((epoch, _, weights)) => (
+                TongueNet::<B::InnerBackend>::from_weights(weights, device)?,
+                epoch,
+            ),
+            None => (model.valid(), self.options.epochs),
+        };
         let mut weights = trained.weights();
         if fit_cheeks {
             self.report_cheek_fit(tracker, 1.0);
@@ -510,9 +579,31 @@ impl Job<'_> {
                         "Tuning when the tongue counts as out",
                     )
                 });
-                let camera = predict(&trained, &frames, batch_size, device)?;
-                calibrate(&camera, &frames)
+                let indices = calibration_frames(&frames);
+                let camera: Vec<f64> = outputs(&trained, &frames, &indices, batch_size, device)?
+                    .iter()
+                    .map(|row| f64::from(row[0]))
+                    .collect();
+                let records: Vec<&Record> = indices
+                    .iter()
+                    .map(|&index| &frames.records[index])
+                    .collect();
+                calibrate(&camera, &records, !held.is_empty())
             }
+        };
+        let tongue_out = if focus == Focus::Direction && !held.is_empty() {
+            let straight = straight_ahead(&frames, &held);
+            let predicted: Vec<f64> = outputs(&trained, &frames, &straight, batch_size, device)?
+                .iter()
+                .map(|row| f64::from(row[1]))
+                .collect();
+            let expected: Vec<f64> = straight
+                .iter()
+                .map(|&index| f64::from(frames.records[index].targets[1]))
+                .collect();
+            Some(check_extension(&predicted, &expected))
+        } else {
+            None
         };
         let metadata = Metadata {
             architecture: checkpoint.metadata.architecture,
@@ -524,16 +615,55 @@ impl Job<'_> {
                 "epochs": self.options.epochs,
                 "layers": self.options.trainable.name(),
                 "frames": frames.len(),
+                "heldOutFrames": held.len(),
+                "keptEpoch": kept_epoch,
+                "heldOutScores": scores,
                 "recordings": self.recordings.iter().map(|r| r.dir.display().to_string()).collect::<Vec<_>>(),
                 "parentCheckpoint": source.display().to_string(),
             })),
+            tongue_out: tongue_out
+                .as_ref()
+                .filter(|check| check.calibrated)
+                .map(|check| TongueOutMap {
+                    scale: check.scale,
+                    offset: check.offset,
+                }),
         };
         Checkpoint {
             metadata: metadata.clone(),
             weights,
         }
         .save(&focus.role().safetensors(self.output))?;
-        Ok(metadata)
+        Ok(Outcome {
+            metadata,
+            held_out: held.len(),
+            kept: (!held.is_empty()).then(|| ReportKept {
+                focus: focus.name().into(),
+                epoch: kept_epoch as u32,
+                scores: scores.iter().map(|score| round(*score, 6)).collect(),
+            }),
+            tongue_out,
+        })
+    }
+
+    /// A model's score on the held-back frames, lower is better: the gate's
+    /// class-weighted visibility BCE, or the direction model's weighted
+    /// regression error on the tongue heads of tongue-out frames. Both are
+    /// the terms each model trains on.
+    fn score<B: Backend>(
+        &self,
+        model: &TongueNet<B>,
+        frames: &Frames,
+        held: &[usize],
+        focus: Focus,
+        device: &B::Device,
+    ) -> Result<f64> {
+        let outputs = outputs(model, frames, held, self.options.batch_size, device)?;
+        let records: Vec<&Record> = held.iter().map(|&index| &frames.records[index]).collect();
+        Ok(match focus {
+            Focus::Gate => gate_score(&outputs, &records),
+            Focus::Direction => direction_score(&self.enabled, &outputs, &records),
+        })
     }
 
     /// Reports fitting the cheek heads, before (`0`) or after (`1`)
@@ -547,8 +677,9 @@ impl Job<'_> {
         });
     }
 
-    /// Fits the last layer's row of each trainable cheek head to the frames
-    /// whose cheeks were labelled, with each pose weighted equally.
+    /// Fits the last layer's row of each trainable cheek head to the
+    /// training frames whose cheeks were labelled, with each pose weighted
+    /// equally.
     fn fit_cheeks(
         &self,
         features: &[Vec<f32>],
@@ -558,7 +689,7 @@ impl Job<'_> {
         let labelled: Vec<(&[f32], &Record)> = features
             .iter()
             .zip(&frames.records)
-            .filter(|(_, record)| record.cheeks_labelled)
+            .filter(|(_, record)| record.cheeks_labelled && !record.held_out)
             .map(|(row, record)| (row.as_slice(), record))
             .collect();
         let mut counts = std::collections::HashMap::<&str, f64>::new();
@@ -796,22 +927,28 @@ pub(crate) fn clip_gradients<B: AutodiffBackend, M: AutodiffModule<B>>(
     }
 }
 
-/// Camera visibility for every frame, unaugmented, in inference mode.
-fn predict<B: Backend>(
+/// Every head's output for the frames at `indices`, unaugmented, in
+/// inference mode.
+fn outputs<B: Backend>(
     model: &TongueNet<B>,
     frames: &Frames,
+    indices: &[usize],
     batch_size: usize,
     device: &B::Device,
-) -> Result<Vec<f64>> {
+) -> Result<Vec<[f32; TARGETS.len()]>> {
     let size = frames.size;
-    let mut visibility = Vec::with_capacity(frames.len());
-    for images in frames.images.chunks(batch_size) {
-        let pixels: Vec<f32> = images
+    let mut out = Vec::with_capacity(indices.len());
+    for batch in indices.chunks(batch_size) {
+        let pixels: Vec<f32> = batch
             .iter()
-            .flat_map(|image| image.iter().map(|&value| value as f32 / 255.0))
+            .flat_map(|&index| {
+                frames.images[index]
+                    .iter()
+                    .map(|&value| value as f32 / 255.0)
+            })
             .collect();
         let input = Tensor::<B, 4>::from_data(
-            TensorData::new(pixels, [images.len(), 2, size, size]),
+            TensorData::new(pixels, [batch.len(), 2, size, size]),
             device,
         );
         let values = model
@@ -819,12 +956,16 @@ fn predict<B: Backend>(
             .into_data()
             .to_vec::<f32>()
             .map_err(|error| anyhow!("{error:?}"))?;
-        visibility.extend(values.chunks(TARGETS.len()).map(|row| row[0] as f64));
+        out.extend(
+            values
+                .chunks(TARGETS.len())
+                .map(|row| <[f32; TARGETS.len()]>::try_from(row).expect("one row per frame")),
+        );
     }
-    if visibility.iter().any(|value| !value.is_finite()) {
+    if out.iter().flatten().any(|value| !value.is_finite()) {
         bail!("Non-finite model predictions");
     }
-    Ok(visibility)
+    Ok(out)
 }
 
 /// The features the last head layer reads, for every frame, unaugmented.
@@ -896,51 +1037,82 @@ fn best_runs(scores: &[f64], best: f64) -> Vec<(usize, usize)> {
     runs
 }
 
-/// The visibility threshold at the preferred camera weight (the camera alone
-/// when any frame has no tracking module TongueOut): the midpoint of
-/// the widest contiguous plateau of best `F1 - 0.75 * FPR` thresholds,
-/// clamped to [0.3, 0.8]. Many thresholds usually tie, and breaking ties
-/// toward the largest pinned the shipped gate at the grid edge, where live
-/// detection flickers across the daemon's hysteresis band.
-///
-/// Only the user's own frames count when there are any: synthetic ones
-/// have no tracking module TongueOut, and the camera is surer of them than
-/// of real faces.
-pub(crate) fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
-    let thresholds: Vec<f64> = (0..86).map(|i| (10 + i) as f64 / 100.0).collect();
+/// The frames the gate is calibrated on: the held-back frames, else the
+/// training frames. Only the user's own frames count when there are any:
+/// synthetic ones have no tracking module TongueOut, and the camera is
+/// surer of them than of real faces.
+pub(crate) fn calibration_frames(frames: &Frames) -> Vec<usize> {
+    let held = frames.held_out();
+    if !held.is_empty() {
+        return held;
+    }
     let recorded = frames.records.iter().any(|record| !record.synthetic);
-    let (camera, records): (Vec<f64>, Vec<&Record>) = camera
-        .iter()
-        .zip(&frames.records)
-        .filter(|(_, record)| !(recorded && record.synthetic))
-        .map(|(camera, record)| (*camera, record))
-        .unzip();
+    (0..frames.len())
+        .filter(|&index| !(recorded && frames.records[index].synthetic))
+        .collect()
+}
+
+/// The camera/native blend and visibility threshold for `records`, given
+/// the camera's visibility for each. On held-back frames that all have a
+/// tracking module TongueOut, the weight is the one from 0.5 to 1 with the
+/// best `F1 - 0.75 * FPR`, ties preferring 0.8, then the higher weight.
+/// Otherwise it is 0.8, or the camera alone when any frame has no tracking
+/// module TongueOut: frames the model trained on make the camera look
+/// near-perfect, so they can't choose.
+///
+/// The threshold is the midpoint of the widest contiguous plateau of best
+/// `F1 - 0.75 * FPR` thresholds at that weight, clamped to [0.3, 0.8]. Many
+/// thresholds usually tie, and breaking ties toward the largest pinned the
+/// shipped gate at the grid edge, where live detection flickers across the
+/// daemon's hysteresis band.
+pub(crate) fn calibrate(camera: &[f64], records: &[&Record], held_out: bool) -> VisibilityGate {
+    let thresholds: Vec<f64> = (0..86).map(|i| (10 + i) as f64 / 100.0).collect();
     let native: Option<Vec<f64>> = records
         .iter()
         .map(|record| record.native.map(f64::from))
         .collect();
-    let weight = if native.is_some() {
-        PREFERRED_CAMERA_WEIGHT
+    let searched = held_out && native.is_some();
+    let weights: Vec<f64> = if searched {
+        let (first, last, step) = CAMERA_WEIGHT_RANGE;
+        (first..=last)
+            .step_by(step as usize)
+            .map(|hundredths| f64::from(hundredths) / 100.0)
+            .collect()
+    } else if native.is_some() {
+        vec![PREFERRED_CAMERA_WEIGHT]
     } else {
-        CAMERA_ONLY_WEIGHT
+        vec![CAMERA_ONLY_WEIGHT]
     };
     let expected: Vec<f64> = records.iter().map(|r| r.targets[0] as f64).collect();
-    let fused: Vec<f64> = match &native {
-        Some(native) => camera
-            .iter()
-            .zip(native)
-            .map(|(camera, native)| weight * camera + (1.0 - weight) * native)
-            .collect(),
-        None => camera,
-    };
-    let scores: Vec<f64> = thresholds
-        .iter()
-        .map(|&threshold| {
-            let metrics = classify(&fused, &expected, threshold);
-            metrics.f1 - 0.75 * metrics.false_positive_rate
+    let (weight, scores, best) = weights
+        .into_iter()
+        .map(|weight| {
+            let fused: Vec<f64> = match &native {
+                Some(native) => camera
+                    .iter()
+                    .zip(native)
+                    .map(|(camera, native)| weight * camera + (1.0 - weight) * native)
+                    .collect(),
+                None => camera.to_vec(),
+            };
+            let scores: Vec<f64> = thresholds
+                .iter()
+                .map(|&threshold| {
+                    let metrics = classify(&fused, &expected, threshold);
+                    metrics.f1 - 0.75 * metrics.false_positive_rate
+                })
+                .collect();
+            let best = scores.iter().copied().fold(f64::MIN, f64::max);
+            (weight, scores, best)
         })
-        .collect();
-    let best = scores.iter().copied().fold(f64::MIN, f64::max);
+        .max_by_key(|(weight, _, best)| {
+            (
+                (best * 1e9).round() as i64,
+                *weight == PREFERRED_CAMERA_WEIGHT,
+                (weight * 100.0).round() as i64,
+            )
+        })
+        .expect("at least one camera weight");
     let center = (THRESHOLD_LIMITS.0 + THRESHOLD_LIMITS.1) / 2.0;
     // Reversed so equal keys keep the first plateau, as Python's max does.
     let (start, end) = best_runs(&scores, best)
@@ -966,11 +1138,158 @@ pub(crate) fn calibrate(camera: &[f64], frames: &Frames) -> VisibilityGate {
     );
     details.insert("objective".into(), json!(best));
     details.insert("formula".into(), json!(GATE_FORMULA));
-    details.insert("selection".into(), json!(GATE_SELECTION));
+    details.insert(
+        "selection".into(),
+        json!(if searched {
+            GATE_SELECTION_HELD_OUT
+        } else {
+            GATE_SELECTION
+        }),
+    );
+    details.insert("heldOut".into(), json!(held_out));
+    details.insert("frames".into(), json!(records.len()));
     VisibilityGate {
-        camera_weight: weight,
-        threshold: (threshold * 10000.0).round() / 10000.0,
+        camera_weight: round(weight, 4),
+        threshold: round(threshold, 4),
         details,
+    }
+}
+
+fn round(value: f64, places: i32) -> f64 {
+    let scale = 10f64.powi(places);
+    (value * scale).round() / scale
+}
+
+/// The gate's score: class-weighted binary cross-entropy of its visibility
+/// output, as it trains on.
+fn gate_score(outputs: &[[f32; TARGETS.len()]], records: &[&Record]) -> f64 {
+    let total: f64 = outputs
+        .iter()
+        .zip(records)
+        .map(|(row, record)| {
+            let probability = f64::from(row[0]).clamp(1e-6, 1.0 - 1e-6);
+            let expected = f64::from(record.targets[0]);
+            let weight = if expected >= 0.5 {
+                VISIBLE_WEIGHT
+            } else {
+                HIDDEN_WEIGHT
+            };
+            -f64::from(weight)
+                * (expected * probability.ln() + (1.0 - expected) * (1.0 - probability).ln())
+        })
+        .sum();
+    total / records.len().max(1) as f64
+}
+
+/// The direction model's score: the loss's weighted smooth L1 on the
+/// trainable tongue heads of tongue-out frames. The cheek heads are left
+/// out; they are fitted again once a pass is chosen.
+fn direction_score(
+    enabled: &[bool; TARGETS.len()],
+    outputs: &[[f32; TARGETS.len()]],
+    records: &[&Record],
+) -> f64 {
+    let beta = f64::from(REGRESSION_BETA);
+    let (mut total, mut weights) = (0f64, 0f64);
+    for (row, record) in outputs.iter().zip(records) {
+        if record.targets[0] < 0.5 {
+            continue;
+        }
+        for column in (1..TONGUE_TARGETS).filter(|&column| enabled[column]) {
+            let target = record.targets[column];
+            let active = if target.abs() > ACTIVE { 1.0 } else { 0.0 };
+            let weight = f64::from(COLUMN_WEIGHTS[column] * (1.0 + ACTIVE_BOOST[column] * active));
+            let difference = f64::from((row[column] - target).abs());
+            let error = if difference < beta {
+                0.5 * difference * difference / beta
+            } else {
+                difference - 0.5 * beta
+            };
+            total += weight * error;
+            weights += weight;
+        }
+    }
+    total / weights.max(1.0)
+}
+
+/// Held-back straight-ahead tongue-out frames of held poses: the graded
+/// amounts of tongue out the extension check reads.
+fn straight_ahead(frames: &Frames, held: &[usize]) -> Vec<usize> {
+    held.iter()
+        .copied()
+        .filter(|&index| {
+            let record = &frames.records[index];
+            record.targets[0] >= 0.5
+                && !record.moving
+                && record.targets[2].abs() <= ACTIVE
+                && record.targets[3].abs() <= ACTIVE
+        })
+        .collect()
+}
+
+/// Whether the extension output separates the amounts of tongue out the
+/// poses asked for (`expected`), as Qpro-Enhanced-FT checks its range
+/// recordings: enough amounts, their mean outputs rising, spread far enough
+/// and correlating well. If so, TongueOut follows a straight line fitted
+/// from the output to the amount.
+fn check_extension(predicted: &[f64], expected: &[f64]) -> ReportTongueOut {
+    let mut levels: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
+    for (&output, &amount) in predicted.iter().zip(expected) {
+        levels
+            .entry((amount * 100.0).round() as i64)
+            .or_default()
+            .push(output.clamp(0.0, 1.0));
+    }
+    levels.retain(|_, outputs| outputs.len() >= EXTENSION_MIN_FRAMES);
+    let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len().max(1) as f64;
+    let means: Vec<f64> = levels.values().map(|outputs| mean(outputs)).collect();
+    let rising = means
+        .windows(2)
+        .all(|pair| pair[1] >= pair[0] - EXTENSION_SLACK);
+    let spread = match (means.first(), means.last()) {
+        (Some(first), Some(last)) => last - first,
+        _ => 0.0,
+    };
+    let (x, y): (Vec<f64>, Vec<f64>) = levels
+        .iter()
+        .flat_map(|(amount, outputs)| {
+            outputs
+                .iter()
+                .map(move |&output| (output, *amount as f64 / 100.0))
+        })
+        .unzip();
+    let (mean_x, mean_y) = (mean(&x), mean(&y));
+    let (mut xx, mut yy, mut xy) = (0f64, 0f64, 0f64);
+    for (x, y) in x.iter().zip(&y) {
+        xx += (x - mean_x).powi(2);
+        yy += (y - mean_y).powi(2);
+        xy += (x - mean_x) * (y - mean_y);
+    }
+    let (scale, offset, correlation) = if xx > 1e-9 && yy > 1e-9 {
+        let scale = xy / xx;
+        (scale, mean_y - scale * mean_x, xy / (xx * yy).sqrt())
+    } else {
+        (1.0, 0.0, 0.0)
+    };
+    ReportTongueOut {
+        calibrated: levels.len() >= EXTENSION_MIN_LEVELS
+            && rising
+            && spread >= EXTENSION_MIN_SPREAD
+            && correlation >= EXTENSION_MIN_CORRELATION
+            && scale > 0.0,
+        scale: round(scale, 4),
+        offset: round(offset, 4),
+        correlation: round(correlation, 4),
+        spread: round(spread, 4),
+        levels: levels
+            .iter()
+            .zip(&means)
+            .map(|((amount, outputs), predicted)| ReportLevel {
+                amount: *amount as f64 / 100.0,
+                predicted: round(*predicted, 4),
+                frames: outputs.len() as u64,
+            })
+            .collect(),
     }
 }
 
@@ -990,6 +1309,7 @@ mod tests {
                     moving: false,
                     key: index.to_string(),
                     synthetic: false,
+                    held_out: false,
                 }
             })
             .collect();
@@ -1000,19 +1320,30 @@ mod tests {
         }
     }
 
+    fn all(frames: &Frames) -> Vec<&Record> {
+        frames.records.iter().collect()
+    }
+
+    /// Camera visibility for `gate_frames`: `out` on tongue-out frames,
+    /// `hidden` on the others.
+    fn camera(out: f64, hidden: f64) -> Vec<f64> {
+        (0..20)
+            .map(|index| if index % 2 == 0 { out } else { hidden })
+            .collect()
+    }
+
     #[test]
     fn gate_uses_the_camera_alone_without_tracking_module_values() {
-        let camera: Vec<f64> = (0..20)
-            .map(|index| if index % 2 == 0 { 0.9 } else { 0.1 })
-            .collect();
-        let with_module = calibrate(
-            &camera,
-            &gate_frames(|index| Some((index % 2 == 0) as u8 as f32)),
-        );
-        assert_eq!(with_module.camera_weight, PREFERRED_CAMERA_WEIGHT);
-        let partly = calibrate(&camera, &gate_frames(|index| (index > 3).then_some(0.0)));
-        assert_eq!(partly.camera_weight, CAMERA_ONLY_WEIGHT);
-        assert!((0.3..=0.8).contains(&partly.threshold));
+        let camera = camera(0.9, 0.1);
+        let with_module = gate_frames(|index| Some((index % 2 == 0) as u8 as f32));
+        let gate = calibrate(&camera, &all(&with_module), false);
+        assert_eq!(gate.camera_weight, PREFERRED_CAMERA_WEIGHT);
+        let partly = gate_frames(|index| (index > 3).then_some(0.0));
+        for held_out in [false, true] {
+            let gate = calibrate(&camera, &all(&partly), held_out);
+            assert_eq!(gate.camera_weight, CAMERA_ONLY_WEIGHT);
+            assert!((0.3..=0.8).contains(&gate.threshold));
+        }
     }
 
     #[test]
@@ -1024,22 +1355,92 @@ mod tests {
         for record in &mut mixed.records[10..] {
             record.synthetic = true;
         }
-        let camera: Vec<f64> = (0..20)
-            .map(|index| match (index < 10, index % 2 == 0) {
-                (true, true) => 0.6,
-                (true, false) => 0.35,
-                (false, true) => 1.0,
-                (false, false) => 0.0,
-            })
-            .collect();
-        let gate = calibrate(&camera, &mixed);
+        assert_eq!(calibration_frames(&mixed), (0..10).collect::<Vec<_>>());
+        // Held-back frames, when there are any, are used alone.
+        mixed.records[2].held_out = true;
+        mixed.records[5].held_out = true;
+        assert_eq!(calibration_frames(&mixed), [2, 5]);
+    }
+
+    #[test]
+    fn held_back_frames_choose_the_camera_weight() {
+        // A tracking module that reports the tongue out exactly when it's in,
+        // against a camera that separates them weakly: below a weight of
+        // about 0.83 the blend is wrong on every frame.
+        let inverted = gate_frames(|index| Some((index % 2) as f32));
+        let camera = camera(0.6, 0.4);
+        let fixed = calibrate(&camera, &all(&inverted), false);
+        assert_eq!(fixed.camera_weight, PREFERRED_CAMERA_WEIGHT);
+        let searched = calibrate(&camera, &all(&inverted), true);
+        assert_eq!(searched.camera_weight, 1.0, "ties go to the higher weight");
+        assert_eq!(searched.details["plateau"], json!([0.41, 0.6]));
+        assert!(searched.details["objective"].as_f64() > fixed.details["objective"].as_f64());
+        // Where every weight separates the frames, 0.8 wins the tie.
+        let agreeing = gate_frames(|index| Some((index % 2 == 0) as u8 as f32));
+        let gate = calibrate(&camera, &all(&agreeing), true);
         assert_eq!(gate.camera_weight, PREFERRED_CAMERA_WEIGHT);
-        let mut recorded = gate_frames(native);
-        recorded.records.truncate(10);
-        assert_eq!(
-            gate.threshold,
-            calibrate(&camera[..10], &recorded).threshold
-        );
+    }
+
+    #[test]
+    fn held_back_scores_are_lower_for_better_models() {
+        let frames = gate_frames(|_| None);
+        let records = all(&frames);
+        let rows = |out: f32, hidden: f32| -> Vec<[f32; TARGETS.len()]> {
+            (0..20)
+                .map(|index| {
+                    let mut row = [0.0; TARGETS.len()];
+                    row[0] = if index % 2 == 0 { out } else { hidden };
+                    row
+                })
+                .collect()
+        };
+        assert!(gate_score(&rows(0.9, 0.1), &records) < gate_score(&rows(0.6, 0.4), &records));
+        let mut enabled = [false; TARGETS.len()];
+        enabled[..4].fill(true);
+        // Tongue-out frames point right; tongue-in frames don't count.
+        let mut pointing = gate_frames(|_| None);
+        for record in pointing.records.iter_mut().step_by(2) {
+            record.targets[2] = 1.0;
+        }
+        let records = all(&pointing);
+        let mut exact = rows(1.0, 0.0);
+        for (row, record) in exact.iter_mut().zip(&records) {
+            row[1..].copy_from_slice(&record.targets[1..]);
+        }
+        assert_eq!(direction_score(&enabled, &exact, &records), 0.0);
+        for row in exact.iter_mut().skip(1).step_by(2) {
+            row[2] = -1.0;
+        }
+        assert_eq!(direction_score(&enabled, &exact, &records), 0.0);
+        let mut wrong = exact.clone();
+        wrong[0][2] = 0.0;
+        assert!(direction_score(&enabled, &wrong, &records) > 0.0);
+    }
+
+    #[test]
+    fn tongue_out_follows_extension_only_when_the_amounts_separate() {
+        let amounts = [0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0];
+        let rising = [0.30, 0.34, 0.32, 0.55, 0.60, 0.58, 0.85, 0.90, 0.88];
+        let check = check_extension(&rising, &amounts);
+        assert!(check.calibrated, "{check:?}");
+        assert_eq!(check.levels.len(), 3);
+        assert_eq!(check.levels[1].frames, 3);
+        let map = TongueOutMap {
+            scale: check.scale,
+            offset: check.offset,
+        };
+        assert!((map.tongue_out(0.32) - 0.25).abs() < 0.05);
+        assert!((map.tongue_out(0.88) - 1.0).abs() < 0.05);
+        assert_eq!(map.tongue_out(0.0), crate::checkpoint::TONGUE_OUT_FLOOR);
+        // Every amount reads alike: the confidence keeps driving TongueOut.
+        let flat = [0.8; 9];
+        assert!(!check_extension(&flat, &amounts).calibrated);
+        // Two amounts, or too few frames of the third, aren't enough.
+        assert!(!check_extension(&rising[..6], &amounts[..6]).calibrated);
+        assert!(!check_extension(&rising[..8], &amounts[..8]).calibrated);
+        // Falling from one amount to the next.
+        let falling = [0.30, 0.34, 0.32, 0.20, 0.22, 0.21, 0.85, 0.90, 0.88];
+        assert!(!check_extension(&falling, &amounts).calibrated);
     }
 
     /// Values from the Python trainer's `loss_for` on the same inputs.

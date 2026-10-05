@@ -18,9 +18,12 @@ blender -b --factory-startup -P tools/tongue-synth/render_tongue.py -- --count 5
 ```
 
 Options: `--count` frames, `--seed`, `--identities` (synthetic people; by
-default one per 50 frames), `--out` (default `.local/tongue-captures`) and
-`--calibration` (see below). It renders about 2 frames a second on a
-desktop GPU (EEVEE, two views each).
+default one per 50 frames), `--out` (default `.local/tongue-captures`),
+`--calibration` (see below) and `--passes` (`-Passes` in `render.ps1`):
+also write each frame's depth and where its tongue, teeth and lips are, to
+`passes/<frame>.npz` (`depth`: millimetres per view; `parts`: tongue, teeth
+and lip coverage in 255ths), both through the lens like the frame. It
+renders about 2 frames a second on a desktop GPU (EEVEE, two views each).
 
 ## Output
 
