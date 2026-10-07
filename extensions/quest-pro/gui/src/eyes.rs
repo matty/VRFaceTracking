@@ -1,6 +1,6 @@
 //! Eyes: independent per-eye gaze from the Quest Pro, recentering, pupil
 //! size from the eye cameras, and the settings that decide what VRFT sends
-//! for each eye.
+//! for each eye. With the headset's five-camera stream, the brow camera too.
 use crate::daemon::{PupilMark, Settings, SettingsPatch, Status, FRAME_WIDTH};
 use crate::live::{CameraFeed, QuestProState};
 use crate::pages;
@@ -64,6 +64,8 @@ enum Spot {
 pub struct EyesPage {
     daemon: Entity<QuestProState>,
     snapshots: Entity<CameraFeed>,
+    /// The brow camera, shown while the headset sends all five cameras.
+    brow: Entity<CameraFeed>,
     launcher: Entity<Launcher>,
     recenter: Recenter,
     /// The outcome of the last recenter or settings change, and the card
@@ -80,13 +82,14 @@ pub struct EyesPage {
     /// follows changes made elsewhere, not every status.
     shown_smoothing: Option<f32>,
     _action: Option<Task<()>>,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 5],
 }
 
 impl EyesPage {
     pub fn new(
         daemon: Entity<QuestProState>,
         snapshots: Entity<CameraFeed>,
+        brow: Entity<CameraFeed>,
         launcher: Entity<Launcher>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -104,6 +107,7 @@ impl EyesPage {
                 cx.notify();
             }),
             cx.observe(&snapshots, |_, _, cx| cx.notify()),
+            cx.observe(&brow, |_, _, cx| cx.notify()),
             cx.observe(&launcher, |_, _, cx| cx.notify()),
             // The number follows the drag; the setting saves on release.
             cx.subscribe(
@@ -117,6 +121,7 @@ impl EyesPage {
         Self {
             daemon,
             snapshots,
+            brow,
             launcher,
             recenter: Recenter::Idle,
             message: None,
@@ -957,7 +962,12 @@ impl Render for EyesPage {
                             .text_color(palette::text_3())
                     })),
             )
-            .child(SnapshotView { image, pupils });
+            .child(SnapshotView { image, pupils })
+            .when(status.is_some_and(|status| status.five_cameras), |card| {
+                card.child(BrowView {
+                    image: self.brow.read(cx).image(),
+                })
+            });
 
         let left = v_flex().gap_4().child(gaze).child(cameras);
         let right = v_flex()
@@ -1375,6 +1385,50 @@ impl RenderOnce for SnapshotView {
                 t!("eyes.no_eye_images_hint"),
             )),
         }
+    }
+}
+
+/// The brow camera (camera 4), live, beside what it is: as tall as one eye's
+/// view in the snapshot above.
+#[derive(IntoElement)]
+struct BrowView {
+    image: Option<Arc<RenderImage>>,
+}
+
+impl RenderOnce for BrowView {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .flex_none()
+                    .w(relative(0.5))
+                    .aspect_ratio(1.)
+                    .rounded(px(9.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(palette::line())
+                    // Grayscale raster data, black in either theme.
+                    .bg(black())
+                    .when_some(self.image, |view, image| {
+                        view.child(img(image).size_full().object_fit(ObjectFit::Contain))
+                    }),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(card_title(t!("eyes.brow_camera")))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_3())
+                            .child(t!("eyes.brow_camera_hint")),
+                    ),
+            )
     }
 }
 

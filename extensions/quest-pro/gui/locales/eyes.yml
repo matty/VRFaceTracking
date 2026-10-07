@@ -124,6 +124,10 @@ eyes:
     en: "Open Headset"
   eye_cameras:
     en: "Eye cameras"
+  brow_camera:
+    en: "Brow camera"
+  brow_camera_hint:
+    en: "Camera 4, between the eyes. The headset sends it with its five-camera stream on."
   snapshot_age:
     en: "Snapshot %{sequence} · %{age} ms old"
   title:
