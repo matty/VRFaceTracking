@@ -104,3 +104,7 @@ settings:
     en: Tracking module
   tracking_module_description:
     en: Where face tracking comes from.
+  run_setup:
+    en: Run setup again
+  run_setup_tooltip:
+    en: Choose the tracking module and add-ons step by step, as on first launch

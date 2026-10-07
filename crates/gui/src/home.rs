@@ -240,7 +240,9 @@ impl HomePage {
     /// module, check where tracking goes, then put the headset on.
     fn checklist(&self, status: Option<&Status>) -> impl IntoElement {
         let report = status.and_then(|status| status.daemon.as_ref());
-        let module = report.and_then(|report| report.module.as_ref());
+        let module = report
+            .and_then(|report| report.module.as_ref())
+            .filter(|module| module.chosen());
         let module_name = module
             .map(|module| module.display_name())
             .unwrap_or_else(|| t!("home.module_not_chosen").into());
@@ -298,6 +300,7 @@ impl HomePage {
         let module = summary::module(status, rates);
         let module_label = report
             .and_then(|report| report.module.as_ref())
+            .filter(|module| module.chosen())
             .map(|module| module.display_name())
             .unwrap_or_else(|| t!("home.tracking_module").into());
         let mut sources = vec![PathSource {

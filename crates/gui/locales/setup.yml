@@ -1,0 +1,104 @@
+_version: 2
+setup:
+  page:
+    en: "Setup"
+  step:
+    en: "STEP %{step} OF %{total}"
+  rail_title:
+    en: "Setup"
+  rail_welcome:
+    en: "Welcome"
+  rail_module:
+    en: "Tracking module"
+  rail_on:
+    en: "On"
+  rail_off:
+    en: "Off"
+  rail_done:
+    en: "All set"
+  none_chosen:
+    en: "None chosen"
+  welcome_title:
+    en: "Welcome to VRFaceTracking"
+  welcome_description:
+    en: "VRFaceTracking sends your face and eye tracking to VRChat and other social VR. A few quick steps get it ready, and you can change everything later."
+  ahead:
+    en: "What's ahead"
+  ahead_aside:
+    en: "About a minute"
+  ahead_module:
+    en: "Choose your tracking module"
+  ahead_module_detail:
+    en: "Where tracking comes from: a module on this PC, or one from the VRCFaceTracking registry"
+  ahead_offer_detail:
+    en: "Extra features, if you have a %{name}"
+  ahead_done:
+    en: "Start tracking"
+  ahead_done_detail:
+    en: "Check what's set up, then put your headset on"
+  get_started:
+    en: "Get started"
+  takes_a_minute:
+    en: "Nothing changes until you choose it."
+  module_title:
+    en: "Choose your tracking module"
+  module_description:
+    en: "The module reads face tracking from your headset or tracker. Use one on this PC, or install a VRCFaceTracking module from its registry."
+  start_to_choose:
+    en: "VRFaceTracking is starting, to list the modules. Start it if it doesn't."
+  on_this_pc:
+    en: "On this PC"
+  on_this_pc_aside:
+    en: "Ready to use"
+  none_on_this_pc:
+    en: "No modules are installed yet. Install one from the registry below."
+  registry:
+    en: "VRCFaceTracking module registry"
+  registry_aside:
+    en: "Installs into VRFaceTracking's plugins folder"
+  continue:
+    en: "Continue"
+  continue_without_module:
+    en: "Continue without a module"
+  finish:
+    en: "Start using VRFaceTracking"
+  back:
+    en: "Back"
+  skip:
+    en: "Skip setup"
+  skip_tooltip:
+    en: "Finish now. Settings can run setup again."
+  offer_description:
+    en: "VRFaceTracking has an add-on just for the %{name}. Turn it on if you have one."
+  add_on:
+    en: "%{name} add-on"
+  works_alongside:
+    en: "Works alongside your tracking module"
+  yes:
+    en: "Yes, I have a %{name}"
+  yes_detail:
+    en: "Turn the add-on on. Its pages join the navigation, starting with setting up the headset."
+  no:
+    en: "No, I don't"
+  no_detail:
+    en: "Leave it off. You can turn it on any time on the Modules page."
+  done_title:
+    en: "You're all set"
+  done_description:
+    en: "Here's how VRFaceTracking is set up. You can change any of it later on the Modules page."
+  summary_module:
+    en: "Tracking module"
+  summary_no_module:
+    en: "None yet. Choose one on the Modules page."
+  summary_on:
+    en: "On"
+  summary_off:
+    en: "Off"
+  next_offer:
+    en: "Next, the %{page} page walks you through getting your %{name} ready."
+  next_tracking:
+    en: "Put your headset on and start its face tracking. Home shows how tracking is going."
+  next_no_module:
+    en: "Choose a tracking module on the Modules page to start tracking."
+  save_failed:
+    en: "Couldn't save setup"

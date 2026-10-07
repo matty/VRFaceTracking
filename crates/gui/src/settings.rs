@@ -1132,10 +1132,25 @@ impl Render for SettingsPage {
         let header = PageHeader::new(t!("settings.title"))
             .description(t!("settings.description"))
             .trailing(
-                fix_button("open-config", Fix::Config)
-                    .ghost()
-                    .regular()
-                    .icon(IconName::FileText),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("run-setup")
+                            .ghost()
+                            .regular()
+                            .icon(IconName::Sparkles)
+                            .label(t!("settings.run_setup"))
+                            .tooltip(t!("settings.run_setup_tooltip"))
+                            .on_click(|_, _, cx| {
+                                vrft_gui_core::nav::open_page(crate::setup::PAGE, cx)
+                            }),
+                    )
+                    .child(
+                        fix_button("open-config", Fix::Config)
+                            .ghost()
+                            .regular()
+                            .icon(IconName::FileText),
+                    ),
             );
         let page = v_flex()
             .gap_6()

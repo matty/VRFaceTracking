@@ -597,6 +597,12 @@ fn load_module(
     daemon_status: &DaemonStatus,
     retired: &mut Vec<Library>,
 ) -> Option<LoadedModule> {
+    if wanted.trim().is_empty() {
+        // A new install, until its first-launch setup chooses one.
+        info!("No tracking module is chosen; choose one in the app's Modules page");
+        daemon_status.set_module(ModuleStatus::default());
+        return None;
+    }
     let discovered = plugin_loader::discover_plugins(plugins);
     info!(
         "Discovered {} plugin(s) under {:?}",

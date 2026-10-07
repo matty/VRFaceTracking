@@ -34,33 +34,20 @@ pub enum ModuleRuntime {
 }
 
 /// Module loading configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleConfig {
     /// Deprecated: runtime is now auto-detected from the plugin's PE header.
     /// Retained only so older configs that still specify it continue to parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ModuleRuntime>,
-    /// The active module/plugin to load
-    #[serde(default = "default_active_module")]
+    /// The active module/plugin to load. Empty until one is chosen, as a new
+    /// install's first-launch setup does: no module loads by default.
+    #[serde(default)]
     pub active: String,
     /// Where the app finds modules to install; the VRCFT registry unless set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_url: Option<String>,
-}
-
-impl Default for ModuleConfig {
-    fn default() -> Self {
-        Self {
-            runtime: None,
-            active: default_active_module(),
-            registry_url: None,
-        }
-    }
-}
-
-fn default_active_module() -> String {
-    "vd_module.dll".to_string()
 }
 
 /// Configuration for a single pipeline step
@@ -160,6 +147,10 @@ pub struct MutationConfig {
     /// `vrft_extension::ExtensionConfig`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, serde_json::Value>,
+    /// The desktop app's first-launch setup was finished or skipped, so it
+    /// doesn't open again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub setup_done: bool,
 }
 
 fn default_max_fps() -> Option<f32> {
@@ -185,6 +176,7 @@ impl Default for MutationConfig {
             osc: OscConfig::default(),
             max_fps: default_max_fps(),
             extensions: BTreeMap::new(),
+            setup_done: false,
         }
     }
 }
@@ -307,6 +299,16 @@ mod module_config_tests {
         let cfg: ModuleConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.active, "vd_module.dll");
         assert_eq!(cfg.runtime, Some(ModuleRuntime::Native));
+    }
+
+    #[test]
+    fn no_module_is_chosen_by_default() {
+        let cfg: MutationConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(cfg.module.active, "");
+        assert!(!cfg.setup_done);
+        // Nor is it written until setup has been done.
+        let written = serde_json::to_value(MutationConfig::default()).unwrap();
+        assert!(written.get("setup_done").is_none());
     }
 
     #[test]

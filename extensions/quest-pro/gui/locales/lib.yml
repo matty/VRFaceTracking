@@ -10,6 +10,16 @@ lib:
     en: "Training"
   description:
     en: "Tongue tracking and better eye tracking for the Quest Pro."
+  setup_question:
+    en: "Do you have a Meta Quest Pro?"
+  setup_tongue:
+    en: "Tongue tracking, from the headset's mouth camera"
+  setup_eyes:
+    en: "Each eye's own gaze, so your avatar's eyes can converge on things close by"
+  setup_previews:
+    en: "Live views of the headset's mouth and eye cameras, and a tongue model you can train on your own face"
+  setup_requirements:
+    en: "It needs a rooted Quest Pro, with VRFaceTracking's app on the headset. The Headset page installs it."
   tile_headset:
     en: "Headset"
   tile_mouth:

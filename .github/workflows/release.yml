@@ -158,7 +158,7 @@ jobs:
           # ONNX Runtime with DirectML runs the tongue models; without it they run on Burn.
           ./tools/onnxruntime/fetch.ps1 -Dest onnxruntime
 
-          function Make-Package($name, $active, $bundle_dotnet) {
+          function Make-Package($name, $bundle_dotnet) {
             New-Item -ItemType Directory -Force -Path "$name" | Out-Null
 
             # vrft_app starts vrft_d, which loads ONNX Runtime from beside it.
@@ -175,9 +175,10 @@ jobs:
               Copy-Item "headset-app" "$name/" -Recurse
             }
 
-            # Plugin runtime is detected from each DLL.
+            # No module is chosen: the app's first-launch setup asks which,
+            # and vd_module.dll is one of the choices. Plugin runtime is
+            # detected from each DLL.
             $config = @{
-              module = @{ active = $active }
               mutator = @{ enabled = $true; smoothness = 0.0 }
               osc = @{ output_mode = "VRChat"; send_address = "127.0.0.1"; send_port = 9000 }
               max_fps = 60.0
@@ -197,8 +198,8 @@ jobs:
             Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
           }
 
-          Make-Package "vrft_d-x86_64-windows-std"           "vd_module.dll"                   $false
-          Make-Package "vrft_d-x86_64-windows-vrcft-runtime" "VirtualDesktop.FaceTracking.dll" $true
+          Make-Package "vrft_d-x86_64-windows-std"           $false
+          Make-Package "vrft_d-x86_64-windows-vrcft-runtime" $true
 
           # Installer: the std package plus the .NET host.
           Copy-Item "vrft_d-x86_64-windows-std" "installer" -Recurse
