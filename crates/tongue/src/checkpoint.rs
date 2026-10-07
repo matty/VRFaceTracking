@@ -1,8 +1,8 @@
-//! Tongue checkpoints: the built-in PyTorch `.pt` pair from Qpro-Enhanced-FT,
-//! read without Python, and personal models saved as safetensors with the
-//! same PyTorch weight names and a JSON metadata entry.
+//! Tongue checkpoints: the mouth-camera pair, PyTorch `.pt` files from
+//! Qpro-Enhanced-FT read without Python, and personal models saved as
+//! safetensors with the same PyTorch weight names and a JSON metadata entry.
 //!
-//! Checkpoints from before the cheek puff heads (the built-in pair, and
+//! Checkpoints from before the cheek puff heads (the mouth-camera pair, and
 //! personal models trained then) load with those heads added and disabled.
 
 use std::collections::HashMap;
@@ -217,7 +217,7 @@ impl Checkpoint {
         }
         // disabledTargets is written by personal training; older personal
         // checkpoints only carry the supportedTargets mask, and the
-        // built-in pair carries neither.
+        // mouth-camera pair carries neither.
         let disabled_targets = match field::<Vec<String>>(path, "disabledTargets") {
             Some(names) => names,
             None => match field::<Vec<bool>>(path, "supportedTargets") {

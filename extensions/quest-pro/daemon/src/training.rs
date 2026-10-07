@@ -41,7 +41,7 @@ pub fn has_face_model(dir: &Path) -> bool {
 }
 
 /// Whether `dir` holds a model inference can use: a pair, or a universal
-/// face model, which runs beside the built-in pair.
+/// face model, which runs beside the mouth-camera pair.
 pub fn complete_model(dir: &Path) -> bool {
     complete_pair(dir) || has_face_model(dir)
 }
@@ -590,13 +590,19 @@ fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
     }
 }
 
-/// Downloads and verifies the built-in model pair and the training
-/// examples in the background.
-async fn install_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+/// Downloads and verifies what training needs in the background: the
+/// mouth-camera pair it starts from and the training examples.
+async fn install_builtin(
+    State(manager): State<TrainingManager>,
+) -> Result<Json<BuiltinStatus>, ApiError> {
+    // The QFTPlus Model's download brings the pair too.
+    if manager.qftplus.state().installing {
+        return Err(bad("Wait for the QFTPlus Model to finish downloading"));
+    }
     if builtin::download_megabytes(&manager.root) > 0 {
         manager.builtin.start(manager.root.clone());
     }
-    Json(builtin_status(&manager))
+    Ok(Json(builtin_status(&manager)))
 }
 
 async fn cancel_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
@@ -607,7 +613,7 @@ async fn cancel_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinS
 fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
     let state = manager.qftplus.state();
     BuiltinStatus {
-        installed: builtin::qftplus_model(&manager.root).is_some(),
+        installed: builtin::qftplus_megabytes(&manager.root) == 0,
         examples_missing: false,
         download_megabytes: Some(builtin::qftplus_megabytes(&manager.root)),
         installing: state.installing,
@@ -621,14 +627,20 @@ fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
     }
 }
 
-/// Downloads QFT+'s universal face model from QFT+'s release in the
-/// background. Only ever on the user's say-so: its weights are for
-/// non-commercial use.
-async fn install_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+/// Downloads the QFTPlus Model in the background: the mouth-camera pair,
+/// then QFT+'s universal face model from QFT+'s release. Only ever on the
+/// user's say-so: QFT+'s weights are for non-commercial use.
+async fn install_qftplus(
+    State(manager): State<TrainingManager>,
+) -> Result<Json<BuiltinStatus>, ApiError> {
+    // Training's download fetches the same pair.
+    if manager.builtin.state().installing {
+        return Err(bad("Wait for the training files to finish downloading"));
+    }
     if builtin::qftplus_megabytes(&manager.root) > 0 {
         manager.qftplus.start(manager.root.clone());
     }
-    Json(qftplus_status(&manager))
+    Ok(Json(qftplus_status(&manager)))
 }
 
 async fn cancel_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
@@ -636,7 +648,8 @@ async fn cancel_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinS
     Json(qftplus_status(&manager))
 }
 
-/// Removes QFT+'s model; the face model in use unloads within a second.
+/// Removes QFT+'s model, leaving the mouth-camera pair; the face model in
+/// use unloads within a second.
 async fn remove_qftplus(
     State(manager): State<TrainingManager>,
 ) -> Result<Json<BuiltinStatus>, ApiError> {
@@ -715,8 +728,8 @@ fn active_id(root: &Path) -> String {
         .unwrap_or_else(|| "demo".into())
 }
 
-/// The folder of the model in use; `base` finds the built-in one, and is
-/// only asked when that's the one in use.
+/// The folder of the model in use; `base` finds the mouth-camera pair the
+/// QFTPlus Model brings, and is only asked when that's the one in use.
 pub fn selected_dir(
     root: &Path,
     base: impl FnOnce() -> Result<PathBuf, String>,
@@ -735,7 +748,7 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
     let mut result = vec![SavedModel {
         id: "demo".into(),
         architecture: TrainerArchitecture::StereoPair,
-        name: Some("Built-in model".into()),
+        name: Some("QFTPlus Model".into()),
         report: None,
     }];
     let root = manager.root.join(".local/tongue-models");
@@ -770,8 +783,8 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
 }
 
 /// Deletes a trained model, unless it's the one in use and there's another
-/// to switch to. The last trained model in use, with the built-in one not
-/// downloaded, can go; the built-in one is then in use again.
+/// to switch to. The last trained model in use, with the QFTPlus Model not
+/// downloaded, can go; the QFTPlus Model is then in use again.
 async fn delete_model(
     State(manager): State<TrainingManager>,
     Json(request): Json<RecordingId>,
@@ -779,7 +792,7 @@ async fn delete_model(
     manager.idle()?;
     manager.untouched()?;
     if request.id == "demo" {
-        return Err(bad("The built-in model can't be deleted"));
+        return Err(bad("The QFTPlus Model can't be deleted; remove it instead"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
     if !path.join("report.json").is_file() && !complete_model(&path) {
@@ -792,7 +805,7 @@ async fn delete_model(
             .models
             .iter()
             .any(|model| model.id != "demo" && model.id != request.id);
-        if others || builtin::installed(&manager.root) {
+        if others || builtin::qftplus_megabytes(&manager.root) == 0 {
             return Err(bad("Switch to another model before deleting this one"));
         }
         select_model(&manager.root, "demo").map_err(bad)?;
@@ -812,7 +825,7 @@ async fn rename_model(
         return Err(bad("Give the model a name of up to 100 characters"));
     }
     if request.id == "demo" {
-        return Err(bad("The built-in model can't be renamed"));
+        return Err(bad("The QFTPlus Model can't be renamed"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
     let report_path = path.join("report.json");
@@ -1088,11 +1101,19 @@ mod tests {
         select_model(&root, "personal").unwrap();
         let delete =
             |id: &str| delete_model(State(manager.clone()), Json(RecordingId { id: id.into() }));
-        // With the built-in model there to switch to, the model in use stays.
-        let builtin = root.join("models/quest-pro");
-        fs::create_dir_all(&builtin).unwrap();
+        // With the QFTPlus Model there to switch to, the model in use stays.
+        let base = root.join("models/quest-pro");
+        fs::create_dir_all(&base).unwrap();
         for role in [Role::Gate, Role::Direction] {
-            fs::write(role.safetensors(&builtin), b"test").unwrap();
+            fs::write(role.safetensors(&base), b"test").unwrap();
+        }
+        let qftplus = root.join("models/qftplus");
+        fs::create_dir_all(&qftplus).unwrap();
+        for name in [
+            "universal-face-v2.area.onnx",
+            vrft_tongue::universal_v2::FILE_NAME,
+        ] {
+            fs::write(qftplus.join(name), b"test").unwrap();
         }
         assert!(delete("personal").await.is_err(), "the model in use stays");
         assert!(delete("demo").await.is_err());
@@ -1103,7 +1124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_last_model_in_use_can_go_when_the_builtin_one_is_not_downloaded() {
+    async fn the_last_model_in_use_can_go_when_the_qftplus_model_is_not_downloaded() {
         let root = test_root("last");
         for id in ["first", "second"] {
             let pair = root.join(".local/tongue-models").join(id);

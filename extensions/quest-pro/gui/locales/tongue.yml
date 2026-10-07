@@ -152,16 +152,16 @@ tongue:
     en: "Couldn't delete it"
   couldnt_start_download:
     en: "Couldn't start the download"
-  downloading_builtin:
-    en: "Downloading the built-in model"
+  downloading_pair:
+    en: "Downloading the mouth-camera model"
   downloading_examples:
     en: "Downloading the training examples"
   connecting_download:
     en: "Starting the download…"
   checking_download:
     en: "Checking the download…"
-  unpacking_builtin:
-    en: "Unpacking the model…"
+  unpacking_pair:
+    en: "Unpacking the mouth-camera model…"
   unpacking_examples:
     en: "Unpacking the training examples…"
   download_amount:
@@ -179,19 +179,13 @@ tongue:
   qftplus_model:
     en: "QFTPlus Model"
   qftplus_lead:
-    en: "Reads all five cameras for the tongue, cheeks and brows."
-  qftplus_installed:
-    en: "Runs while the headset sends all five cameras, unless the model in use has a face model of its own."
-  qftplus_needs_builtin:
-    en: "Downloaded. It starts once the built-in model is downloaded too, which reads the mouth cameras whenever the headset sends only those."
+    en: "The base model. Reads all five cameras for the tongue, cheeks and brows, and the mouth cameras alone when the headset sends only those."
   downloading_qftplus:
     en: "Downloading QFT+'s model"
   unpacking_qftplus:
     en: "Unpacking QFT+'s model…"
-  remove:
-    en: "Remove"
   qftplus_remove_tooltip:
-    en: "Deletes QFT+'s model. The model in use reads the mouth cameras instead."
+    en: "Deletes QFT+'s model. Until you download it again, only the mouth cameras are read."
   removed:
     en: "Removed."
   couldnt_remove:
@@ -236,7 +230,7 @@ tongue:
     en: "Couldn't start the import"
   download_failed:
     en: "The download failed: %{error}"
-  builtin_not_downloaded:
+  not_downloaded_size:
     en: "Not downloaded · %{size} MB"
   try_again:
     en: "Try again"
@@ -256,8 +250,8 @@ tongue:
     en: "Couldn't save"
   training:
     en: "Training"
-  builtin_model:
-    en: "Built-in model"
+  training_files:
+    en: "Training files"
   training_examples:
     en: "Training examples"
   in_use:
@@ -285,7 +279,7 @@ tongue:
   model_in_use:
     en: "Model in use"
   model_in_use_about:
-    en: "Switch at any time. Choose the built-in model to undo a personal one."
+    en: "Switch at any time. Choose the QFTPlus Model to undo a personal one."
   set_by_override:
     en: "Set by VRFT_TONGUE_MODEL_DIR."
   still_unreliable:
@@ -305,7 +299,7 @@ tongue:
   record_lead:
     en: "Put the headset on and follow the prompts: 17 poses, about two and a half minutes. One full recording is enough to train."
   download_while_recording:
-    en: "Training starts from the built-in model. Download it now and it finishes while you record."
+    en: "Training starts from the mouth-camera model and mixes in rendered examples. Download them now and they finish while you record."
   before_you_start:
     en: "Before you start"
   tips:
@@ -423,7 +417,7 @@ tongue:
   train_heading:
     en: "Train your model"
   train_lead:
-    en: "Fine-tunes the built-in model on your recordings, here on this PC. Your current model stays in use until it's done."
+    en: "Fine-tunes the mouth-camera model on your recordings, here on this PC. Your current model stays in use until it's done."
   tag_unreadable:
     en: "unreadable"
   tag_left_out:
@@ -534,7 +528,7 @@ tongue:
     en: "The graphics card stopped the training. Try again on the CPU."
   failure_no_recordings:
     en: "Tick at least one recording to train on."
-  failure_builtin:
-    en: "The built-in model, which training starts from, isn't ready. Download it and try again."
+  failure_training_files:
+    en: "The training files, which training starts from, aren't ready. Download them and try again."
   failure:
     en: "Training failed: %{error}"

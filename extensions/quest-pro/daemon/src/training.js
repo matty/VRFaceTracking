@@ -227,22 +227,24 @@ function showFinished(report, switchedOn) {
     box.append(element('p', `Trained on ${plural(report.recordings.length, 'recording')} in ${duration(report.seconds)}. ` +
       'Stick your tongue out and move it around: the dot under the camera view should follow.'));
   }
-  box.append(element('p', 'Not tracking well? Refit the headset, record another set of basic poses and train again. You can switch back to an earlier model, or the built-in one, under Model in use.'));
+  box.append(element('p', 'Not tracking well? Refit the headset, record another set of basic poses and train again. You can switch back to an earlier model, or the QFTPlus Model, under Model in use.'));
 }
 
-// Offers the built-in model download until it is installed.
+// Offers what training needs for download until it is all installed: the
+// mouth-camera model training starts from, and the rendered examples.
 function showBuiltin(builtin) {
-  byId('builtin').hidden = !builtin || builtin.installed;
-  if (!builtin || builtin.installed) return;
+  const ready = !builtin || (builtin.installed && !builtin.examples_missing);
+  byId('builtin').hidden = ready;
+  if (ready) return;
   const button = byId('install-builtin');
   button.disabled = builtin.installing;
-  button.textContent = builtin.error ? 'Try again' : 'Download built-in model';
+  button.textContent = builtin.error ? 'Try again' : 'Download training files';
   if (builtin.installing) {
-    notice('builtin-message', `Downloading the built-in model… ${Math.round((builtin.fraction || 0) * 100)}%`);
+    notice('builtin-message', `Downloading the training files… ${Math.round((builtin.fraction || 0) * 100)}%`);
   } else if (builtin.error) {
     notice('builtin-message', `The download failed: ${builtin.error}`, 'bad');
   } else {
-    notice('builtin-message', "The built-in model isn't installed yet. VRFaceTracking downloads it once, about 140 MB, from the Qpro-Enhanced-FT release, and checks it before use.");
+    notice('builtin-message', `Training needs the mouth-camera model it starts from and the rendered examples it mixes in. VRFaceTracking downloads them once, about ${builtin.download_megabytes || 263} MB, and checks them before use.`);
   }
 }
 byId('install-builtin').onclick = async () => {
@@ -289,7 +291,7 @@ async function refreshModels() {
 }
 window.activeModelName = () => {
   const model = savedModels.find(m => m.id === activeModelId);
-  return `Tongue model: ${activeModelId === 'demo' ? 'built-in' : model ? model.name : 'trained'}`;
+  return `Tongue model: ${activeModelId === 'demo' ? 'QFTPlus Model' : model ? model.name : 'trained'}`;
 };
 function renderModelSelect(force) {
   const select = byId('saved-model');
@@ -297,7 +299,7 @@ function renderModelSelect(force) {
   if (document.activeElement === select) return;
   if (force || select.value !== activeModelId) {
     const personal = savedModels.filter(m => m.id !== 'demo').sort((a, b) => createdAt(b.id) - createdAt(a.id));
-    select.replaceChildren(...[{id: 'demo', name: 'Built-in model (not trained on you)'}, ...personal].map(model => {
+    select.replaceChildren(...[{id: 'demo', name: 'QFTPlus Model (not trained on you)'}, ...personal].map(model => {
       const option = element('option', model.name); option.value = model.id; return option;
     }));
     select.value = activeModelId;

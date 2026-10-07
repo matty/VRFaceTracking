@@ -1162,53 +1162,43 @@ impl TongueTraining {
         );
     }
 
-    /// QFT+'s face model: offered for download with its license, its
-    /// download while it runs, or a way to remove it once it's in place.
-    fn qftplus_panel(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    /// The QFTPlus Model, the base model: offered for download while it
+    /// isn't in place, and its download while it runs; as the card's main
+    /// action while it's the model in use.
+    fn qftplus_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
         let qftplus = self.qftplus()?;
         if qftplus.installing {
             return Some(download_progress(
                 qftplus,
                 Package::QftPlus,
+                self.pair_installed(),
                 self.pending.is_some(),
                 cx,
             ));
         }
-        let failed = !qftplus.installed && qftplus.error.is_some();
-        let size = qftplus.download_megabytes.unwrap_or(194);
-        // It runs beside a pair, which reads the mouth cameras alone.
-        let without_pair = self.builtin().is_some_and(|builtin| !builtin.installed)
-            && self.active_model().is_none();
+        if qftplus.installed {
+            return None;
+        }
+        let failed = qftplus.error.is_some();
+        let size = qftplus.download_megabytes.unwrap_or(334);
         let state = match &qftplus.error {
-            _ if qftplus.installed && without_pair => t!("tongue.qftplus_needs_builtin"),
-            _ if qftplus.installed => t!("tongue.qftplus_installed"),
             Some(error) => t!("tongue.download_failed", error = error),
             None if qftplus.cancelled => t!("tongue.download_cancelled", size = size),
-            None => t!("tongue.builtin_not_downloaded", size = size),
+            None => t!("tongue.not_downloaded_size", size = size),
         };
-        let button = if qftplus.installed {
-            Button::new("remove-qftplus")
-                .ghost()
-                .small()
-                .icon(IconName::Trash)
-                .label(t!("tongue.remove"))
-                .tooltip(t!("tongue.qftplus_remove_tooltip"))
-                .loading(self.pending == Some(Pending::RemoveQftPlus))
-                .disabled(self.pending.is_some())
-                .on_click(cx.listener(|section, _, _, cx| section.remove_qftplus(cx)))
-        } else {
-            Button::new("install-qftplus")
-                .small()
-                .label(if failed {
-                    t!("tongue.try_again")
-                } else {
-                    t!("tongue.download")
-                })
-                .tooltip(t!("tongue.download_tooltip"))
-                .loading(self.pending == Some(Pending::InstallQftPlus))
-                .disabled(self.pending.is_some())
-                .on_click(cx.listener(|section, _, _, cx| section.install_qftplus(cx)))
-        };
+        let button = Button::new("install-qftplus")
+            .when(primary, |button| button.primary())
+            .small()
+            .label(if failed {
+                t!("tongue.try_again")
+            } else {
+                t!("tongue.download")
+            })
+            .tooltip(t!("tongue.download_tooltip"))
+            .loading(self.pending == Some(Pending::InstallQftPlus))
+            // Training's download fetches the same pair.
+            .disabled(self.pending.is_some() || self.builtin_installing())
+            .on_click(cx.listener(|section, _, _, cx| section.install_qftplus(cx)));
         Some(
             h_flex()
                 .w_full()
@@ -1237,14 +1227,7 @@ impl TongueTraining {
                         } else {
                             palette::text_3()
                         })
-                        .child(
-                            Icon::new(if qftplus.installed {
-                                IconName::ScanFace
-                            } else {
-                                IconName::Download
-                            })
-                            .size(px(16.)),
-                        ),
+                        .child(Icon::new(IconName::Download).size(px(16.))),
                 )
                 .child(
                     v_flex()
@@ -1267,31 +1250,22 @@ impl TongueTraining {
                                 })
                                 .child(state),
                         )
-                        .when(!qftplus.installed, |column| {
-                            column.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette::text_3())
-                                    .child(t!("tongue.qftplus_lead")),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_3())
+                                .child(t!("tongue.qftplus_lead")),
+                        ),
                 )
                 .child(button)
                 .into_any_element(),
         )
     }
 
-    /// Whether the built-in model is wanted: it isn't downloaded and no
-    /// trained model is in use instead. Training still needs it, and says so
-    /// itself.
-    fn builtin_needed(&self) -> bool {
-        self.builtin_missing() && self.active_model().is_none()
-    }
-
-    /// Offers to download the built-in model while it isn't installed, and
+    /// Offers to download what training needs while it isn't in place, and
     /// shows the download while it runs; as the view's main action when
     /// nothing else can go on without it.
-    fn builtin_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
+    fn training_files_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
         let builtin = self.builtin()?;
         if builtin.installed && !builtin.examples_missing {
             return None;
@@ -1299,23 +1273,24 @@ impl TongueTraining {
         if builtin.installing {
             return Some(download_progress(
                 builtin,
-                Package::Builtin,
+                Package::TrainingFiles,
+                builtin.installed,
                 self.pending.is_some(),
                 cx,
             ));
         }
         let failed = builtin.error.is_some();
-        let size = builtin.download_megabytes.unwrap_or(140);
+        let size = builtin.download_megabytes.unwrap_or(263);
         let state = match &builtin.error {
             Some(error) => t!("tongue.download_failed", error = error),
             None if builtin.cancelled => t!("tongue.download_cancelled", size = size),
-            None => t!("tongue.builtin_not_downloaded", size = size),
+            None => t!("tongue.not_downloaded_size", size = size),
         };
-        // With the model in place, only the examples are left to download.
+        // With the pair in place, only the examples are left to download.
         let what = if builtin.installed {
             t!("tongue.training_examples")
         } else {
-            t!("tongue.builtin_model")
+            t!("tongue.training_files")
         };
         // One row: what it is and how it stands, with its button beside it,
         // wrapping under it when the card is narrow.
@@ -1377,7 +1352,11 @@ impl TongueTraining {
                         })
                         .tooltip(t!("tongue.download_tooltip"))
                         .loading(self.pending == Some(Pending::InstallBuiltin))
-                        .disabled(self.pending.is_some())
+                        // The QFTPlus Model's download fetches the same pair.
+                        .disabled(
+                            self.pending.is_some()
+                                || self.qftplus().is_some_and(|qftplus| qftplus.installing),
+                        )
                         .on_click(cx.listener(|section, _, _, cx| section.install_builtin(cx))),
                 )
                 .into_any_element(),
@@ -1773,7 +1752,7 @@ impl TongueTraining {
             .map_or("demo", |models| models.active_id.as_str())
     }
 
-    /// The personal model in use, when it isn't the built-in model.
+    /// The personal model in use, when it isn't the QFTPlus Model.
     fn active_model(&self) -> Option<&SavedModel> {
         let active = self.active_id();
         self.trained_models()
@@ -1781,13 +1760,23 @@ impl TongueTraining {
             .find(|model| model.id == active)
     }
 
-    /// Whether the built-in model, which training starts from, or the
-    /// training examples it mixes in still need downloading.
-    fn builtin_missing(&self) -> bool {
-        self.training
-            .as_ref()
-            .and_then(|training| training.builtin.as_ref())
+    /// Whether what training needs, the mouth-camera pair it starts from
+    /// and the training examples it mixes in, still needs downloading.
+    fn training_files_missing(&self) -> bool {
+        self.builtin()
             .is_some_and(|builtin| !builtin.installed || builtin.examples_missing)
+    }
+
+    /// Whether the mouth-camera pair is in place, which the QFTPlus Model's
+    /// download fetches before QFT+'s own model.
+    fn pair_installed(&self) -> bool {
+        self.builtin().is_none_or(|builtin| builtin.installed)
+    }
+
+    /// Whether the QFTPlus Model, which is used unless a trained model is,
+    /// still needs downloading.
+    fn qftplus_missing(&self) -> bool {
+        self.qftplus().is_some_and(|qftplus| !qftplus.installed)
     }
 
     fn recorded(&self) -> bool {
@@ -1871,7 +1860,7 @@ impl TongueTraining {
         }
         let name = self
             .active_model()
-            .map_or_else(|| t!("tongue.builtin_model").to_string(), model_name);
+            .map_or_else(|| t!("tongue.qftplus_model").to_string(), model_name);
         h_flex()
             .flex_none()
             .gap_2()
@@ -1887,7 +1876,7 @@ impl TongueTraining {
             .into_any_element()
     }
 
-    /// The models to choose between: the built-in one, then those trained
+    /// The models to choose between: the QFTPlus Model, then those trained
     /// here, newest first.
     fn models_panel(&self, cx: &Context<Self>) -> AnyElement {
         let locked = self.training_busy() || self.capture_active();
@@ -1905,16 +1894,17 @@ impl TongueTraining {
         } else {
             None
         };
-        // A trained model in use doesn't need the built-in one, so it isn't
-        // offered while it isn't downloaded.
-        let builtin_row = !self.builtin_missing() || self.active_model().is_none();
+        // A trained model in use doesn't need the QFTPlus Model, so it isn't
+        // offered while it isn't downloaded; the panel above offers it.
+        let base_row = !self.qftplus_missing() || self.active_model().is_none();
+        let qftplus_installed = self.qftplus().is_some_and(|qftplus| qftplus.installed);
         let trained_count = self.trained_models().len();
         let transferring = self.transferring();
-        let rows = builtin_row
+        let rows = base_row
             .then(|| {
                 (
                     "demo".to_string(),
-                    t!("tongue.builtin_model").to_string(),
+                    t!("tongue.qftplus_model").to_string(),
                     t!("tongue.not_trained_on_you").to_string(),
                 )
             })
@@ -1932,8 +1922,8 @@ impl TongueTraining {
                 let renaming = self.renaming.as_deref() == Some(id.as_str());
                 let confirming = self.confirm_delete_model.as_deref() == Some(id.as_str());
                 let in_use = id == active;
-                // The built-in model is "in use" only once it's there to use.
-                let missing = id == "demo" && self.builtin_missing();
+                // The QFTPlus Model is "in use" only once it's there to use.
+                let missing = id == "demo" && self.qftplus_missing();
                 let activating = self.pending == Some(Pending::Activate(id.clone()));
                 h_flex()
                     .gap_3()
@@ -1991,8 +1981,8 @@ impl TongueTraining {
                         let export_id = id.clone();
                         let busy = locked || self.pending.is_some() || transferring;
                         // With nothing else to switch to, the model in use can go
-                        // too; the built-in one is then offered again.
-                        let deletable = !in_use || (self.builtin_missing() && trained_count == 1);
+                        // too; the QFTPlus Model is then offered again.
+                        let deletable = !in_use || (self.qftplus_missing() && trained_count == 1);
                         row.child(
                             h_flex()
                                 .gap_1()
@@ -2054,6 +2044,20 @@ impl TongueTraining {
                                             cx.notify();
                                         }))
                                 }),
+                        )
+                    })
+                    .when(!trained && qftplus_installed, |row| {
+                        row.child(
+                            Button::new("remove-qftplus")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Trash)
+                                .tooltip(t!("tongue.qftplus_remove_tooltip"))
+                                .loading(self.pending == Some(Pending::RemoveQftPlus))
+                                .disabled(locked || self.pending.is_some())
+                                .on_click(
+                                    cx.listener(|section, _, _, cx| section.remove_qftplus(cx)),
+                                ),
                         )
                     })
                     .child(if in_use && missing {
@@ -2139,13 +2143,7 @@ impl TongueTraining {
                     ),
             )
             .children(
-                self.builtin_needed()
-                    .then(|| self.builtin_panel(true, cx))
-                    .flatten()
-                    .map(|builtin| div().px(px(18.)).pb_3().child(builtin)),
-            )
-            .children(
-                self.qftplus_panel(cx)
+                self.qftplus_panel(self.active_model().is_none(), cx)
                     .map(|qftplus| div().px(px(18.)).pb_3().child(qftplus)),
             )
             .children(
@@ -2342,12 +2340,12 @@ impl TongueTraining {
                 t!("tongue.record_heading"),
                 t!("tongue.record_lead"),
             ))
-            // Training starts from the built-in model; downloading it now
-            // means it's ready by the time the recording is. With a trained
-            // model in use it isn't pressed on anyone; training asks for it.
+            // Training starts from the mouth-camera pair and mixes in the
+            // examples; downloading them now means they're ready by the time
+            // the recording is.
             .when_some(
-                self.builtin_needed()
-                    .then(|| self.builtin_panel(false, cx))
+                self.training_files_missing()
+                    .then(|| self.training_files_panel(false, cx))
                     .flatten(),
                 |panel, builtin| {
                     panel.child(
@@ -2951,18 +2949,18 @@ impl TongueTraining {
                     }))
             });
         let recorded = self.recorded();
-        let builtin_missing = self.builtin_missing();
+        let files_missing = self.training_files_missing();
         let can_train = !busy
             && !self.capture_active()
             && self.pending.is_none()
-            && !builtin_missing
+            && !files_missing
             && !ticked.is_empty()
             && lacking.is_empty();
         let ready = recorded && !ticked.is_empty() && lacking.is_empty();
-        // Training starts from the built-in model, so that comes first; its
-        // download is the next step once it's all that's missing.
-        let base = builtin_missing
-            .then(|| self.builtin_panel(ready, cx))
+        // Training starts from the mouth-camera pair, so that comes first;
+        // its download is the next step once it's all that's missing.
+        let base = files_missing
+            .then(|| self.training_files_panel(ready, cx))
             .flatten();
         let covered = (recorded && !ticked.is_empty() && !busy).then(|| {
             let cells = coverage(&ticked).into_iter().map(|(name, have, needed)| {
@@ -3065,8 +3063,8 @@ impl TongueTraining {
                             .prominent()
                             .icon(IconName::Sparkles)
                             .label(t!("tongue.train"))
-                            // The built-in model's download comes first.
-                            .when(!builtin_missing, |button| button.primary())
+                            // The training files' download comes first.
+                            .when(!files_missing, |button| button.primary())
                             .loading(self.pending == Some(Pending::Train))
                             .disabled(!can_train)
                             .on_click(cx.listener(|section, _, _, cx| section.start_training(cx))),
@@ -4592,32 +4590,34 @@ fn training_time_left(progress: &TrainingProgress) -> String {
 /// What a download brings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Package {
-    /// The built-in pair, then the training examples.
-    Builtin,
-    /// QFT+'s face model.
+    /// What training needs: the mouth-camera pair, then the training
+    /// examples.
+    TrainingFiles,
+    /// The QFTPlus Model: the mouth-camera pair, then QFT+'s face model.
     QftPlus,
 }
 
 /// A model's download as it runs: what it's doing, a meter, how much has
-/// come and how fast, and a way to stop it.
+/// come and how fast, and a way to stop it. Both packages fetch the
+/// mouth-camera pair first, so `pair_installed` tells which part is coming.
 fn download_progress(
     builtin: &BuiltinStatus,
     package: Package,
+    pair_installed: bool,
     busy: bool,
     cx: &Context<TongueTraining>,
 ) -> AnyElement {
     let stage = builtin.stage.unwrap_or_default();
-    let qftplus = package == Package::QftPlus;
-    // The examples come after the model, once it's in place.
-    let examples = !qftplus && builtin.installed;
+    let qftplus = pair_installed && package == Package::QftPlus;
+    let examples = pair_installed && package == Package::TrainingFiles;
     let title = match stage {
         BuiltinStage::Downloading if qftplus => t!("tongue.downloading_qftplus"),
         BuiltinStage::Downloading if examples => t!("tongue.downloading_examples"),
-        BuiltinStage::Downloading => t!("tongue.downloading_builtin"),
+        BuiltinStage::Downloading => t!("tongue.downloading_pair"),
         BuiltinStage::Verifying => t!("tongue.checking_download"),
         BuiltinStage::Unpacking if qftplus => t!("tongue.unpacking_qftplus"),
         BuiltinStage::Unpacking if examples => t!("tongue.unpacking_examples"),
-        BuiltinStage::Unpacking => t!("tongue.unpacking_builtin"),
+        BuiltinStage::Unpacking => t!("tongue.unpacking_pair"),
         _ => t!("tongue.connecting_download"),
     };
     let fraction = match stage {
@@ -4646,7 +4646,7 @@ fn download_progress(
                 .when(stage != BuiltinStage::Unpacking, |row| {
                     row.child(
                         Button::new(match package {
-                            Package::Builtin => "cancel-builtin",
+                            Package::TrainingFiles => "cancel-builtin",
                             Package::QftPlus => "cancel-qftplus",
                         })
                         .ghost()
@@ -4655,7 +4655,7 @@ fn download_progress(
                         .disabled(busy)
                         .on_click(cx.listener(
                             move |section, _, _, cx| match package {
-                                Package::Builtin => section.cancel_builtin(cx),
+                                Package::TrainingFiles => section.cancel_builtin(cx),
                                 Package::QftPlus => section.cancel_qftplus(cx),
                             },
                         )),
@@ -4814,8 +4814,8 @@ fn training_failure(error: &str) -> String {
         t!("tongue.failure_gpu")
     } else if lower.contains("at least one recording") {
         t!("tongue.failure_no_recordings")
-    } else if lower.contains("base model") || lower.contains("built-in") {
-        t!("tongue.failure_builtin")
+    } else if lower.contains("base model") {
+        t!("tongue.failure_training_files")
     } else {
         return t!("tongue.failure", error = error).into();
     };

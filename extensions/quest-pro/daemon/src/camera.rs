@@ -1509,7 +1509,7 @@ pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
         ]
         .into_iter()
         .find(|path| Role::Gate.find(path).is_some())
-        .ok_or("the built-in tongue model is not installed. Download it on the Training page")?
+        .ok_or("the QFTPlus Model isn't downloaded. Download it on the Training page")?
     };
     Ok(model_dir)
 }
@@ -1517,12 +1517,12 @@ pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
 /// The folder of the model pair in use.
 fn model_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    // A trained model in use runs without the built-in one.
+    // A trained model in use runs without the QFTPlus Model's pair.
     let dir = crate::training::selected_dir(&cwd, || base_model_dir(&cwd))?;
     if crate::training::complete_pair(&dir) {
         return Ok(dir);
     }
-    // A universal face model alone: the built-in pair reads the mouth
+    // A universal face model alone: the QFTPlus Model's pair reads the mouth
     // cameras whenever the five cameras don't stream.
     if crate::training::has_face_model(&dir) {
         return base_model_dir(&cwd);
@@ -1547,8 +1547,8 @@ struct FaceChoice {
 
 impl FaceChoice {
     fn current(cwd: &Path) -> Self {
-        // The model in use's folder; for the built-in model, that's where
-        // a built-in face model would sit beside the pair.
+        // The model in use's folder; for the QFTPlus Model, the pair's
+        // folder, where another face model could sit beside it.
         let model = match std::env::var_os("VRFT_FACE_MODEL") {
             Some(path) => Some(PathBuf::from(path)),
             None => crate::training::selected_dir(cwd, || base_model_dir(cwd))

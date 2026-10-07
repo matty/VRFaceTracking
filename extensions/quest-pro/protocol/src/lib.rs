@@ -237,19 +237,21 @@ pub mod routes {
     /// POST a [`RenameModel`](super::RenameModel); answers
     /// [`SavedModel`](super::SavedModel).
     pub const TRAINING_RENAME_MODEL: &str = "/training/models/rename";
-    /// POST: starts installing the built-in model; answers
+    /// POST: starts installing what training needs: the mouth-camera pair
+    /// it starts from and the training examples; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_BUILTIN: &str = "/training/builtin";
-    /// POST: stops installing the built-in model; answers
+    /// POST: stops installing what training needs; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_BUILTIN_CANCEL: &str = "/training/builtin/cancel";
-    /// POST: starts downloading QFT+'s face model; answers
+    /// POST: starts downloading the QFTPlus Model: the mouth-camera pair,
+    /// then QFT+'s face model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS: &str = "/training/qftplus";
-    /// POST: stops downloading QFT+'s face model; answers
+    /// POST: stops downloading the QFTPlus Model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS_CANCEL: &str = "/training/qftplus/cancel";
-    /// POST: removes QFT+'s face model; answers
+    /// POST: removes QFT+'s face model, leaving the pair; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS_REMOVE: &str = "/training/qftplus/remove";
     /// POST an [`ExportModel`](super::ExportModel): starts copying a trained
@@ -967,15 +969,18 @@ pub struct TrainingStatus {
     /// The last job started since VRFT started.
     pub id: Option<String>,
     pub progress: Option<TrainingProgress>,
-    /// The model in use; `demo` is the built-in one.
+    /// The model in use; `demo` is the QFTPlus Model.
     pub active_id: String,
     /// `VRFT_TONGUE_MODEL_DIR` pins the model, so selection is off.
     pub model_override: bool,
-    /// The built-in model pair; absent from daemons that can't install it.
+    /// What training needs: the mouth-camera pair it starts from, and the
+    /// training examples; absent from daemons that can't install them.
     pub builtin: Option<BuiltinStatus>,
-    /// QFT+'s universal face model, which runs on five-camera frames once
-    /// downloaded unless a trained face model is in use; absent from daemons
-    /// that can't install it. `examples_missing` is always false.
+    /// The QFTPlus Model, the base model: QFT+'s universal face model, which
+    /// runs on five-camera frames unless a trained face model is in use, and
+    /// the mouth-camera pair, which reads the mouth cameras alone. Installed
+    /// once both are in place. Absent from daemons that can't install it.
+    /// `examples_missing` is always false.
     pub qftplus: Option<BuiltinStatus>,
     /// The last model export or import since VRFT started; absent from
     /// daemons that can't do either.
@@ -1108,12 +1113,14 @@ pub struct ReportLevel {
     pub frames: u64,
 }
 
-/// The built-in model pair, and the synthetic training examples personal
-/// training mixes in, which download with it.
+/// A download: what training needs (the mouth-camera pair, then the
+/// synthetic training examples personal training mixes in), or the QFTPlus
+/// Model.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BuiltinStatus {
-    /// The pair is in place.
+    /// The pair, or for the QFTPlus Model both it and QFT+'s model, are in
+    /// place.
     pub installed: bool,
     /// The training examples aren't in place yet.
     pub examples_missing: bool,
@@ -1197,7 +1204,7 @@ pub struct TransferStatus {
     pub recordings_already_here: u32,
 }
 
-/// The built-in model and every personal one trained on this PC.
+/// The QFTPlus Model and every personal one trained on this PC.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Models {
@@ -1208,7 +1215,7 @@ pub struct Models {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedModel {
-    /// `demo` for the built-in model, else `<unix ms>-<pid>`.
+    /// `demo` for the QFTPlus Model, else `<unix ms>-<pid>`.
     pub id: String,
     /// What it is: the stereo pair, or the universal face model.
     pub architecture: TrainerArchitecture,

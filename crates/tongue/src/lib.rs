@@ -33,7 +33,7 @@ pub const TARGETS: [&str; 12] = [
     "cheek_puff_right",
 ];
 
-/// The tongue heads, which the built-in pair and recordings made before
+/// The tongue heads, which the mouth-camera pair and recordings made before
 /// cheek puffs were added have alone.
 pub const TONGUE_TARGETS: usize = 10;
 

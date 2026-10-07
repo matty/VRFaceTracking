@@ -1,13 +1,16 @@
-//! Installs the built-in tongue model pair: the v8 demo checkpoints from the
-//! Qpro-Enhanced-FT v0.1.10 release (MIT license), verified by SHA-256.
-//! Files already present are never overwritten, and the release zip is
-//! removed once the pair is out of it. Then the synthetic training examples
-//! that personal training mixes in, from VRFaceTracking's own release.
+//! Installs the QFTPlus Model, the base model: QFT+'s universal face model
+//! (`universal-face-v2`) from QFT+'s own release, only when the user asks for
+//! it on the Training page, since its weights were trained on Ava-256
+//! (CC BY-NC 4.0) and private renders and VRFT never ships them or downloads
+//! them unprompted. With it comes the mouth-camera pair, which reads the
+//! mouth cameras whenever the headset sends only those: the v8 demo
+//! checkpoints from the Qpro-Enhanced-FT v0.1.10 release (MIT license).
 //!
-//! Also installs QFT+'s universal face model (`universal-face-v2`) from
-//! QFT+'s own release, only when the user asks for it on the Training page:
-//! its weights were trained on Ava-256 (CC BY-NC 4.0) and private renders,
-//! so VRFT never ships them or downloads them unprompted.
+//! Also installs what personal training needs: that pair, which training
+//! starts from, and the synthetic training examples it mixes in, from
+//! VRFaceTracking's own release. Every download is verified by SHA-256,
+//! files already present are never overwritten, and each release zip is
+//! removed once its files are out of it.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -35,7 +38,7 @@ const MODEL_RELEASE: Release = Release {
     name: "QproFaceTracking-0.1.10-poc.zip",
     sha256: "db40f4b8331a50ca6c2ec37372f1ab4b44cfbe6d21e09ca04244aaaa339cb18f",
     megabytes: 140,
-    what: "the built-in model",
+    what: "the mouth-camera model",
 };
 /// Rendered training examples (tools/tongue-synth), stored at the model's
 /// input size. Personal training mixes them in, so a model keeps knowing the
@@ -47,7 +50,7 @@ const EXAMPLES_RELEASE: Release = Release {
     megabytes: 123,
     what: "the training examples",
 };
-/// Where the examples unpack, beside the built-in pair, and their files.
+/// Where the examples unpack, beside the mouth-camera pair, and their files.
 const EXAMPLES_DIR: &str = "tongue-synthetic-v4";
 const EXAMPLES_FILES: [&str; 3] = ["metadata.json", "samples.jsonl", "frames.gray8"];
 const MODELS: [(&str, &str); 2] = [
@@ -69,7 +72,7 @@ const QFTPLUS_RELEASE: Release = Release {
     megabytes: 194,
     what: "QFT+'s model",
 };
-/// Where QFT+'s model goes, apart from the built-in pair.
+/// Where QFT+'s model goes, apart from the mouth-camera pair.
 const QFTPLUS_DIR: &str = "models/qftplus";
 /// Where its files sit in the package.
 const QFTPLUS_ENTRY: &str = "lib/app/models";
@@ -90,10 +93,12 @@ const CANCELLED: &str = "cancelled";
 /// What a [`BuiltinModel`] installs.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Package {
-    /// The built-in pair, then the training examples.
+    /// What personal training needs: the mouth-camera pair, then the
+    /// training examples.
     #[default]
     Pair,
-    /// QFT+'s universal face model.
+    /// The QFTPlus Model: the mouth-camera pair, then QFT+'s universal face
+    /// model.
     QftPlus,
 }
 
@@ -138,13 +143,20 @@ pub fn qftplus_model(root: &Path) -> Option<PathBuf> {
         .then(|| dir.join(vrft_tongue::universal_v2::FILE_NAME))
 }
 
-/// Megabytes installing QFT+'s model would still download.
+/// Megabytes installing the QFTPlus Model would still download: QFT+'s
+/// model and the mouth-camera pair.
 pub fn qftplus_megabytes(root: &Path) -> u32 {
-    if qftplus_model(root).is_some() {
+    let pair = if installed(root) {
+        0
+    } else {
+        MODEL_RELEASE.megabytes
+    };
+    let qftplus = if qftplus_model(root).is_some() {
         0
     } else {
         QFTPLUS_RELEASE.megabytes
-    }
+    };
+    pair + qftplus
 }
 
 /// Removes QFT+'s model, leaving anything else in its folder.
@@ -162,7 +174,7 @@ pub fn remove_qftplus(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the built-in pair (or a replacement pair) is in place.
+/// Whether the mouth-camera pair (or a replacement pair) is in place.
 pub fn installed(root: &Path) -> bool {
     let dir = models_dir(root);
     Role::Gate.find(&dir).is_some() && Role::Direction.find(&dir).is_some()
@@ -177,7 +189,7 @@ pub fn examples_dir(root: &Path) -> Option<PathBuf> {
         .then_some(dir)
 }
 
-/// Megabytes an install would still download.
+/// Megabytes installing what training needs would still download.
 pub fn download_megabytes(root: &Path) -> u32 {
     let pair = if installed(root) {
         0
@@ -200,7 +212,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 impl BuiltinModel {
-    /// Installs QFT+'s model rather than the built-in pair.
+    /// Installs the QFTPlus Model rather than what training needs.
     pub fn qftplus() -> Self {
         Self {
             package: Package::QftPlus,
@@ -280,7 +292,12 @@ impl BuiltinModel {
                 self.install_pair(root)?;
                 self.install_examples(root)
             }
-            Package::QftPlus => self.install_qftplus(root),
+            // The pair first: the Training page tells the two downloads
+            // apart by whether the pair is in place yet.
+            Package::QftPlus => {
+                self.install_pair(root)?;
+                self.install_qftplus(root)
+            }
         }
     }
 
@@ -349,7 +366,7 @@ impl BuiltinModel {
         for (name, _) in &missing {
             if dir.join(name).exists() {
                 return Err(format!(
-                    "{} differs from the built-in model; move it away first. VRFaceTracking never overwrites model files.",
+                    "{} differs from the mouth-camera model; move it away first. VRFaceTracking never overwrites model files.",
                     dir.join(name).display()
                 ));
             }
@@ -547,7 +564,10 @@ mod tests {
         let root = scratch("qftplus-files");
         let dir = qftplus_dir(&root);
         fs::create_dir_all(&dir).unwrap();
-        assert_eq!(qftplus_megabytes(&root), QFTPLUS_RELEASE.megabytes);
+        assert_eq!(
+            qftplus_megabytes(&root),
+            MODEL_RELEASE.megabytes + QFTPLUS_RELEASE.megabytes
+        );
         fs::write(dir.join(QFTPLUS_FILES[1].0), b"heads").unwrap();
         assert_eq!(qftplus_model(&root), None);
         fs::write(dir.join(QFTPLUS_FILES[0].0), b"graph").unwrap();
@@ -555,6 +575,13 @@ mod tests {
             qftplus_model(&root),
             Some(dir.join(vrft_tongue::universal_v2::FILE_NAME))
         );
+        // The mouth-camera pair comes with it.
+        assert_eq!(qftplus_megabytes(&root), MODEL_RELEASE.megabytes);
+        let pair = models_dir(&root);
+        fs::create_dir_all(&pair).unwrap();
+        for role in [Role::Gate, Role::Direction] {
+            fs::write(role.safetensors(&pair), b"test").unwrap();
+        }
         assert_eq!(qftplus_megabytes(&root), 0);
 
         fs::write(dir.join("notes.txt"), b"mine").unwrap();
@@ -581,15 +608,15 @@ mod tests {
         fs::create_dir_all(root.join(".local")).unwrap();
         fs::hard_link(&cached, root.join(".local").join(QFTPLUS_RELEASE.name)).unwrap();
         let qftplus = BuiltinModel::qftplus();
-        qftplus.install(&root).unwrap();
+        qftplus.install_qftplus(&root).unwrap();
         assert!(qftplus_model(&root).is_some());
-        assert!(!installed(&root), "the pair is a separate install");
+        assert!(!installed(&root), "the pair comes from its own release");
 
         let graph = qftplus_dir(&root).join(QFTPLUS_FILES[0].0);
         fs::write(&graph, b"other").unwrap();
         fs::remove_file(qftplus_dir(&root).join(QFTPLUS_FILES[1].0)).unwrap();
         assert!(qftplus
-            .install(&root)
+            .install_qftplus(&root)
             .unwrap_err()
             .contains("never overwrites"));
         assert_eq!(fs::read(&graph).unwrap(), b"other");
