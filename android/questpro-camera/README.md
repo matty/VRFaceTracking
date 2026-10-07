@@ -105,7 +105,7 @@ The five-camera stream needs a good 5 GHz or 6 GHz link alongside Virtual Deskto
 
 - A VRFT from before the five-camera stream never sends a hello, so with the setting on it still gets the mouth stream and eye snapshots, exactly as before. Were it sent a 2000 × 400 frame, it would reject the header (`Invalid QPLIVE3 frame header`), drop the connection and keep reconnecting with backoff without ever tracking, which is why the strips go only to a PC that asks and the setting stays off by default.
 - A headset app from before the five-camera stream never reads from the PC; the 24-byte hello of a newer VRFT sits unread in its socket, and VRFT gets the mouth stream as before.
-- A VRFT that gets strips cuts the mouth pair from each for the tongue model, the preview and recordings, cuts the eye pair at the headset's snapshot rate for the pupils, and shows the brow camera on the desktop app's **Mouth** page. Its recordings keep the whole strip and list the cameras in `metadata.json` (see the tongue training guide).
+- A VRFT that gets strips cuts the mouth pair from each for the tongue model, the preview and recordings, cuts the eye pair at the headset's snapshot rate for the pupils, and shows the brow camera on the desktop app's **Eyes** page, under the eye cameras, as the browser preview does. Its recordings keep the whole strip and list the cameras in `metadata.json` (see the tongue training guide).
 
 ## Connection and recovery
 

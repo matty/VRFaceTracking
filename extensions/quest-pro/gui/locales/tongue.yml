@@ -37,7 +37,25 @@ tongue:
   extra_negatives:
     en: "Try this if your tongue shows when it shouldn't, such as while talking or smiling."
   extra_enrollment:
-    en: "With the headset's five cameras on: the universal face model reads every frame against these poses. The newest one is used."
+    en: "With the headset's five cameras on: the face model reads every frame against these poses. Each pose is checked as you go, and one that doesn't come through is asked for once more. A new face setup is used once it gets past its last pose with a clean relaxed face."
+  face_setup_needs_five:
+    en: "Needs All five cameras: turn it on in the headset app."
+  face_setup_unreadable:
+    en: "The face setup in use couldn't be read, so the face model runs without one. Record it again."
+  face_setup_in_use:
+    en: "In use: yours from %{when}. %{tongue}"
+  face_setup_tongue_fitted:
+    en: "Tongue directions fitted."
+  face_setup_tongue_not_fitted:
+    en: "Tongue directions not fitted: that needs all five tongue poses."
+  face_setup_none:
+    en: "None yet. The face model works without one, but fits you better with one."
+  face_setup_missed:
+    en: "Poses that didn't come through"
+  face_setup_miss:
+    en: "%{pose}: %{why}"
+  face_setup_skipped:
+    en: "skipped."
   tip_aim:
     en: "Aim for what the prompt asks, such as “tip only” or “half out”, rather than the extreme. The positions in between matter."
   tip_cameras:
@@ -158,6 +176,26 @@ tongue:
     en: "about %{duration} left"
   download_cancelled:
     en: "Download cancelled · %{size} MB"
+  qftplus_model:
+    en: "QFT+ face model"
+  qftplus_lead:
+    en: "QFT+'s universal face model reads all five cameras for the tongue, cheeks and brows. It downloads from QFT+'s release on GitHub. Its weights were trained on Ava-256 (CC BY-NC 4.0), so it's for non-commercial use only."
+  qftplus_installed:
+    en: "Runs while the headset sends all five cameras, unless the model in use has a face model of its own."
+  qftplus_needs_builtin:
+    en: "Downloaded. It starts once the built-in model is downloaded too, which reads the mouth cameras whenever the headset sends only those."
+  downloading_qftplus:
+    en: "Downloading QFT+'s model"
+  unpacking_qftplus:
+    en: "Unpacking QFT+'s model…"
+  remove:
+    en: "Remove"
+  qftplus_remove_tooltip:
+    en: "Deletes QFT+'s model. The model in use reads the mouth cameras instead."
+  removed:
+    en: "Removed."
+  couldnt_remove:
+    en: "Couldn't remove it"
   export:
     en: "Export with its recordings"
   export_prompt:

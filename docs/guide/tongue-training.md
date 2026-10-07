@@ -67,14 +67,17 @@ With the headset app's **All five cameras** on, VRFT can also run a *universal f
 - the eye and brow cameras go through a third copy, which gives a 480-wide brow embedding;
 - the mouth outputs (cheek puffs, cheek suck, jaw open) read the mouth embedding against your own face setup poses, and the brows read the brow embedding against your own neutral face. Any pose you didn't record is replaced by a learned stand-in, so the model works without a face setup too.
 
-**Face setup.** Under **Extra recordings**, **Face setup** takes about a minute:
+**Face setup.** Under **Extra recordings**, **Face setup** takes about a minute, and needs the headset app's **All five cameras** on. Its poses are QFT+'s own enrolment's:
 
 - a relaxed neutral face;
 - mouth wide open, a kiss, both cheeks puffed, then each cheek on its own;
 - the tongue straight out, then up, down, left and right;
-- cheeks sucked in, eyebrows raised, a frown.
+- cheeks sucked in;
+- the jaw side to side, then a sentence read out loud, both with the tongue in.
 
-The newest face setup is the one in use (`.local/face-enrollment.json`), and the model reloads with it within a second. The face setup does three things:
+Each held pose is checked as it ends, as QFT+ checks its own (`extensions/quest-pro/daemon/src/face_check.rs`). The mouth cameras, each shrunk to 25 × 25 blocks, must have sent at least 3 frames, no more than 30 % of them repeats, at a mean brightness from 10 to 230. Every pose but the relaxed face must differ from it by at least 3 levels on the median frame and hold still while it does. With a tracking module sending, the headset's own tracking must see the open mouth (JawDrop 0.4), the kiss (LipPucker 0.3) and the tongue poses (TongueOut 0.5). A pose that fails is asked for once more ("Once more: …", saying why) while the setup is under 80 seconds in, and a failed attempt's frames are left out like a skipped pose's. When it ends, the Training page lists any pose that still didn't come through, and the recording keeps the checks in `face_setup.json`.
+
+A face setup is put in use (`.local/face-enrollment.json`) only if it gets past its last pose with a clean relaxed face: stopping in the jaw sweep or the reading is fine. One that's stopped before then, or whose relaxed face failed, is kept as a recording, but the face setup in use stays. The Face setup row shows the one in use and whether it fitted your tongue directions. The model reloads with a new face setup within a second, and again when you tick or untick its poses in Review. Deleting the face setup in use leaves the model running without one. The face setup does three things:
 
 - its poses become the model's reference poses for you;
 - the five held tongue poses fit how your tongue reads each way (a ridge regression on the mouth embedding, gains capped at 2), which then sets the tongue's direction;
@@ -88,17 +91,19 @@ Brows need five-camera recordings: a face setup, or rendered sets. Recordings of
 
 A universal model trains for many more passes than fine-tuning the pair; train it on a GPU (see [tools/tongue-remote](../../tools/tongue-remote/README.md)).
 
-**Live.** While five-camera frames arrive and the model in use has a universal face model (`universal-face-v1.safetensors` in its folder, or beside the built-in pair, or named by `VRFT_FACE_MODEL`), it replaces the pair for the tongue and cheek puffs, and sends the brows, cheek suck and jaw it was trained for. When the headset falls back to the mouth stream, the pair takes over. Its values replace the tracking module's only while they are fresh. **Face expressions** (`face_expressions` in the Quest Pro settings) turns the brows, suck and jaw off.
+**Live.** While five-camera frames arrive and the model in use has a universal face model (`universal-face-v1.safetensors` in its folder, or beside the built-in pair, or named by `VRFT_FACE_MODEL`), or QFT+'s model is downloaded (below), it replaces the pair for the tongue and cheek puffs, and sends the brows, cheek suck and jaw it was trained for. When the headset falls back to the mouth stream, the pair takes over. Its values replace the tracking module's only while they are fresh. **Face expressions** (`face_expressions` in the Quest Pro settings) turns the brows, suck and jaw off.
 
-### QFT+'s universal-face-v2 models (opt-in)
+### QFT+'s face model (the base face model)
 
-VRFT can also run a model in QFT+'s `universal-face-v2` format, such as QFT+'s own, with QFT+'s per-frame logic ported to Rust (`crates/tongue/src/universal_v2/`). On the same frames it gives what QFT+ gives, to within 1e-6, in less time: 8.9 s against QFT+'s 15.6 s over a 452-frame replay (`tools/benchmark/qftplus_parity.py`).
+QFT+'s model is the base face model. VRFT can run a model in QFT+'s `universal-face-v2` format, such as QFT+'s own, with QFT+'s per-frame logic ported to Rust (`crates/tongue/src/universal_v2/`). On the same frames it gives what QFT+ gives, to within 1e-6, in less time: 8.9 s against QFT+'s 15.6 s over a 452-frame replay (`tools/benchmark/qftplus_parity.py`).
 
-QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0) and private renders, so they're for **non-commercial use only**. VRFT never ships or downloads them by itself; you fetch them and point VRFT at them:
+QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0) and private renders, so they're for **non-commercial use only**. VRFT never ships them, and downloads them only when you ask:
 
-1. `python tools/benchmark/qftplus.py --fetch` downloads QFT+'s release, checks it, and keeps `universal-face-v2.npz` and `universal-face-v2.area.onnx` in `.local/qftplus/`.
-2. Set `VRFT_FACE_MODEL` to the `.npz` (its `.area.onnx` must sit beside it) and restart VRFT. Both files in the folder of the model in use, or beside the built-in pair, work too; VRFT's own `universal-face-v1.safetensors` wins if both are there.
-3. Record a face setup on the Training page. The model reads its poses as QFT+'s enrolment does: the six anchors, the one-sided puffs and the tongue directions.
+1. On the Training page, under the models, **QFT+ face model** offers a **Download** (194 MB). It downloads QFT+'s v0.4.0-rc.25.2 release package from QFT+'s GitHub, checks its SHA-256, keeps only `universal-face-v2.area.onnx` and `universal-face-v2.npz` (each checked again) in `models/qftplus/`, and deletes the package. To use a copy you already have, put `QproFaceTracking.App-0.4.0-rc.25.2-full.nupkg` in `.local/` first. Like the built-in pair, files already there are never overwritten.
+2. It loads within a second, with nothing to restart. From then on it runs on five-camera frames, unless the model in use has a face model of its own (`universal-face-v1.safetensors` or `universal-face-v2.npz` in its folder, or beside the built-in pair), or `VRFT_FACE_MODEL` names one. The built-in pair, or the trained pair in use, still reads the mouth cameras whenever the headset sends only those, so the built-in model is still needed.
+3. Record a face setup on the Training page. The model reads its poses as QFT+'s enrolment does: the six anchors, the one-sided puffs and the tongue directions. It runs without one too.
+
+**Remove** deletes the two files again; the model in use then reads the mouth cameras as before. For development, `python tools/benchmark/qftplus.py --fetch` keeps a copy in `.local/qftplus/`, which `VRFT_FACE_MODEL` can name.
 
 It runs as QFT+ runs it:
 
@@ -114,7 +119,7 @@ It needs ONNX Runtime, and a tracking module sending the headset's own face trac
 - `.local/tongue-captures/<recording>/`: `frames.gray8` (each frame the views of the cameras `metadata.json` lists in `cameras`, side by side: the mouth pair, 800 × 400, or, while the headset sends all five cameras, the whole 2000 × 400 strip; recordings without `cameras` hold the mouth pair, and training reads the mouth pair of either), `samples.jsonl` (twelve labels per frame, the last two the left and right cheek puffs; ten in recordings made before cheek puffs), `metadata.json`, and optional files listing skipped (`excluded_steps.json`) and unticked (`review.json`) poses. Follow-the-dot samples also store `dot`, the dot's position at that frame; their labels use its position 0.35 seconds earlier, and `metadata.json` keeps every route so labels can be recomputed.
 - `.local/tongue-models/<run>/`: the gate and direction checkpoints (`.safetensors`), `request.json`, `progress.json`, `training.log` and `report.json`. Failed or cancelled runs never become selectable. Models trained by older versions (`.pt`) still load.
 - `.local/tongue-models/<run>/universal-face-v1.safetensors`: a universal face model, with the same `report.json`. A folder with only that runs it beside the built-in pair.
-- `.local/face-enrollment.json`: the face setup in use, `{"recording": "<recording id>"}`.
+- `.local/face-enrollment.json`: the face setup in use, `{"recording": "<recording id>"}`. A face setup recording also keeps `face_setup.json`, each pose's check.
 - `.local/tongue-active.json`: the ID of the model in use. The built-in checkpoints in `models/quest-pro/` are never modified.
 
 Raw recordings, personal weights, reports and the selection are ignored by Git. If `VRFT_TONGUE_MODEL_DIR` is set, it takes priority. New models are still saved but not switched on, and model selection is disabled.

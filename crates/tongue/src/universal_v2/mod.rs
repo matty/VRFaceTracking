@@ -6,10 +6,11 @@
 //! VRFT what it gives in QFT+.
 //!
 //! QFT+'s own model is opt-in only. Its weights were trained on Ava-256 (CC BY-NC 4.0) and
-//! private MetaHuman renders: VRFT never ships or downloads them by itself.
-//! The user points VRFT at a copy (`VRFT_FACE_MODEL`, the `.npz`; its
-//! `.area.onnx` beside it), fetched from QFT+'s release with
-//! `tools/benchmark/qftplus.py --fetch`.
+//! private MetaHuman renders: VRFT never ships them or downloads them
+//! unprompted. The Training page downloads them from QFT+'s release when
+//! the user asks (`models/qftplus/`), or the user points VRFT at a copy
+//! (`VRFT_FACE_MODEL`, the `.npz`; its `.area.onnx` beside it), fetched
+//! with `tools/benchmark/qftplus.py --fetch`.
 //!
 //! Per frame:
 //! 1. The graph reads the raw 2000 x 400 strip and gives the mouth embedding

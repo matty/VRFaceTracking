@@ -346,13 +346,14 @@ const REST_SETTLE: f32 = 1.0;
 
 const MODE_NAMES: &str = "core, direction, negatives, follow, or enrollment";
 
-/// The one-minute face setup, after QFT+'s: a neutral face, then each pose
-/// the universal face model reads frames against, held for
-/// [`ENROLL_HOLD`] seconds after [`ENROLL_RAMP`] to get into it, with a
-/// short rest between. The tongue's directions follow straight out without
-/// a rest, since it stays out; together they fit how the wearer's tongue
-/// reads each way. Two brow poses at the end label the brows for personal
-/// training. Every saved frame is labelled with its slot (`anchor`).
+/// The one-minute face setup, QFT+'s own (`guided_session.py`): a neutral
+/// face, then each pose the universal face model reads frames against,
+/// held for [`ENROLL_HOLD`] seconds after [`ENROLL_RAMP`] to get into it,
+/// with a short rest between. The tongue's directions follow straight out
+/// without a rest, since it stays out; together they fit how the wearer's
+/// tongue reads each way. A jaw sweep and some reading out loud end it,
+/// with the tongue in. Every pose's saved frames are labelled with its
+/// slot (`anchor`).
 const ENROLL_RAMP: f32 = 1.0;
 const ENROLL_HOLD: f32 = 2.0;
 const ENROLL_REST: f32 = 1.0;
@@ -366,16 +367,6 @@ type EnrollPose = (
     &'static [(&'static str, f32)],
     bool,
 );
-const BROWS_RESTING: [(&str, f32); 8] = [
-    ("brow_inner_up_left", 0.0),
-    ("brow_inner_up_right", 0.0),
-    ("brow_outer_up_left", 0.0),
-    ("brow_outer_up_right", 0.0),
-    ("brow_lowerer_left", 0.0),
-    ("brow_lowerer_right", 0.0),
-    ("brow_pinch_left", 0.0),
-    ("brow_pinch_right", 0.0),
-];
 const NEUTRAL_FACE: [(&str, f32); 11] = [
     ("jaw_open", 0.0),
     ("cheek_suck_left", 0.0),
@@ -389,14 +380,14 @@ const NEUTRAL_FACE: [(&str, f32); 11] = [
     ("brow_pinch_left", 0.0),
     ("brow_pinch_right", 0.0),
 ];
-const ENROLL_POSES: [EnrollPose; 15] = [
+const ENROLL_POSES: [EnrollPose; 12] = [
     (
         "Relax and look ahead",
         "Keep your face still and relaxed.",
         Some("neutral"),
         NEUTRAL,
         &NEUTRAL_FACE,
-        true,
+        false,
     ),
     (
         "Open your mouth wide",
@@ -486,47 +477,16 @@ const ENROLL_POSES: [EnrollPose; 15] = [
         &[("cheek_suck_left", 1.0), ("cheek_suck_right", 1.0)],
         true,
     ),
+];
+
+/// The face setup's last steps, after its poses: name, instruction and
+/// seconds. Nothing is checked; the tongue stays in.
+const ENROLL_ENDING: [(&str, &str, f32); 2] = [
+    ("Jaw side to side", "Slowly, teeth apart.", 6.0),
     (
-        "Raise both eyebrows",
-        "As if surprised.",
-        None,
-        NEUTRAL,
-        &[
-            ("brow_inner_up_left", 1.0),
-            ("brow_inner_up_right", 1.0),
-            ("brow_outer_up_left", 1.0),
-            ("brow_outer_up_right", 1.0),
-            ("brow_lowerer_left", 0.0),
-            ("brow_lowerer_right", 0.0),
-            ("brow_pinch_left", 0.0),
-            ("brow_pinch_right", 0.0),
-        ],
-        true,
-    ),
-    (
-        "Frown",
-        "Pull your brows down and together, as if annoyed.",
-        None,
-        NEUTRAL,
-        &[
-            ("brow_inner_up_left", 0.0),
-            ("brow_inner_up_right", 0.0),
-            ("brow_outer_up_left", 0.0),
-            ("brow_outer_up_right", 0.0),
-            ("brow_lowerer_left", 1.0),
-            ("brow_lowerer_right", 1.0),
-            ("brow_pinch_left", 1.0),
-            ("brow_pinch_right", 1.0),
-        ],
-        true,
-    ),
-    (
-        "Relax again",
-        "Let your face go loose and still.",
-        None,
-        NEUTRAL,
-        &BROWS_RESTING,
-        false,
+        "Read this out loud",
+        "The thick path through the thirty thin birch trees bent north, then south, then back again.",
+        9.0,
     ),
 ];
 
@@ -538,27 +498,46 @@ fn enrollment_steps() -> Vec<Step> {
             name: name.into(),
             instruction: instruction.into(),
             seconds: ENROLL_RAMP + ENROLL_HOLD,
-            settle: ENROLL_RAMP,
+            // The relaxed face is already held as it starts.
+            settle: if slot == Some("neutral") {
+                0.0
+            } else {
+                ENROLL_RAMP
+            },
             targets: Some(targets),
             path: None,
             anchor: slot,
             face: (!face.is_empty()).then(|| face.iter().copied().collect()),
         });
         if rest {
-            // All settle, so nothing is saved.
-            steps.push(Step {
-                name: "Relax".into(),
-                instruction: "Let your face go loose.".into(),
-                seconds: ENROLL_REST,
-                settle: ENROLL_REST,
-                targets: Some(NEUTRAL),
-                path: None,
-                anchor: None,
-                face: None,
-            });
+            steps.push(relax_step());
         }
     }
+    steps.extend(ENROLL_ENDING.map(|(name, instruction, seconds)| Step {
+        name: name.into(),
+        instruction: instruction.into(),
+        seconds,
+        settle: 0.0,
+        targets: Some(NEUTRAL),
+        path: None,
+        anchor: None,
+        face: None,
+    }));
     steps
+}
+
+/// The face setup's rest between poses: all settle, so nothing is saved.
+fn relax_step() -> Step {
+    Step {
+        name: "Relax".into(),
+        instruction: "Let your face go loose.".into(),
+        seconds: ENROLL_REST,
+        settle: ENROLL_REST,
+        targets: Some(NEUTRAL),
+        path: None,
+        anchor: None,
+        face: None,
+    }
 }
 
 /// One prompt of a guided recording. Held poses have fixed `targets`;
@@ -720,7 +699,10 @@ fn steps_for(name: &str, seed: u64) -> Option<(&'static str, Vec<Step>)> {
         .map(|(mode, poses)| (mode, poses.iter().map(Step::held).collect()))
 }
 
-use vrft_quest_pro_protocol::{CameraLayout, CaptureMode, PauseReason};
+use crate::face_check::{self, Hold, RETRY_BEFORE_SECONDS};
+use vrft_quest_pro_protocol::{
+    CameraLayout, CaptureMode, FacePoseCheck, FaceSetupReport, PauseReason,
+};
 
 /// Missing input pauses a recording; this long without it ends it.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(10);
@@ -728,6 +710,9 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(10);
 const CAMERA_GAP: Duration = Duration::from_secs(2);
 /// A tracking module TongueOut this old isn't saved beside a frame.
 const NATIVE_FRESH_FOR: Duration = Duration::from_millis(200);
+/// The headset's own values this old don't count in a face setup check, as
+/// in QFT+ (`label_capture.FRESH_NS`).
+const NATIVE_FACE_FRESH_FOR: Duration = Duration::from_millis(100);
 pub use vrft_quest_pro_protocol::CaptureStatus;
 
 #[derive(Serialize)]
@@ -766,6 +751,26 @@ struct Session {
     last_frame_at: Instant,
     /// Where a finished face setup is recorded as the one in use.
     enrollment_file: Option<PathBuf>,
+    /// A face setup's checks of each held pose.
+    checks: Option<FaceChecks>,
+    /// Holds that failed their check, left out like skipped poses.
+    failed_steps: HashSet<usize>,
+}
+
+/// A face setup's checks, as its poses end.
+#[derive(Default)]
+struct FaceChecks {
+    /// The hold being watched.
+    hold: Option<Hold>,
+    /// The steps before this one are checked.
+    checked: usize,
+    /// The relaxed face's blocks, once its hold passed.
+    neutral: Option<Vec<f32>>,
+    last_fingerprint: Option<u64>,
+    /// Slots already asked for once more.
+    retried: HashSet<&'static str>,
+    /// Every hold checked, in order.
+    attempts: Vec<FacePoseCheck>,
 }
 
 impl Session {
@@ -791,9 +796,12 @@ struct Inner {
     session: Option<Session>,
     module_loaded: bool,
     native: Option<(f32, Instant)>,
+    /// The headset's own values a face setup checks its poses against.
+    native_face: Option<(Vec<(&'static str, f32)>, Instant)>,
     last_directory: Option<PathBuf>,
     last_samples: u64,
     message: String,
+    face_setup: Option<FaceSetupReport>,
 }
 
 fn captures_root() -> Result<PathBuf, String> {
@@ -817,6 +825,15 @@ impl CaptureManager {
         let mut inner = self.0.lock().unwrap();
         if inner.module_loaded {
             inner.native = Some((value.clamp(0.0, 1.0), Instant::now()));
+        }
+    }
+
+    /// The headset's own values a face setup's checks read, by Meta's names
+    /// ([`face_check::NATIVE_PREFIXES`]).
+    pub fn update_native_face(&self, values: Vec<(&'static str, f32)>) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.module_loaded {
+            inner.native_face = Some((values, Instant::now()));
         }
     }
 
@@ -881,6 +898,8 @@ impl CaptureManager {
                         .ok()
                 })
                 .flatten(),
+            checks: (mode == "enrollment").then(FaceChecks::default),
+            failed_steps: HashSet::new(),
         });
         inner.message = "Recording started. Follow each prompt.".into();
         log::info!("Tongue capture started: mode={mode}");
@@ -892,6 +911,7 @@ impl CaptureManager {
         finish(
             &mut inner,
             "Recording stopped. Everything recorded so far is kept.",
+            false,
         );
         status_locked(&mut inner)
     }
@@ -916,16 +936,16 @@ impl CaptureManager {
             {
                 session.started = started;
             }
-            let result = fs::write(
-                session.directory.join("excluded_steps.json"),
-                serde_json::to_vec(&serde_json::json!({"excluded_steps": session.skipped_steps}))
-                    .unwrap(),
-            );
+            let result = save_exclusions(session);
             let finished = step == last;
             inner.message = match result {
                 Ok(()) if finished => {
                     log::info!("Tongue capture skipped the last pose step={step}");
-                    finish(&mut inner, "Skipped the last pose. Recording complete.");
+                    finish(
+                        &mut inner,
+                        "Skipped the last pose. Recording complete.",
+                        true,
+                    );
                     return status_locked(&mut inner);
                 }
                 Ok(()) => format!(
@@ -936,6 +956,7 @@ impl CaptureManager {
                     finish(
                         &mut inner,
                         &format!("Couldn't skip the pose ({error}). Delete this recording."),
+                        false,
                     );
                     return status_locked(&mut inner);
                 }
@@ -961,8 +982,10 @@ impl CaptureManager {
     pub fn status(&self) -> CaptureStatus {
         let mut inner = self.0.lock().unwrap();
         if let Some(session) = inner.session.as_mut() {
-            if session_elapsed(session).as_secs_f32() >= session.total_seconds() {
-                finish(&mut inner, "Recording complete.");
+            let elapsed = session_elapsed(session).as_secs_f32();
+            check_holds(session, elapsed);
+            if elapsed >= session.total_seconds() {
+                finish(&mut inner, "Recording complete.", true);
             } else if session.paused_at.is_none() && session.last_frame_at.elapsed() > CAMERA_GAP {
                 auto_pause(session, PauseReason::CamerasStopped);
             } else if let (Some(reason), Some(paused_at)) =
@@ -978,6 +1001,7 @@ impl CaptureManager {
                             "Recording stopped: {why} for {} seconds. Everything recorded so far is kept.",
                             GIVE_UP_AFTER.as_secs()
                         ),
+                        false,
                     );
                 }
             }
@@ -999,6 +1023,12 @@ impl CaptureManager {
         let native = inner
             .native
             .and_then(|(value, at)| (at.elapsed() <= NATIVE_FRESH_FOR).then_some(value));
+        // Only a face setup's checks read them.
+        let native_face = inner
+            .native_face
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() <= NATIVE_FACE_FRESH_FOR)
+            .map(|(values, _)| values.clone());
         let Some(session) = inner.session.as_mut() else {
             return;
         };
@@ -1028,12 +1058,27 @@ impl CaptureManager {
         let elapsed = received_at
             .saturating_duration_since(session.started)
             .as_secs_f32();
+        check_holds(session, elapsed);
         let Some((step, offset)) = session.locate(elapsed) else {
-            finish(&mut inner, "Recording complete.");
+            finish(&mut inner, "Recording complete.", true);
             return;
         };
         let prompt = &session.steps[step];
-        if offset < prompt.settle || session.skipped_steps.contains(&step) {
+        let holding = offset >= prompt.settle && !session.skipped_steps.contains(&step);
+        if let Some(checks) = session.checks.as_mut() {
+            let fingerprint = face_check::fingerprint(&pixels);
+            let frozen = checks.last_fingerprint == Some(fingerprint);
+            checks.last_fingerprint = Some(fingerprint);
+            if holding && prompt.anchor.is_some() {
+                checks.hold.get_or_insert_with(|| Hold::new(step)).observe(
+                    &session.layout,
+                    &pixels,
+                    frozen,
+                    native_face,
+                );
+            }
+        }
+        if !holding {
             return;
         }
         let (targets, dot) = prompt.label(offset - prompt.settle);
@@ -1061,6 +1106,7 @@ impl CaptureManager {
             finish(
                 &mut inner,
                 &format!("Recording stopped: couldn't write to disk ({error})."),
+                false,
             );
         } else if session.samples % 500 == 0 {
             log::info!("Tongue capture: {} frames saved", session.samples);
@@ -1129,8 +1175,11 @@ fn resume(session: &mut Session, from_pose_start: bool) {
     session.last_frame_at = Instant::now();
     if from_pose_start || automatic {
         let elapsed = session_elapsed(session).as_secs_f32();
-        if let Some((_, offset)) = session.locate(elapsed) {
+        if let Some((step, offset)) = session.locate(elapsed) {
             session.started += Duration::from_secs_f32(offset);
+            if let Some(checks) = session.checks.as_mut() {
+                checks.hold = checks.hold.take().filter(|hold| hold.step != step);
+            }
         }
         log::info!("Tongue capture resumed from the start of the interrupted pose");
     }
@@ -1143,30 +1192,28 @@ fn session_elapsed(session: &Session) -> Duration {
         .saturating_duration_since(session.started)
 }
 
-fn finish(inner: &mut Inner, message: &str) {
+/// Ends the recording. `completed`: it reached the end, rather than being
+/// stopped part-way.
+fn finish(inner: &mut Inner, message: &str, completed: bool) {
     if let Some(mut session) = inner.session.take() {
         if let Err(error) = session.frames.flush().and_then(|_| session.labels.flush()) {
             inner.message = format!("Recording stopped: saving failed ({error}).");
         } else {
             inner.message = format!("{message} {} frames saved.", session.samples);
         }
-        // A face setup with frames becomes the one in use.
-        if let (Some(file), true) = (&session.enrollment_file, session.samples > 0) {
-            let id = session
-                .directory
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let written = fs::write(
-                file,
-                serde_json::to_vec_pretty(&serde_json::json!({"recording": id})).unwrap(),
-            );
-            match written {
-                Ok(()) => log::info!("Face setup {id} is now in use"),
-                Err(error) => {
-                    inner.message = format!("Face setup saved, but not put in use ({error}).")
+        if session.checks.is_some() {
+            let report = finish_face_setup(&mut session, completed);
+            inner.message = match &report.problem {
+                Some(problem) => format!("{} {problem}", inner.message),
+                None => {
+                    let (passed, total) = report.passed();
+                    format!(
+                        "{} Face setup in use: {passed} of {total} poses passed.",
+                        inner.message
+                    )
                 }
-            }
+            };
+            inner.face_setup = Some(report);
         }
         inner.last_directory = Some(session.directory);
         inner.last_samples = session.samples;
@@ -1207,6 +1254,7 @@ fn status_locked(inner: &mut Inner) -> CaptureStatus {
             directory: Some(session.directory.display().to_string()),
             native_recent,
             message: inner.message.clone(),
+            face_setup: None,
         }
     } else {
         CaptureStatus {
@@ -1233,9 +1281,215 @@ fn status_locked(inner: &mut Inner) -> CaptureStatus {
                 .map(|p| p.display().to_string()),
             native_recent,
             message: inner.message.clone(),
+            face_setup: inner.face_setup.clone(),
         }
     }
 }
+
+/// Saves the poses left out: skipped, or failing their check.
+fn save_exclusions(session: &Session) -> std::io::Result<()> {
+    let excluded: std::collections::BTreeSet<usize> = session
+        .skipped_steps
+        .union(&session.failed_steps)
+        .copied()
+        .collect();
+    fs::write(
+        session.directory.join("excluded_steps.json"),
+        serde_json::to_vec(&serde_json::json!({ "excluded_steps": excluded })).unwrap(),
+    )
+}
+
+/// Rewrites the recording's steps, after asking for a pose once more.
+fn save_steps(session: &Session) -> Result<(), String> {
+    let path = session.directory.join("metadata.json");
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    metadata["steps"] = serde_json::to_value(&session.steps).map_err(|e| e.to_string())?;
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Checks each face setup hold that ended by `elapsed` seconds in, asking
+/// once more for a pose that failed while there's time, as QFT+ does.
+fn check_holds(session: &mut Session, elapsed: f32) {
+    loop {
+        let current = session
+            .locate(elapsed)
+            .map_or(session.steps.len(), |(step, _)| step);
+        let Some(checks) = session.checks.as_mut() else {
+            return;
+        };
+        if checks.checked >= current {
+            return;
+        }
+        let step = checks.checked;
+        checks.checked += 1;
+        let prompt = &session.steps[step];
+        let Some(slot) = prompt.anchor else {
+            continue;
+        };
+        let hold = checks.hold.take().filter(|hold| hold.step == step);
+        let retry = prompt.name.starts_with(ONCE_MORE);
+        let pose = prompt.name.trim_start_matches(ONCE_MORE).to_string();
+        if session.skipped_steps.contains(&step) {
+            checks.attempts.push(FacePoseCheck {
+                slot: slot.into(),
+                pose,
+                retried: retry,
+                skipped: true,
+                ..FacePoseCheck::default()
+            });
+            continue;
+        }
+        let verdict = hold
+            .unwrap_or_else(|| Hold::new(step))
+            .check(slot, checks.neutral.as_deref());
+        log::info!(
+            "Face setup check: {slot} {} ({} frames){}",
+            if verdict.passed { "passed" } else { "failed" },
+            verdict.frames,
+            verdict
+                .reason
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default()
+        );
+        checks.attempts.push(FacePoseCheck {
+            slot: slot.into(),
+            pose,
+            passed: verdict.passed,
+            retried: retry,
+            skipped: false,
+            reason: verdict.reason.map(str::to_owned),
+        });
+        if verdict.passed {
+            if verdict.mean_blocks.is_some() {
+                checks.neutral = verdict.mean_blocks;
+            }
+            continue;
+        }
+        session.failed_steps.insert(step);
+        if !checks.retried.contains(slot) && elapsed < RETRY_BEFORE_SECONDS {
+            checks.retried.insert(slot);
+            let mut again = prompt.clone();
+            again.name = format!("{ONCE_MORE}{}", prompt.name);
+            again.instruction = format!(
+                "{} {}",
+                verdict.reason.unwrap_or_default(),
+                prompt.instruction
+            );
+            // Poses after it move along, and so do their skips.
+            let at = step + 1;
+            session.steps.splice(at..at, [again, relax_step()]);
+            for steps in [&mut session.skipped_steps, &mut session.failed_steps] {
+                *steps = steps
+                    .iter()
+                    .map(|&index| if index >= at { index + 2 } else { index })
+                    .collect();
+            }
+            if let Err(error) = save_steps(session) {
+                log::warn!("Face setup: couldn't save the retried pose ({error})");
+            }
+        }
+        if let Err(error) = save_exclusions(session) {
+            log::warn!("Face setup: couldn't leave out a failed pose ({error})");
+        }
+    }
+}
+
+/// What a pose asked for once more is called.
+const ONCE_MORE: &str = "Once more: ";
+
+/// Sums up a face setup as it ends, and puts it in use when it reached the
+/// end with a clean relaxed face, as QFT+ does. Otherwise the face setup
+/// in use stays.
+fn finish_face_setup(session: &mut Session, completed: bool) -> FaceSetupReport {
+    let elapsed = if completed {
+        f32::INFINITY
+    } else {
+        session_elapsed(session).as_secs_f32()
+    };
+    check_holds(session, elapsed);
+    // Stopping after the last pose, in the jaw sweep or the reading, still
+    // completes it.
+    let completed = completed
+        || session
+            .steps
+            .iter()
+            .rposition(|step| step.anchor.is_some())
+            .is_none_or(|last| session.checks.as_ref().is_some_and(|c| c.checked > last));
+    let id = session
+        .directory
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let checks = session.checks.as_ref().expect("a face setup");
+    // Each slot as it ended: its passing attempt, else its last.
+    let mut poses: Vec<FacePoseCheck> = Vec::new();
+    for attempt in &checks.attempts {
+        match poses.iter_mut().find(|pose| pose.slot == attempt.slot) {
+            Some(pose) if pose.passed => {}
+            Some(pose) => *pose = attempt.clone(),
+            None => poses.push(attempt.clone()),
+        }
+    }
+    let previous = session
+        .enrollment_file
+        .as_ref()
+        .is_some_and(|file| file.is_file());
+    let keeping = if previous {
+        " Your previous face setup is still in use."
+    } else {
+        ""
+    };
+    let problem = if !completed {
+        Some(format!(
+            "The face setup was stopped before its last pose, so it isn't used.{keeping}"
+        ))
+    } else if checks.neutral.is_none() {
+        Some(format!(
+            "The relaxed face didn't record cleanly, so this face setup isn't used.{keeping} Run the face setup again."
+        ))
+    } else {
+        None
+    };
+    let mut report = FaceSetupReport {
+        recording: id.clone(),
+        in_use: false,
+        problem,
+        poses,
+    };
+    if report.problem.is_none() {
+        if let Some(file) = &session.enrollment_file {
+            let written = fs::write(
+                file,
+                serde_json::to_vec_pretty(&serde_json::json!({"recording": id})).unwrap(),
+            );
+            match written {
+                Ok(()) => {
+                    log::info!("Face setup {id} is now in use");
+                    report.in_use = true;
+                }
+                Err(error) => {
+                    report.problem =
+                        Some(format!("The face setup couldn't be put in use ({error})."))
+                }
+            }
+        }
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&report) {
+        if let Err(error) = fs::write(session.directory.join(FACE_SETUP_REPORT), bytes) {
+            log::warn!("Face setup: couldn't save its report ({error})");
+        }
+    }
+    report
+}
+
+/// A face setup recording's report of its checks.
+pub const FACE_SETUP_REPORT: &str = "face_setup.json";
 
 #[cfg(test)]
 mod tests {
@@ -1284,6 +1538,8 @@ mod tests {
             pause_reason: None,
             last_frame_at: Instant::now(),
             enrollment_file: None,
+            checks: (mode == "enrollment").then(FaceChecks::default),
+            failed_steps: HashSet::new(),
         });
         manager.set_module_loaded(true);
         manager.update_native(0.);
@@ -1433,6 +1689,13 @@ mod tests {
             .iter()
             .filter(|step| step.name == "Relax")
             .all(|step| step.settle >= step.seconds));
+        // QFT+'s poses, and its jaw sweep and reading to end.
+        assert_eq!(slots.len(), 12);
+        let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            names[names.len() - 2..],
+            ["Jaw side to side", "Read this out loud"]
+        );
 
         let (manager, directory) = manager_with("enrollment");
         let pointer = directory.join("face-enrollment.json");
@@ -1445,16 +1708,148 @@ mod tests {
             .unwrap()
             .enrollment_file = Some(pointer.clone());
         manager.record(1, Instant::now(), &mouth(), &vec![0; FRAME_BYTES]);
-        manager.stop();
+        let status = manager.stop();
         let labels = saved_labels(&directory);
         assert_eq!(labels[0]["anchor"], "neutral");
         assert_eq!(labels[0]["face"]["jaw_open"], 0.0);
-        let pointer: serde_json::Value =
-            serde_json::from_slice(&fs::read(pointer).unwrap()).unwrap();
+        // Stopped part-way, it isn't put in use.
+        assert!(!pointer.exists());
+        let report = status.face_setup.unwrap();
+        assert!(!report.in_use);
+        assert!(report
+            .problem
+            .unwrap()
+            .contains("stopped before its last pose"));
+        remove_test_directory(directory);
+    }
+
+    /// A face setup session `seconds` in, with its pointer in its folder.
+    fn face_setup() -> (CaptureManager, PathBuf, PathBuf) {
+        let (manager, directory) = manager_with("enrollment");
+        let pointer = directory.join("face-enrollment.json");
+        manager
+            .0
+            .lock()
+            .unwrap()
+            .session
+            .as_mut()
+            .unwrap()
+            .enrollment_file = Some(pointer.clone());
+        fs::write(directory.join("metadata.json"), br#"{"steps": []}"#).unwrap();
+        (manager, directory, pointer)
+    }
+
+    fn at(manager: &CaptureManager, seconds: f32) {
+        manager.0.lock().unwrap().session.as_mut().unwrap().started =
+            Instant::now() - Duration::from_secs_f32(seconds);
+    }
+
+    /// A still face, its first pixel counting frames so none repeats.
+    fn face(level: u8, sequence: u64) -> Vec<u8> {
+        let mut pixels = vec![level; FRAME_BYTES];
+        pixels[0] = sequence as u8;
+        pixels
+    }
+
+    #[test]
+    fn a_face_setup_pose_that_fails_its_check_is_asked_for_once_more() {
+        let (manager, directory, pointer) = face_setup();
+        // The relaxed face, held from the start to 3 s in.
+        at(&manager, 2.0);
+        for sequence in 0..8 {
+            manager.record(sequence, Instant::now(), &mouth(), &face(100, sequence));
+        }
+        // The open mouth, 4 to 6 s in, looking just the same.
+        at(&manager, 5.0);
+        for sequence in 8..16 {
+            manager.record(sequence, Instant::now(), &mouth(), &face(100, sequence));
+        }
+        at(&manager, 6.2);
+        let status = manager.status();
         assert_eq!(
-            pointer["recording"],
-            directory.file_name().unwrap().to_string_lossy().as_ref()
+            status.pose.as_deref(),
+            Some("Once more: Open your mouth wide")
         );
+        let instruction = status.instruction.unwrap();
+        assert!(
+            instruction.starts_with("Your face looked the same as when relaxed."),
+            "{instruction}"
+        );
+        let exclusions: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("excluded_steps.json")).unwrap())
+                .unwrap();
+        assert_eq!(exclusions["excluded_steps"], serde_json::json!([1]));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("metadata.json")).unwrap()).unwrap();
+        assert_eq!(
+            metadata["steps"][2]["name"],
+            "Once more: Open your mouth wide"
+        );
+
+        // To the end: the relaxed face passed, so it's put in use.
+        at(&manager, 1000.0);
+        let status = manager.status();
+        assert!(!status.active);
+        let report = status.face_setup.unwrap();
+        assert!(report.in_use, "{:?}", report.problem);
+        assert!(pointer.is_file());
+        assert_eq!(report.poses[0].slot, "neutral");
+        assert!(report.poses[0].passed);
+        let jaw = &report.poses[1];
+        assert_eq!(
+            (
+                jaw.slot.as_str(),
+                jaw.pose.as_str(),
+                jaw.passed,
+                jaw.retried
+            ),
+            ("jaw_open", "Open your mouth wide", false, true)
+        );
+        assert_eq!(report.passed(), (1, 12));
+        assert!(directory.join(FACE_SETUP_REPORT).is_file());
+        assert!(status
+            .message
+            .contains("Face setup in use: 1 of 12 poses passed"));
+        remove_test_directory(directory);
+    }
+
+    #[test]
+    fn a_face_setup_stopped_in_its_reading_is_still_used() {
+        let (manager, directory, pointer) = face_setup();
+        at(&manager, 2.0);
+        for sequence in 0..8 {
+            manager.record(sequence, Instant::now(), &mouth(), &face(100, sequence));
+        }
+        // On past every pose, and any asked for once more, to the reading.
+        let mut seconds = 3.0;
+        while manager.status().pose.as_deref() != Some("Read this out loud") {
+            assert!(seconds < 200.0);
+            seconds += 0.5;
+            at(&manager, seconds);
+        }
+        let report = manager.stop().face_setup.unwrap();
+        assert!(report.in_use, "{:?}", report.problem);
+        assert!(pointer.is_file());
+        remove_test_directory(directory);
+    }
+
+    #[test]
+    fn a_face_setup_without_a_clean_relaxed_face_keeps_the_one_in_use() {
+        let (manager, directory, pointer) = face_setup();
+        fs::write(&pointer, br#"{"recording":"before"}"#).unwrap();
+        at(&manager, 1000.0);
+        let report = manager.status().face_setup.unwrap();
+        assert!(!report.in_use);
+        let problem = report.problem.unwrap();
+        assert!(
+            problem.contains("relaxed face didn't record cleanly"),
+            "{problem}"
+        );
+        assert!(
+            problem.contains("previous face setup is still in use"),
+            "{problem}"
+        );
+        assert_eq!(fs::read(&pointer).unwrap(), br#"{"recording":"before"}"#);
         remove_test_directory(directory);
     }
 

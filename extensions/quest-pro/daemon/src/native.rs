@@ -105,6 +105,15 @@ impl NativeFeed {
     }
 }
 
+/// Meta's values whose names start with one of `prefixes`, by name.
+pub(crate) fn named(data: &UnifiedTrackingData, prefixes: &[&str]) -> Vec<(&'static str, f32)> {
+    NAMES
+        .iter()
+        .filter(|(name, _)| prefixes.iter().any(|prefix| name.starts_with(prefix)))
+        .map(|&(name, shape)| (name, data.shapes[shape as usize].weight.clamp(0.0, 1.0)))
+        .collect()
+}
+
 fn snapshot(data: &UnifiedTrackingData, at: Instant) -> Native {
     let values: HashMap<String, f64> = NAMES
         .iter()
@@ -135,6 +144,18 @@ mod tests {
             let expected = f64::from(index as f32 / 100.0);
             assert_eq!(native.values[name], expected, "{name}");
         }
+    }
+
+    #[test]
+    fn named_values_are_the_ones_asked_for() {
+        let mut data = UnifiedTrackingData::default();
+        data.shapes[U::LipPuckerUpperRight as usize].weight = 0.6;
+        data.shapes[U::JawOpen as usize].weight = 0.5;
+        let values = named(&data, &["LipPucker", "JawDrop"]);
+        assert_eq!(
+            values,
+            vec![("JawDrop", 0.5), ("LipPuckerL", 0.0), ("LipPuckerR", 0.6)]
+        );
     }
 
     #[test]

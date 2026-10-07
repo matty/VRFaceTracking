@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 use vrft_api::{UnifiedExpressions, UnifiedTrackingData};
 use vrft_extension::FrameHook;
 use vrft_quest_pro_protocol::{
-    routes, CameraLayout, CaptureCommand, CaptureRequest, FaceModelStatus, FaceValue, Headset,
-    Mismatch, ModelStatus, OutputStatus, PupilMark, Status, TongueSource, Update, BROW_CAMERA,
-    EYE_CAMERAS, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS, PUPILS_HEADER,
-    STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
+    routes, CameraLayout, CaptureCommand, CaptureMode, CaptureRequest, FaceModelStatus, FaceValue,
+    Headset, Mismatch, ModelStatus, OutputStatus, PupilMark, Status, TongueSource, Update,
+    BROW_CAMERA, EYE_CAMERAS, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS,
+    PUPILS_HEADER, STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
 };
 use vrft_tongue::universal::{Enrollment, FaceModel, FACE_TARGETS};
 use vrft_tongue::universal_v2::{UniversalV2, V2Frame};
@@ -309,6 +309,8 @@ impl FrameHook for QuestProOverlay {
             .weight
             .clamp(0.0, 1.0);
         self.capture.update_native(native);
+        self.capture
+            .update_native_face(native::named(data, &crate::face_check::NATIVE_PREFIXES));
         self.pupils.see_eyes(data, &self.settings.get());
         let now = Instant::now();
         self.native.record(data, now);
@@ -1070,6 +1072,13 @@ async fn capture_start(
             "The mouth cameras aren't live yet. Wait for them before recording".into(),
         ));
     }
+    // The face model reads the brows and eyes against it too.
+    if request.mode == CaptureMode::Enrollment && layout != CameraLayout::all() {
+        return Err((
+            StatusCode::CONFLICT,
+            "The face setup needs all five cameras. Turn on All five cameras in the headset app first".into(),
+        ));
+    }
     preview
         .capture
         .start(request.mode.name(), &request.poses, layout)
@@ -1523,13 +1532,17 @@ fn model_dir() -> Result<PathBuf, String> {
 
 /// The universal face model to run on five-camera frames, and the face
 /// setup to enroll, as the model in use and `.local/face-enrollment.json`
-/// say. `VRFT_FACE_MODEL` names a checkpoint to use instead: VRFT's
-/// `.safetensors`, or a `universal-face-v2` model's `.npz` (such as QFT+'s),
-/// with its `.area.onnx` beside it.
+/// say: the model in use's own face model, else QFT+'s once it's downloaded
+/// (`models/qftplus/`). `VRFT_FACE_MODEL` names a checkpoint to use instead:
+/// VRFT's `.safetensors`, or a `universal-face-v2` model's `.npz` (such as
+/// QFT+'s), with its `.area.onnx` beside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FaceChoice {
     model: Option<PathBuf>,
     enrollment: Option<String>,
+    /// When the face setup's poses were last ticked or unticked, so the
+    /// model enrolls again with the poses now in.
+    enrollment_changed: Option<std::time::SystemTime>,
 }
 
 impl FaceChoice {
@@ -1548,13 +1561,25 @@ impl FaceChoice {
                     .into_iter()
                     .map(|name| dir.join(name))
                     .find(|path| path.is_file())
-                }),
+                })
+                .or_else(|| crate::builtin::qftplus_model(cwd)),
         };
         let enrollment = std::fs::read(cwd.join(crate::capture::ENROLLMENT_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| value["recording"].as_str().map(str::to_owned));
-        Self { model, enrollment }
+        let enrollment_changed = enrollment.as_ref().and_then(|id| {
+            let dir = cwd.join(".local/tongue-captures").join(id);
+            ["review.json", "excluded_steps.json"]
+                .iter()
+                .filter_map(|file| std::fs::metadata(dir.join(file)).ok()?.modified().ok())
+                .max()
+        });
+        Self {
+            model,
+            enrollment,
+            enrollment_changed,
+        }
     }
 }
 
@@ -1623,18 +1648,20 @@ impl FaceRuntime {
                 status,
             };
         };
-        let loaded = FaceEngine::load(path).and_then(|mut model| {
+        let loaded = FaceEngine::load(path).map(|mut model| {
             if let Some(id) = &choice.enrollment {
-                let dir = crate::training::safe_child(&cwd.join(".local/tongue-captures"), id)
-                    .map_err(anyhow::Error::msg)?;
-                match Enrollment::from_recording(&dir).and_then(|setup| model.enroll(&setup)) {
-                    Ok(()) => {}
-                    // Without its setup the model still runs, reading every
-                    // anchor as missing.
-                    Err(error) => warn!("Quest Pro face: face setup {id} unusable ({error:#})"),
+                // Without its setup, such as one deleted since, the model
+                // still runs, reading every anchor as missing.
+                let enrolled = crate::training::safe_child(&cwd.join(".local/tongue-captures"), id)
+                    .map_err(anyhow::Error::msg)
+                    .and_then(|dir| Enrollment::from_recording(&dir))
+                    .and_then(|setup| model.enroll(&setup));
+                if let Err(error) = enrolled {
+                    warn!("Quest Pro face: face setup {id} unusable ({error:#})");
+                    status.enrollment_error = Some(format!("{error:#}"));
                 }
             }
-            Ok(model)
+            model
         });
         let model = match loaded {
             Ok(model) => {
@@ -2889,5 +2916,50 @@ mod tests {
         assert!(state.status.ends_with("Update VRFaceTracking"));
         drop(state);
         headset.join().unwrap();
+    }
+
+    #[test]
+    fn qftplus_runs_unless_the_model_in_use_has_its_own_face_model() {
+        if std::env::var_os("VRFT_FACE_MODEL").is_some()
+            || std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some()
+        {
+            eprintln!("skipped: a model override is set");
+            return;
+        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../.local/tongue-tests-rust")
+            .join(format!(
+                "face-choice-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(FaceChoice::current(&root).model, None);
+
+        let qftplus = root.join("models/qftplus");
+        std::fs::create_dir_all(&qftplus).unwrap();
+        std::fs::write(qftplus.join("universal-face-v2.area.onnx"), b"graph").unwrap();
+        std::fs::write(qftplus.join(vrft_tongue::universal_v2::FILE_NAME), b"heads").unwrap();
+        let expected = crate::builtin::qftplus_model(&root);
+        assert!(expected.is_some());
+        assert_eq!(FaceChoice::current(&root).model, expected);
+
+        // A trained model without a face model of its own: QFT+ still runs.
+        let trained = root.join(".local/tongue-models/mine");
+        std::fs::create_dir_all(&trained).unwrap();
+        std::fs::write(root.join(".local/tongue-active.json"), br#"{"id":"mine"}"#).unwrap();
+        assert_eq!(FaceChoice::current(&root).model, expected);
+
+        // One with its own face model: that one runs.
+        let own = trained.join(vrft_tongue::universal::FILE_NAME);
+        std::fs::write(&own, b"weights").unwrap();
+        let chosen = FaceChoice::current(&root).model.unwrap();
+        assert_eq!(
+            std::fs::canonicalize(chosen).unwrap(),
+            std::fs::canonicalize(own).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

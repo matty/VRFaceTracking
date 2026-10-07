@@ -85,13 +85,21 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
         MouthPage::new(
             state.clone(),
             mouth_feed.clone(),
-            brow_feed.clone(),
             launcher.clone(),
             window,
             cx,
         )
     });
-    let eyes = cx.new(|cx| EyesPage::new(state.clone(), eye_feed.clone(), launcher, window, cx));
+    let eyes = cx.new(|cx| {
+        EyesPage::new(
+            state.clone(),
+            eye_feed.clone(),
+            brow_feed.clone(),
+            launcher,
+            window,
+            cx,
+        )
+    });
     let pages = vec![
         PageEntry {
             page: pages::HEADSET,
@@ -241,7 +249,7 @@ impl GuiExtension for QuestProGui {
         self.eye_feed
             .update(cx, |feed, cx| feed.set_watching(page == pages::EYES, cx));
         self.brow_feed
-            .update(cx, |feed, cx| feed.set_watching(page == pages::MOUTH, cx));
+            .update(cx, |feed, cx| feed.set_watching(page == pages::EYES, cx));
     }
 
     fn wants_fast_status(&self, page: PageId) -> bool {

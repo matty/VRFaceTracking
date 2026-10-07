@@ -167,6 +167,24 @@ impl QuestProClient {
             .map(drop)
     }
 
+    /// Starts downloading QFT+'s universal face model.
+    pub fn install_qftplus(&self) -> Result<()> {
+        self.post::<BuiltinStatus>(routes::TRAINING_QFTPLUS, None::<&()>)
+            .map(drop)
+    }
+
+    /// Stops downloading QFT+'s model.
+    pub fn cancel_qftplus(&self) -> Result<()> {
+        self.post::<BuiltinStatus>(routes::TRAINING_QFTPLUS_CANCEL, None::<&()>)
+            .map(drop)
+    }
+
+    /// Removes QFT+'s model.
+    pub fn remove_qftplus(&self) -> Result<()> {
+        self.post::<BuiltinStatus>(routes::TRAINING_QFTPLUS_REMOVE, None::<&()>)
+            .map(drop)
+    }
+
     /// Starts copying a trained model and its recordings into a new folder
     /// inside `folder`; answers the export's serial.
     pub fn export_model(&self, id: &str, folder: std::path::PathBuf) -> Result<u64> {
