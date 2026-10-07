@@ -4,6 +4,8 @@ vrft_d is a modular Rust daemon that reads face tracking data from hardware and 
 
 With the companion Quest Pro camera APK, VRFT can discover a live stereo feed and add enhanced tongue expressions to its VRChat output. The APK can also stream each eye's own gaze, so avatar eyes converge on close objects. VRFT automatically uses the active tracking module's tongue and gaze values if the headset stream becomes stale. See [Quest Pro enhanced tongue tracking and independent eye gaze](docs/guide/getting-started.md#quest-pro-enhanced-tongue-tracking-and-independent-eye-gaze) for setup.
 
+![The VRFT app's Home page](docs/images/app-home.png)
+
 **Platform: Windows only.**
 
 ---
