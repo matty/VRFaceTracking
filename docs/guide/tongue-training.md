@@ -95,7 +95,7 @@ A universal model trains for many more passes than fine-tuning the pair; train i
 
 ### QFT+'s face model (the base face model)
 
-VRFT's own universal face model is on hold, and QFT+'s model is the base face model instead. VRFT can run a model in QFT+'s `universal-face-v2` format, such as QFT+'s own, with QFT+'s per-frame logic ported to Rust (`crates/tongue/src/universal_v2/`). On the same frames it gives what QFT+ gives, to within 1e-6, in less time: 8.9 s against QFT+'s 15.6 s over a 452-frame replay (`tools/benchmark/qftplus_parity.py`).
+QFT+'s model is the base face model. VRFT can run a model in QFT+'s `universal-face-v2` format, such as QFT+'s own, with QFT+'s per-frame logic ported to Rust (`crates/tongue/src/universal_v2/`). On the same frames it gives what QFT+ gives, to within 1e-6, in less time: 8.9 s against QFT+'s 15.6 s over a 452-frame replay (`tools/benchmark/qftplus_parity.py`).
 
 QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0) and private renders, so they're for **non-commercial use only**. VRFT never ships them, and downloads them only when you ask:
 
