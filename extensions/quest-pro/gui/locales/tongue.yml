@@ -177,9 +177,9 @@ tongue:
   download_cancelled:
     en: "Download cancelled · %{size} MB"
   qftplus_model:
-    en: "QFT+ face model"
+    en: "QFTPlus Model"
   qftplus_lead:
-    en: "QFT+'s universal face model reads all five cameras for the tongue, cheeks and brows. It downloads from QFT+'s release on GitHub. Its weights were trained on Ava-256 (CC BY-NC 4.0), so it's for non-commercial use only."
+    en: "Reads all five cameras for the tongue, cheeks and brows."
   qftplus_installed:
     en: "Runs while the headset sends all five cameras, unless the model in use has a face model of its own."
   qftplus_needs_builtin:
