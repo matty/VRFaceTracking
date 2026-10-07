@@ -6,6 +6,7 @@ mod builtin;
 mod camera;
 mod capture;
 mod eye;
+mod face_check;
 mod native;
 mod priority;
 mod pupil;

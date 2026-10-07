@@ -94,6 +94,7 @@ pub struct TrainingManager {
     capture: CaptureManager,
     job: Arc<Mutex<Job>>,
     builtin: BuiltinModel,
+    qftplus: BuiltinModel,
     transfers: Transfers,
 }
 
@@ -104,6 +105,7 @@ impl TrainingManager {
             capture,
             job: Arc::new(Mutex::new(Job::default())),
             builtin: BuiltinModel::default(),
+            qftplus: BuiltinModel::qftplus(),
             transfers: Transfers::default(),
         }
     }
@@ -175,6 +177,9 @@ pub fn routes(manager: TrainingManager) -> Router {
         .route(routes::TRAINING_RENAME_MODEL, post(rename_model))
         .route(routes::TRAINING_BUILTIN, post(install_builtin))
         .route(routes::TRAINING_BUILTIN_CANCEL, post(cancel_builtin))
+        .route(routes::TRAINING_QFTPLUS, post(install_qftplus))
+        .route(routes::TRAINING_QFTPLUS_CANCEL, post(cancel_qftplus))
+        .route(routes::TRAINING_QFTPLUS_REMOVE, post(remove_qftplus))
         .route(routes::TRAINING_EXPORT_MODEL, post(export_model))
         .route(routes::TRAINING_IMPORT_MODEL, post(import_model))
         .with_state(manager)
@@ -403,6 +408,15 @@ async fn delete_recording(
         return Err(bad("Not a recording"));
     }
     fs::remove_dir_all(&path).map_err(bad)?;
+    // The face setup in use goes with its recording; the face model then
+    // runs without one until the next.
+    let pointer = manager.root.join(crate::capture::ENROLLMENT_FILE);
+    let in_use = read_json(&pointer)
+        .ok()
+        .is_some_and(|value| value["recording"].as_str() == Some(request.id.as_str()));
+    if in_use {
+        fs::remove_file(&pointer).map_err(bad)?;
+    }
     Ok(Json(RecordingDeleted { deleted: true }))
 }
 
@@ -554,6 +568,7 @@ async fn status(State(manager): State<TrainingManager>) -> Json<TrainingStatus> 
         active_id: active_id(&manager.root),
         model_override: std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some(),
         builtin: Some(builtin_status(&manager)),
+        qftplus: Some(qftplus_status(&manager)),
         transfer: manager.transfers.status(),
     })
 }
@@ -587,6 +602,49 @@ async fn install_builtin(State(manager): State<TrainingManager>) -> Json<Builtin
 async fn cancel_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
     manager.builtin.cancel();
     Json(builtin_status(&manager))
+}
+
+fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
+    let state = manager.qftplus.state();
+    BuiltinStatus {
+        installed: builtin::qftplus_model(&manager.root).is_some(),
+        examples_missing: false,
+        download_megabytes: Some(builtin::qftplus_megabytes(&manager.root)),
+        installing: state.installing,
+        fraction: state.fraction.map(|fraction| fraction as f32),
+        error: state.error,
+        stage: state.stage,
+        received_bytes: state.received,
+        total_bytes: state.total,
+        bytes_per_second: state.bytes_per_second,
+        cancelled: state.cancelled,
+    }
+}
+
+/// Downloads QFT+'s universal face model from QFT+'s release in the
+/// background. Only ever on the user's say-so: its weights are for
+/// non-commercial use.
+async fn install_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+    if builtin::qftplus_megabytes(&manager.root) > 0 {
+        manager.qftplus.start(manager.root.clone());
+    }
+    Json(qftplus_status(&manager))
+}
+
+async fn cancel_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
+    manager.qftplus.cancel();
+    Json(qftplus_status(&manager))
+}
+
+/// Removes QFT+'s model; the face model in use unloads within a second.
+async fn remove_qftplus(
+    State(manager): State<TrainingManager>,
+) -> Result<Json<BuiltinStatus>, ApiError> {
+    if manager.qftplus.state().installing {
+        return Err(bad("Wait for QFT+'s model to finish downloading"));
+    }
+    builtin::remove_qftplus(&manager.root).map_err(bad)?;
+    Ok(Json(qftplus_status(&manager)))
 }
 
 /// Starts copying a trained model and its recordings into a new folder.
@@ -938,8 +996,11 @@ mod tests {
         };
         assert!(delete("not-a-recording").await.is_err());
         assert!(delete("..").await.is_err());
+        let pointer = root.join(crate::capture::ENROLLMENT_FILE);
+        fs::write(&pointer, br#"{"recording":"partial"}"#).unwrap();
         assert!(delete("partial").await.unwrap().0.deleted);
         assert!(!root.join(".local/tongue-captures/partial").exists());
+        assert!(!pointer.exists(), "the face setup in use goes with it");
         assert!(root.join(".local/tongue-captures/basic").exists());
         remove_test_root(root);
     }

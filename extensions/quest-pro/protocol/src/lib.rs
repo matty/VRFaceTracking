@@ -243,6 +243,15 @@ pub mod routes {
     /// POST: stops installing the built-in model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_BUILTIN_CANCEL: &str = "/training/builtin/cancel";
+    /// POST: starts downloading QFT+'s face model; answers
+    /// [`BuiltinStatus`](super::BuiltinStatus).
+    pub const TRAINING_QFTPLUS: &str = "/training/qftplus";
+    /// POST: stops downloading QFT+'s face model; answers
+    /// [`BuiltinStatus`](super::BuiltinStatus).
+    pub const TRAINING_QFTPLUS_CANCEL: &str = "/training/qftplus/cancel";
+    /// POST: removes QFT+'s face model; answers
+    /// [`BuiltinStatus`](super::BuiltinStatus).
+    pub const TRAINING_QFTPLUS_REMOVE: &str = "/training/qftplus/remove";
     /// POST an [`ExportModel`](super::ExportModel): starts copying a trained
     /// model and its recordings to a folder; answers
     /// [`TransferStatus`](super::TransferStatus).
@@ -377,6 +386,9 @@ pub struct FaceModelStatus {
     /// without one.
     pub enrolled: Vec<String>,
     pub enrollment: Option<String>,
+    /// Why the face setup in use couldn't be read, such as its recording
+    /// having been deleted; the model then runs without one.
+    pub enrollment_error: Option<String>,
     /// Whether the face setup fitted the wearer's tongue directions.
     pub tongue_map: bool,
     /// Outputs it wasn't trained for.
@@ -717,6 +729,50 @@ pub struct CaptureStatus {
     /// recordings save its TongueOut beside each frame when it is.
     pub native_recent: bool,
     pub message: String,
+    /// How the last face setup since VRFT started went, once it ended.
+    pub face_setup: Option<FaceSetupReport>,
+}
+
+/// How a face setup went: each pose's check, and whether it's now the one
+/// in use.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaceSetupReport {
+    /// Its recording's id.
+    pub recording: String,
+    /// It replaced the face setup in use.
+    pub in_use: bool,
+    /// Why it didn't, when it didn't.
+    pub problem: Option<String>,
+    /// Each pose checked, in the order shown, after any second try.
+    pub poses: Vec<FacePoseCheck>,
+}
+
+/// One face setup pose's check.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FacePoseCheck {
+    /// The model's slot, such as `tongue_up`.
+    pub slot: String,
+    /// The pose as prompted, such as "Point your tongue up".
+    pub pose: String,
+    pub passed: bool,
+    /// It took a second try.
+    pub retried: bool,
+    /// Skipped by the wearer.
+    pub skipped: bool,
+    /// Why it failed.
+    pub reason: Option<String>,
+}
+
+impl FaceSetupReport {
+    /// The poses that passed, of all those checked.
+    pub fn passed(&self) -> (usize, usize) {
+        (
+            self.poses.iter().filter(|pose| pose.passed).count(),
+            self.poses.len(),
+        )
+    }
 }
 
 /// Why a recording paused by itself.
@@ -917,6 +973,10 @@ pub struct TrainingStatus {
     pub model_override: bool,
     /// The built-in model pair; absent from daemons that can't install it.
     pub builtin: Option<BuiltinStatus>,
+    /// QFT+'s universal face model, which runs on five-camera frames once
+    /// downloaded unless a trained face model is in use; absent from daemons
+    /// that can't install it. `examples_missing` is always false.
+    pub qftplus: Option<BuiltinStatus>,
     /// The last model export or import since VRFT started; absent from
     /// daemons that can't do either.
     pub transfer: Option<TransferStatus>,

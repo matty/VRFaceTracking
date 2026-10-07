@@ -4,9 +4,10 @@
 //! this drives and shows it, as the preview page's Tongue tab does in a
 //! browser.
 use crate::daemon::{
-    BuiltinStage, BuiltinStatus, CaptureCommand, CaptureMode, CaptureStatus, Coverage, Models,
-    QuestProClient, Recording, SavedModel, TrainRequest, TrainerArchitecture, TrainingDevice,
-    TrainingProgress, TrainingStage, TrainingStatus, TransferKind, TransferStatus, CHEEK_POSES,
+    BuiltinStage, BuiltinStatus, CaptureCommand, CaptureMode, CaptureStatus, Coverage,
+    FaceSetupReport, Models, QuestProClient, Recording, SavedModel, TrainRequest,
+    TrainerArchitecture, TrainingDevice, TrainingProgress, TrainingStage, TrainingStatus,
+    TransferKind, TransferStatus, CHEEK_POSES,
 };
 use crate::live::{CameraFeed, QuestProState};
 use crate::speech::Speaker;
@@ -281,6 +282,9 @@ enum Pending {
     DeleteModel(String),
     InstallBuiltin,
     CancelBuiltin,
+    InstallQftPlus,
+    CancelQftPlus,
+    RemoveQftPlus,
     Export(String),
     Import,
     Train,
@@ -521,6 +525,13 @@ impl TongueTraining {
             .and_then(|training| training.builtin.as_ref())
     }
 
+    /// QFT+'s face model; absent from daemons that can't install it.
+    fn qftplus(&self) -> Option<&BuiltinStatus> {
+        self.training
+            .as_ref()
+            .and_then(|training| training.qftplus.as_ref())
+    }
+
     /// A model export or import running.
     fn transfer(&self) -> Option<&TransferStatus> {
         self.training
@@ -542,6 +553,7 @@ impl TongueTraining {
             || self.capture_active()
             || self.training_busy()
             || self.builtin_installing()
+            || self.qftplus().is_some_and(|qftplus| qftplus.installing)
             || self.transferring();
         if !wanted || !self.online(cx) {
             return None;
@@ -1084,6 +1096,191 @@ impl TongueTraining {
         );
     }
 
+    fn install_qftplus(&mut self, cx: &mut Context<Self>) {
+        self.model_message = None;
+        self.request(
+            Pending::InstallQftPlus,
+            |client| client.install_qftplus(),
+            |section, result, _| match result {
+                Ok(()) => {
+                    if let Some(qftplus) = section
+                        .training
+                        .as_mut()
+                        .and_then(|training| training.qftplus.as_mut())
+                    {
+                        qftplus.installing = true;
+                        qftplus.error = None;
+                        qftplus.cancelled = false;
+                        qftplus.stage = Some(BuiltinStage::Connecting);
+                    }
+                }
+                Err(error) => {
+                    section.model_message =
+                        Some(Notice::error(&t!("tongue.couldnt_start_download"), &error))
+                }
+            },
+            cx,
+        );
+    }
+
+    fn cancel_qftplus(&mut self, cx: &mut Context<Self>) {
+        self.request(
+            Pending::CancelQftPlus,
+            |client| client.cancel_qftplus(),
+            |section, result, _| {
+                if let Err(error) = result {
+                    section.model_message = Some(Notice::error("", &error));
+                }
+            },
+            cx,
+        );
+    }
+
+    fn remove_qftplus(&mut self, cx: &mut Context<Self>) {
+        self.model_message = None;
+        self.request(
+            Pending::RemoveQftPlus,
+            |client| client.remove_qftplus(),
+            |section, result, _| match result {
+                Ok(()) => {
+                    if let Some(qftplus) = section
+                        .training
+                        .as_mut()
+                        .and_then(|training| training.qftplus.as_mut())
+                    {
+                        qftplus.installed = false;
+                    }
+                    section.model_message = Some(Notice::new(Tone::Good, t!("tongue.removed")));
+                    section.model_message_until = Some(Instant::now() + SUCCESS_SHOWN_FOR);
+                }
+                Err(error) => {
+                    section.model_message =
+                        Some(Notice::error(&t!("tongue.couldnt_remove"), &error))
+                }
+            },
+            cx,
+        );
+    }
+
+    /// QFT+'s face model: offered for download with its license, its
+    /// download while it runs, or a way to remove it once it's in place.
+    fn qftplus_panel(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let qftplus = self.qftplus()?;
+        if qftplus.installing {
+            return Some(download_progress(
+                qftplus,
+                Package::QftPlus,
+                self.pending.is_some(),
+                cx,
+            ));
+        }
+        let failed = !qftplus.installed && qftplus.error.is_some();
+        let size = qftplus.download_megabytes.unwrap_or(194);
+        // It runs beside a pair, which reads the mouth cameras alone.
+        let without_pair = self.builtin().is_some_and(|builtin| !builtin.installed)
+            && self.active_model().is_none();
+        let state = match &qftplus.error {
+            _ if qftplus.installed && without_pair => t!("tongue.qftplus_needs_builtin"),
+            _ if qftplus.installed => t!("tongue.qftplus_installed"),
+            Some(error) => t!("tongue.download_failed", error = error),
+            None if qftplus.cancelled => t!("tongue.download_cancelled", size = size),
+            None => t!("tongue.builtin_not_downloaded", size = size),
+        };
+        let button = if qftplus.installed {
+            Button::new("remove-qftplus")
+                .ghost()
+                .small()
+                .icon(IconName::Trash)
+                .label(t!("tongue.remove"))
+                .tooltip(t!("tongue.qftplus_remove_tooltip"))
+                .loading(self.pending == Some(Pending::RemoveQftPlus))
+                .disabled(self.pending.is_some())
+                .on_click(cx.listener(|section, _, _, cx| section.remove_qftplus(cx)))
+        } else {
+            Button::new("install-qftplus")
+                .small()
+                .label(if failed {
+                    t!("tongue.try_again")
+                } else {
+                    t!("tongue.download")
+                })
+                .tooltip(t!("tongue.download_tooltip"))
+                .loading(self.pending == Some(Pending::InstallQftPlus))
+                .disabled(self.pending.is_some())
+                .on_click(cx.listener(|section, _, _, cx| section.install_qftplus(cx)))
+        };
+        Some(
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px_3p5()
+                .py_3()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(if failed {
+                    palette::signal_line()
+                } else {
+                    palette::line_strong()
+                })
+                .bg(if failed {
+                    palette::signal_bg()
+                } else {
+                    palette::inset()
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(if failed {
+                            palette::signal()
+                        } else {
+                            palette::text_3()
+                        })
+                        .child(
+                            Icon::new(if qftplus.installed {
+                                IconName::ScanFace
+                            } else {
+                                IconName::Download
+                            })
+                            .size(px(16.)),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(160.))
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_medium()
+                                .child(t!("tongue.qftplus_model")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if failed {
+                                    palette::signal_text()
+                                } else {
+                                    palette::text_3()
+                                })
+                                .child(state),
+                        )
+                        .when(!qftplus.installed, |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_3())
+                                    .child(t!("tongue.qftplus_lead")),
+                            )
+                        }),
+                )
+                .child(button)
+                .into_any_element(),
+        )
+    }
+
     /// Whether the built-in model is wanted: it isn't downloaded and no
     /// trained model is in use instead. Training still needs it, and says so
     /// itself.
@@ -1100,7 +1297,12 @@ impl TongueTraining {
             return None;
         }
         if builtin.installing {
-            return Some(download_progress(builtin, self.pending.is_some(), cx));
+            return Some(download_progress(
+                builtin,
+                Package::Builtin,
+                self.pending.is_some(),
+                cx,
+            ));
         }
         let failed = builtin.error.is_some();
         let size = builtin.download_megabytes.unwrap_or(140);
@@ -1943,6 +2145,10 @@ impl TongueTraining {
                     .map(|builtin| div().px(px(18.)).pb_3().child(builtin)),
             )
             .children(
+                self.qftplus_panel(cx)
+                    .map(|qftplus| div().px(px(18.)).pb_3().child(qftplus)),
+            )
+            .children(
                 self.transfer_panel()
                     .map(|transfer| div().px(px(18.)).pb_3().child(transfer)),
             )
@@ -2081,10 +2287,18 @@ impl TongueTraining {
             .filter(|capture| !capture.message.is_empty())
             .map(|capture| {
                 let complete = capture.message.starts_with("Recording complete");
-                Notice::new(
-                    if complete { Tone::Good } else { Tone::Waiting },
-                    capture.message.clone(),
-                )
+                // A face setup is good once it's in use.
+                let good = match last_face_setup(capture) {
+                    Some(report) => report.in_use,
+                    None => complete,
+                };
+                v_flex()
+                    .gap_2()
+                    .child(Notice::new(
+                        if good { Tone::Good } else { Tone::Waiting },
+                        capture.message.clone(),
+                    ))
+                    .children(last_face_setup(capture).and_then(face_setup_misses))
             });
         let tips = v_flex().children(TIPS.iter().map(|tip| {
             h_flex()
@@ -2243,8 +2457,45 @@ impl TongueTraining {
             .into_any_element()
     }
 
+    /// How the face setup stands: the one in use, and what it fitted; none
+    /// yet; or that it needs the five cameras on.
+    fn face_setup_state(&self, cx: &App) -> Option<(Tone, Cow<'static, str>)> {
+        let status = self.daemon.read(cx).status()?;
+        if !status.five_cameras {
+            return Some((Tone::Waiting, t!("tongue.face_setup_needs_five")));
+        }
+        let face = status.face_model.as_ref()?;
+        if face.enrollment_error.is_some() {
+            return Some((Tone::Problem, t!("tongue.face_setup_unreadable")));
+        }
+        Some(match &face.enrollment {
+            Some(id) => {
+                let made = created_at(id)
+                    .map(|ms| when(ms, Local::now(), true))
+                    .unwrap_or_default();
+                let fitted = if face.tongue_map {
+                    t!("tongue.face_setup_tongue_fitted")
+                } else {
+                    t!("tongue.face_setup_tongue_not_fitted")
+                };
+                (
+                    Tone::Good,
+                    t!("tongue.face_setup_in_use", when = made, tongue = fitted),
+                )
+            }
+            None if face.loaded => (Tone::Waiting, t!("tongue.face_setup_none")),
+            None => return None,
+        })
+    }
+
     /// The optional recordings, each for one kind of movement.
     fn extras_card(&self, can_record: bool, cx: &Context<Self>) -> AnyElement {
+        // The face setup reads every camera.
+        let five_cameras = self
+            .daemon
+            .read(cx)
+            .status()
+            .is_some_and(|status| status.five_cameras);
         let rows = EXTRAS
             .into_iter()
             .enumerate()
@@ -2253,6 +2504,9 @@ impl TongueTraining {
                     || (t!("tongue.recording"), Cow::Borrowed("")),
                     |(_, name, about)| (name(), about()),
                 );
+                let face_setup = mode == CaptureMode::Enrollment;
+                let state = face_setup.then(|| self.face_setup_state(cx)).flatten();
+                let blocked = face_setup && !five_cameras;
                 h_flex()
                     .gap_3()
                     .px_4()
@@ -2277,14 +2531,24 @@ impl TongueTraining {
                                 Tooltip::new(SharedString::from(why())).build(window, cx)
                             })
                             .child(div().text_size(px(13.)).child(name))
-                            .child(div().text_xs().text_color(palette::text_3()).child(about)),
+                            .child(div().text_xs().text_color(palette::text_3()).child(about))
+                            .children(state.map(|(tone, text)| {
+                                div()
+                                    .text_xs()
+                                    .text_color(if tone == Tone::Problem {
+                                        palette::signal_text()
+                                    } else {
+                                        palette::text_2()
+                                    })
+                                    .child(text)
+                            })),
                     )
                     .child(
                         Button::new(SharedString::from(format!("record-{}", mode.name())))
                             .small()
                             .label(t!("tongue.record"))
                             .loading(self.pending == Some(Pending::StartRecording(mode)))
-                            .disabled(!can_record)
+                            .disabled(!can_record || blocked)
                             .on_click(cx.listener(move |section, _, window, cx| {
                                 window.focus(&section.focus, cx);
                                 section.start_recording(mode, cx)
@@ -4236,6 +4500,49 @@ fn position(need: &str) -> Cow<'static, str> {
     }
 }
 
+/// The last recording's face setup report, when the last recording was a
+/// face setup.
+fn last_face_setup(capture: &CaptureStatus) -> Option<&FaceSetupReport> {
+    let report = capture.face_setup.as_ref()?;
+    let directory = capture.directory.as_deref()?;
+    std::path::Path::new(directory)
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy() == report.recording)
+        .then_some(report)
+}
+
+/// The face setup's poses that didn't pass, and why, one a line.
+fn face_setup_misses(report: &FaceSetupReport) -> Option<Div> {
+    let misses: Vec<_> = report.poses.iter().filter(|pose| !pose.passed).collect();
+    if misses.is_empty() {
+        return None;
+    }
+    Some(
+        v_flex()
+            .gap_1()
+            .px_3p5()
+            .child(
+                div()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(palette::text_2())
+                    .child(t!("tongue.face_setup_missed")),
+            )
+            .children(misses.into_iter().map(|pose| {
+                let why = if pose.skipped {
+                    t!("tongue.face_setup_skipped").into_owned()
+                } else {
+                    pose.reason.clone().unwrap_or_default()
+                };
+                div().text_xs().text_color(palette::text_3()).child(t!(
+                    "tongue.face_setup_miss",
+                    pose = pose.pose,
+                    why = why
+                ))
+            })),
+    )
+}
+
 /// When a recording or model was made, from the milliseconds its ID starts with.
 fn created_at(id: &str) -> Option<i64> {
     id.split('-').next()?.parse().ok()
@@ -4282,20 +4589,33 @@ fn training_time_left(progress: &TrainingProgress) -> String {
     }
 }
 
-/// The built-in model's download as it runs: what it's doing, a meter, how
-/// much has come and how fast, and a way to stop it.
+/// What a download brings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Package {
+    /// The built-in pair, then the training examples.
+    Builtin,
+    /// QFT+'s face model.
+    QftPlus,
+}
+
+/// A model's download as it runs: what it's doing, a meter, how much has
+/// come and how fast, and a way to stop it.
 fn download_progress(
     builtin: &BuiltinStatus,
+    package: Package,
     busy: bool,
     cx: &Context<TongueTraining>,
 ) -> AnyElement {
     let stage = builtin.stage.unwrap_or_default();
+    let qftplus = package == Package::QftPlus;
     // The examples come after the model, once it's in place.
-    let examples = builtin.installed;
+    let examples = !qftplus && builtin.installed;
     let title = match stage {
+        BuiltinStage::Downloading if qftplus => t!("tongue.downloading_qftplus"),
         BuiltinStage::Downloading if examples => t!("tongue.downloading_examples"),
         BuiltinStage::Downloading => t!("tongue.downloading_builtin"),
         BuiltinStage::Verifying => t!("tongue.checking_download"),
+        BuiltinStage::Unpacking if qftplus => t!("tongue.unpacking_qftplus"),
         BuiltinStage::Unpacking if examples => t!("tongue.unpacking_examples"),
         BuiltinStage::Unpacking => t!("tongue.unpacking_builtin"),
         _ => t!("tongue.connecting_download"),
@@ -4325,12 +4645,20 @@ fn download_progress(
                 // Unpacking is over in moments and can't stop part-way.
                 .when(stage != BuiltinStage::Unpacking, |row| {
                     row.child(
-                        Button::new("cancel-builtin")
-                            .ghost()
-                            .xsmall()
-                            .label(t!("tongue.cancel"))
-                            .disabled(busy)
-                            .on_click(cx.listener(|section, _, _, cx| section.cancel_builtin(cx))),
+                        Button::new(match package {
+                            Package::Builtin => "cancel-builtin",
+                            Package::QftPlus => "cancel-qftplus",
+                        })
+                        .ghost()
+                        .xsmall()
+                        .label(t!("tongue.cancel"))
+                        .disabled(busy)
+                        .on_click(cx.listener(
+                            move |section, _, _, cx| match package {
+                                Package::Builtin => section.cancel_builtin(cx),
+                                Package::QftPlus => section.cancel_qftplus(cx),
+                            },
+                        )),
                     )
                 }),
         )

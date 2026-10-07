@@ -3,6 +3,11 @@
 //! Files already present are never overwritten, and the release zip is
 //! removed once the pair is out of it. Then the synthetic training examples
 //! that personal training mixes in, from VRFaceTracking's own release.
+//!
+//! Also installs QFT+'s universal face model (`universal-face-v2`) from
+//! QFT+'s own release, only when the user asks for it on the Training page:
+//! its weights were trained on Ava-256 (CC BY-NC 4.0) and private renders,
+//! so VRFT never ships them or downloads them unprompted.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -55,8 +60,42 @@ const MODELS: [(&str, &str); 2] = [
         "1900e8761c9ceaf89069121af1016ba24c33849836a5b7ee94b4dfd9fc7db396",
     ),
 ];
+/// QFT+'s release whose per-frame logic VRFT's `universal_v2` port matches
+/// (v0.4.0-rc.25.2). Its package holds the model's two files.
+const QFTPLUS_RELEASE: Release = Release {
+    url: "https://github.com/Yeusepe/QFTPlus/releases/download/v0.4.0-rc.25.2/QproFaceTracking.App-0.4.0-rc.25.2-full.nupkg",
+    name: "QproFaceTracking.App-0.4.0-rc.25.2-full.nupkg",
+    sha256: "fffa879943724c5621ecdef42085bcb73aae19a5ccc12b5255d74220ba9bc61d",
+    megabytes: 194,
+    what: "QFT+'s model",
+};
+/// Where QFT+'s model goes, apart from the built-in pair.
+const QFTPLUS_DIR: &str = "models/qftplus";
+/// Where its files sit in the package.
+const QFTPLUS_ENTRY: &str = "lib/app/models";
+/// Its files: the graph, then the heads that name it.
+const QFTPLUS_FILES: [(&str, &str); 2] = [
+    (
+        "universal-face-v2.area.onnx",
+        "991fd0bad7afe52865feed0ba9c463254b21663826f704ba04512daa776ea935",
+    ),
+    (
+        vrft_tongue::universal_v2::FILE_NAME,
+        "8995bef488beb9aea3606306be0ae2ba2c4759bfc4b221b1833a5663ff7d5199",
+    ),
+];
 /// What an install stops with when it was cancelled rather than failed.
 const CANCELLED: &str = "cancelled";
+
+/// What a [`BuiltinModel`] installs.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Package {
+    /// The built-in pair, then the training examples.
+    #[default]
+    Pair,
+    /// QFT+'s universal face model.
+    QftPlus,
+}
 
 #[derive(Clone, Default)]
 pub struct InstallState {
@@ -78,10 +117,49 @@ pub struct InstallState {
 pub struct BuiltinModel {
     state: Arc<Mutex<InstallState>>,
     cancel: Arc<AtomicBool>,
+    package: Package,
 }
 
 fn models_dir(root: &Path) -> PathBuf {
     root.join("models/quest-pro")
+}
+
+fn qftplus_dir(root: &Path) -> PathBuf {
+    root.join(QFTPLUS_DIR)
+}
+
+/// QFT+'s model, once both its files are in place: the heads' `.npz`, with
+/// the graph beside it.
+pub fn qftplus_model(root: &Path) -> Option<PathBuf> {
+    let dir = qftplus_dir(root);
+    QFTPLUS_FILES
+        .iter()
+        .all(|(name, _)| dir.join(name).is_file())
+        .then(|| dir.join(vrft_tongue::universal_v2::FILE_NAME))
+}
+
+/// Megabytes installing QFT+'s model would still download.
+pub fn qftplus_megabytes(root: &Path) -> u32 {
+    if qftplus_model(root).is_some() {
+        0
+    } else {
+        QFTPLUS_RELEASE.megabytes
+    }
+}
+
+/// Removes QFT+'s model, leaving anything else in its folder.
+pub fn remove_qftplus(root: &Path) -> Result<(), String> {
+    let dir = qftplus_dir(root);
+    for (name, _) in QFTPLUS_FILES {
+        match fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("couldn't remove {name}: {error}")),
+        }
+    }
+    // Only goes when empty.
+    let _ = fs::remove_dir(&dir);
+    Ok(())
 }
 
 /// Whether the built-in pair (or a replacement pair) is in place.
@@ -122,6 +200,14 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 impl BuiltinModel {
+    /// Installs QFT+'s model rather than the built-in pair.
+    pub fn qftplus() -> Self {
+        Self {
+            package: Package::QftPlus,
+            ..Self::default()
+        }
+    }
+
     pub fn state(&self) -> InstallState {
         self.state.lock().unwrap().clone()
     }
@@ -150,8 +236,12 @@ impl BuiltinModel {
                 ..InstallState::default()
             };
         };
+        let name = match self.package {
+            Package::Pair => "quest-pro-model-download",
+            Package::QftPlus => "qftplus-model-download",
+        };
         std::thread::Builder::new()
-            .name("quest-pro-model-download".into())
+            .name(name.into())
             .spawn(download)
             .expect("couldn't start the model download thread");
     }
@@ -185,8 +275,62 @@ impl BuiltinModel {
     }
 
     fn install(&self, root: &Path) -> Result<(), String> {
-        self.install_pair(root)?;
-        self.install_examples(root)
+        match self.package {
+            Package::Pair => {
+                self.install_pair(root)?;
+                self.install_examples(root)
+            }
+            Package::QftPlus => self.install_qftplus(root),
+        }
+    }
+
+    /// Takes QFT+'s model out of its release package, checking each file.
+    /// Like the pair, files already there are never overwritten.
+    fn install_qftplus(&self, root: &Path) -> Result<(), String> {
+        let dir = qftplus_dir(root);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let missing: Vec<_> = QFTPLUS_FILES
+            .iter()
+            .filter(|(name, hash)| {
+                let path = dir.join(name);
+                !(path.is_file() && sha256_file(&path).as_deref() == Ok(*hash))
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        for (name, _) in &missing {
+            if dir.join(name).exists() {
+                return Err(format!(
+                    "{} differs from QFT+'s model; move it away first. VRFaceTracking never overwrites model files.",
+                    dir.join(name).display()
+                ));
+            }
+        }
+        let archive = self.download(root, &QFTPLUS_RELEASE)?;
+        self.check_cancelled()?;
+        self.set_stage(BuiltinStage::Unpacking);
+        let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        // The graph goes in first, so the heads never appear without it.
+        for (name, hash) in missing {
+            let mut entry = zip
+                .by_name(&format!("{QFTPLUS_ENTRY}/{name}"))
+                .map_err(|_| format!("{name} is missing from QFT+'s release"))?;
+            let pending = dir.join(format!("{name}.download"));
+            let mut out = File::create(&pending).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            drop(out);
+            if sha256_file(&pending)? != *hash {
+                let _ = fs::remove_file(&pending);
+                return Err(format!("{name} failed its SHA-256 check"));
+            }
+            fs::rename(&pending, dir.join(name)).map_err(|e| e.to_string())?;
+        }
+        drop(zip);
+        // The rest of QFT+'s app isn't needed.
+        let _ = fs::remove_file(&archive);
+        Ok(())
     }
 
     fn install_pair(&self, root: &Path) -> Result<(), String> {
@@ -384,6 +528,71 @@ mod tests {
             .unwrap_err()
             .contains("never overwrites"));
         assert_eq!(fs::read(&gate).unwrap(), b"personal");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        repo.join(".local/tongue-tests-rust").join(format!(
+            "{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn qftplus_model_needs_both_files_and_removes_only_them() {
+        let root = scratch("qftplus-files");
+        let dir = qftplus_dir(&root);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(qftplus_megabytes(&root), QFTPLUS_RELEASE.megabytes);
+        fs::write(dir.join(QFTPLUS_FILES[1].0), b"heads").unwrap();
+        assert_eq!(qftplus_model(&root), None);
+        fs::write(dir.join(QFTPLUS_FILES[0].0), b"graph").unwrap();
+        assert_eq!(
+            qftplus_model(&root),
+            Some(dir.join(vrft_tongue::universal_v2::FILE_NAME))
+        );
+        assert_eq!(qftplus_megabytes(&root), 0);
+
+        fs::write(dir.join("notes.txt"), b"mine").unwrap();
+        remove_qftplus(&root).unwrap();
+        assert_eq!(qftplus_model(&root), None);
+        assert!(dir.join("notes.txt").is_file());
+        fs::remove_file(dir.join("notes.txt")).unwrap();
+        remove_qftplus(&root).unwrap();
+        assert!(!dir.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Installs from QFT+'s release package left in `.local/`, without
+    /// downloading; skipped when that package isn't there.
+    #[test]
+    fn installs_qftplus_from_its_verified_release() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let cached = repo.join(".local").join(QFTPLUS_RELEASE.name);
+        if !cached.is_file() {
+            eprintln!("skipped: no cached QFT+ release package");
+            return;
+        }
+        let root = scratch("qftplus");
+        fs::create_dir_all(root.join(".local")).unwrap();
+        fs::hard_link(&cached, root.join(".local").join(QFTPLUS_RELEASE.name)).unwrap();
+        let qftplus = BuiltinModel::qftplus();
+        qftplus.install(&root).unwrap();
+        assert!(qftplus_model(&root).is_some());
+        assert!(!installed(&root), "the pair is a separate install");
+
+        let graph = qftplus_dir(&root).join(QFTPLUS_FILES[0].0);
+        fs::write(&graph, b"other").unwrap();
+        fs::remove_file(qftplus_dir(&root).join(QFTPLUS_FILES[1].0)).unwrap();
+        assert!(qftplus
+            .install(&root)
+            .unwrap_err()
+            .contains("never overwrites"));
+        assert_eq!(fs::read(&graph).unwrap(), b"other");
         fs::remove_dir_all(root).unwrap();
     }
 
