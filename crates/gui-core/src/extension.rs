@@ -29,6 +29,19 @@ pub struct PathSource {
     pub page: PageId,
 }
 
+/// How the app's first-launch setup offers an extension for hardware only
+/// some people have: a question to answer yes or no, and what yes turns on.
+pub struct SetupOffer {
+    /// Such as `Do you have a Quest Pro?`.
+    pub question: SharedString,
+    /// What turning the extension on adds, a line each.
+    pub features: Vec<SharedString>,
+    /// What it needs beyond the hardware, if anything.
+    pub requirements: Option<SharedString>,
+    /// The page to open when setup has turned it on, for its next step.
+    pub next_page: PageId,
+}
+
 /// One page an extension adds to the navigation.
 pub struct PageEntry {
     pub page: PageId,
@@ -50,6 +63,12 @@ pub trait GuiExtension {
     /// The extension's mark, on Modules beside its switch.
     fn icon(&self) -> IconName {
         IconName::Puzzle
+    }
+
+    /// What the first-launch setup asks to turn the extension on. `None`
+    /// leaves it out of setup.
+    fn setup_offer(&self) -> Option<SetupOffer> {
+        None
     }
 
     /// The extension's pages, in navigation order.

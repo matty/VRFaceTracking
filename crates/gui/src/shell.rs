@@ -1,13 +1,15 @@
 //! The window: navigation down the left, from the top of the window, and
 //! the current page beside it under a strip that moves the window and holds
 //! its controls. Home, Modules, Tracking settings, Debug, Logs and Settings
-//! are the app's own; every other page comes from an extension.
+//! are the app's own; every other page comes from an extension. First-launch
+//! setup fills the window, without the navigation.
 use crate::debug::DebugPage;
 use crate::extension_switches::ExtensionSwitches;
 use crate::home::HomePage;
 use crate::logs::LogsPage;
 use crate::modules::ModulesPage;
 use crate::settings::SettingsPage;
+use crate::setup::{self, SetupPage};
 use crate::tracking::TrackingPage;
 use crate::updates::{UpdateState, Updater};
 use gpui_kit::assets::IconName;
@@ -115,6 +117,7 @@ pub struct Workspace {
     tracking: Entity<TrackingPage>,
     debug: Entity<DebugPage>,
     logs: Entity<LogsPage>,
+    setup: Entity<SetupPage>,
     updater: Entity<Updater>,
     /// The navigation shows only its icons.
     nav_collapsed: bool,
@@ -172,6 +175,15 @@ impl Workspace {
         let tracking = cx.new(|cx| TrackingPage::new(daemon.clone(), launcher.clone(), window, cx));
         let debug = cx.new(|cx| DebugPage::new(daemon.clone(), launcher.clone(), window, cx));
         let logs = cx.new(|cx| LogsPage::new(daemon.clone(), launcher.clone(), window, cx));
+        let setup = cx.new(|cx| {
+            SetupPage::new(
+                daemon.clone(),
+                launcher.clone(),
+                extensions.clone(),
+                window,
+                cx,
+            )
+        });
         let subscriptions = vec![
             // The navigation shows how things stand, and an extension the
             // daemon stops running takes its pages with it.
@@ -191,12 +203,20 @@ impl Workspace {
                 this.show(page, cx);
             }),
         ];
+        // A new install opens on setup, until it's finished or skipped.
+        // A config.json that can't be read is left for Settings to report.
+        if let Ok(config) = crate::config_file::read() {
+            if crate::config_file::needs_setup(config.as_ref()) {
+                navigation.update(cx, |navigation, cx| navigation.open(setup::PAGE, cx));
+            }
+        }
         // For capturing pages in development: `VRFT_GUI_PAGE=<page id>`
         // opens on that page. Debug builds only.
         if cfg!(debug_assertions) {
             if let Ok(id) = std::env::var("VRFT_GUI_PAGE") {
                 let extensions = extensions.read(cx);
                 let page = [
+                    setup::PAGE,
                     PageId::HOME,
                     PageId::MODULES,
                     PageId::TRACKING,
@@ -228,6 +248,7 @@ impl Workspace {
             tracking,
             debug,
             logs,
+            setup,
             updater,
             nav_collapsed: false,
             dev_scroll: std::env::var("VRFT_GUI_SCROLL")
@@ -264,6 +285,8 @@ impl Workspace {
         });
         self.logs
             .update(cx, |logs, cx| logs.set_watching(page == PageId::LOGS, cx));
+        self.setup
+            .update(cx, |setup, cx| setup.set_watching(page == setup::PAGE, cx));
         cx.notify();
     }
 
@@ -271,6 +294,7 @@ impl Workspace {
     fn leave_hidden_page(&mut self, cx: &mut Context<Self>) {
         let current = self.navigation.read(cx).current();
         if current == PageId::HOME
+            || current == setup::PAGE
             || current == PageId::SETTINGS
             || current == PageId::MODULES
             || current == PageId::TRACKING
@@ -363,26 +387,7 @@ impl Workspace {
     /// can't be clicked.
     fn brand(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.nav_collapsed;
-        let logo = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .size(px(26.))
-            .rounded(px(8.))
-            // The app icon's own tile: its blue, bright at the top and deep at
-            // the bottom, with the face in white.
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(gpui_kit::rgb(0x1d4ed8), 0.),
-                linear_color_stop(gpui_kit::rgb(0x0b1a4a), 1.),
-            ))
-            .child(
-                svg()
-                    .path(crate::assets::MARK)
-                    .size(px(17.))
-                    .text_color(palette::text()),
-            );
+        let logo = mark_tile(26.);
         let toggle = Button::new("toggle-navigation")
             .ghost()
             .xsmall()
@@ -572,6 +577,14 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.navigation.read(cx).current();
+        if current == setup::PAGE {
+            return div()
+                .size_full()
+                .bg(palette::page())
+                .text_color(palette::text())
+                .child(self.setup.clone())
+                .into_any_element();
+        }
         let page: AnyView = if current == PageId::SETTINGS {
             self.settings.clone().into()
         } else if current == PageId::MODULES {
@@ -624,13 +637,37 @@ impl Render for Workspace {
                             ),
                     ),
             )
+            .into_any_element()
     }
+}
+
+/// VRFT's mark on the app icon's own tile: its blue, bright at the top and
+/// deep at the bottom, with the face in white. `size` is the tile's side.
+pub(crate) fn mark_tile(size: f32) -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(size))
+        .rounded(px((size * 0.31).round()))
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(gpui_kit::rgb(0x1d4ed8), 0.),
+            linear_color_stop(gpui_kit::rgb(0x0b1a4a), 1.),
+        ))
+        .child(
+            svg()
+                .path(crate::assets::MARK)
+                .size(px((size * 0.65).round()))
+                .text_color(palette::text()),
+        )
 }
 
 /// The strip across the top of the page: it moves the window, and holds the
 /// window's own buttons at its right.
 #[derive(IntoElement)]
-struct WindowStrip;
+pub(crate) struct WindowStrip;
 
 impl gpui_kit::RenderOnce for WindowStrip {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {

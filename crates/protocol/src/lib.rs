@@ -139,6 +139,12 @@ pub struct ModuleStatus {
 }
 
 impl ModuleStatus {
+    /// Whether `config.json` names a module at all. A new install has none
+    /// until its first-launch setup chooses one.
+    pub fn chosen(&self) -> bool {
+        !self.name.trim().is_empty()
+    }
+
     /// What to call the module.
     pub fn display_name(&self) -> String {
         self.label
@@ -217,6 +223,8 @@ pub struct Config {
     /// The groups `tuning.adjustment.ranges` can set, in the order to show
     /// them. Empty from a VRFT too old to have tracking tuning.
     pub adjustment_groups: Vec<AdjustmentGroup>,
+    /// The desktop app's first-launch setup was finished or skipped.
+    pub setup_done: bool,
 }
 
 /// The tracking tuning in `config.json`, named as it is there.
@@ -513,6 +521,9 @@ pub struct ConfigPatch {
     /// Replaces all the tracking tuning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tuning: Option<Tuning>,
+    /// Marks the first-launch setup finished, or not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_done: Option<bool>,
 }
 
 /// A JSON body, so a web page can't stop the daemon with a plain cross-site

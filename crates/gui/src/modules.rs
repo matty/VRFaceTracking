@@ -87,7 +87,7 @@ fn busy(modules: Option<&Modules>) -> bool {
 }
 
 /// Whether `entry` matches the search text.
-fn matches(entry: &RegistryModule, query: &str) -> bool {
+pub(crate) fn matches(entry: &RegistryModule, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
         || [
@@ -100,7 +100,7 @@ fn matches(entry: &RegistryModule, query: &str) -> bool {
 }
 
 /// "VRCFT module" or "Native module".
-fn runtime_label(runtime: &str) -> SharedString {
+pub(crate) fn runtime_label(runtime: &str) -> SharedString {
     if runtime == "dotnet" {
         t!("modules.vrcft_module").into()
     } else {
@@ -109,7 +109,7 @@ fn runtime_label(runtime: &str) -> SharedString {
 }
 
 /// Why `module` can't be used, when it can't.
-fn unusable(module: &InstalledModule, modules: &Modules) -> Option<SharedString> {
+pub(crate) fn unusable(module: &InstalledModule, modules: &Modules) -> Option<SharedString> {
     (module.runtime == "dotnet" && !modules.dotnet_host)
         .then(|| t!("modules.needs_dotnet_host").into())
 }

@@ -30,7 +30,9 @@ use live::{CameraFeed, QuestProState};
 use rust_i18n::t;
 use summary::{Tone, TongueReading, TongueState};
 use tongue::TongueTraining;
-use vrft_gui_core::extension::{GuiExtension, GuiHost, PageEntry, PageId, PathSource, StatTile};
+use vrft_gui_core::extension::{
+    GuiExtension, GuiHost, PageEntry, PageId, PathSource, SetupOffer, StatTile,
+};
 use vrft_gui_core::palette::{self, MONO_FONT};
 use vrft_gui_core::widgets::fix_button;
 // Text in `locales/`, in the locale the app chose. Keys missing from a
@@ -148,6 +150,19 @@ impl GuiExtension for QuestProGui {
 
     fn icon(&self) -> IconName {
         IconName::Glasses
+    }
+
+    fn setup_offer(&self) -> Option<SetupOffer> {
+        Some(SetupOffer {
+            question: t!("lib.setup_question").into(),
+            features: vec![
+                t!("lib.setup_tongue").into(),
+                t!("lib.setup_eyes").into(),
+                t!("lib.setup_previews").into(),
+            ],
+            requirements: Some(t!("lib.setup_requirements").into()),
+            next_page: pages::HEADSET,
+        })
     }
 
     fn pages(&self) -> &[PageEntry] {

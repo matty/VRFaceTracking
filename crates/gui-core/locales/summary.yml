@@ -46,6 +46,14 @@ summary:
     en: "Starting up…"
   loading_module:
     en: "Loading the tracking module…"
+  no_module:
+    en: "No tracking module chosen"
+  no_module_detail:
+    en: "Choose the module for your headset or face tracker to start tracking."
+  none_chosen:
+    en: "None chosen"
+  choose_module:
+    en: "Choose one on the Modules page"
   loading_named:
     en: "Loading %{module}…"
   starting_module:

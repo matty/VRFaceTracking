@@ -28,7 +28,7 @@ The daemon is configured via a `config.json` file located alongside the executab
 
 | Section | Parameter | Type | Description |
 | :------ | :-------- | :--- | :---------- |
-| `module` | `active` | string | The tracking module to load: its path under `plugins/` with `/` separators (for a module directly in `plugins/`, its filename). A bare filename, as older configs have, still matches the first module with that name. The desktop app's **Use** writes this and switches modules without a restart. Its runtime (native Rust vs .NET/VRCFT) is auto-detected from the `.dll`'s PE header — no `runtime` field is needed. (A legacy `runtime` value in older configs still parses but is ignored.) |
+| `module` | `active` | string | The tracking module to load: its path under `plugins/` with `/` separators (for a module directly in `plugins/`, its filename). Empty or missing loads no module, as on a new install until the desktop app's first-launch setup chooses one. A bare filename, as older configs have, still matches the first module with that name. The desktop app's **Use** writes this and switches modules without a restart. Its runtime (native Rust vs .NET/VRCFT) is auto-detected from the `.dll`'s PE header — no `runtime` field is needed. (A legacy `runtime` value in older configs still parses but is ignored.) |
 | `module` | `registry_url` | string | Optional. Where the Modules page gets its module list. Defaults to VRCFT's registry, `https://registry.vrcft.io/modules`. |
 | `mutator` | `enabled` | bool | Whether to enable the mutation pipeline. |
 | `mutator` | `smoothness` | float | Smoothing amount (0.0 to 1.0). |
@@ -39,6 +39,7 @@ The daemon is configured via a `config.json` file located alongside the executab
 | `osc` | `send_address` | string | IP address to send OSC data to. For VRChat, only the running VRChat at this address is used; `127.0.0.1` means this PC. |
 | `osc` | `send_port` | int | Port to send OSC data to. For VRChat this is a fallback: once VRChat is found over OSCQuery (mDNS), the port it reports is used. |
 | — | `max_fps` | float | Target update rate for the daemon. |
+| — | `setup_done` | bool | Set by the desktop app once its first-launch setup is finished or skipped. While it's missing and no module is chosen, the app opens on setup. Settings' **Run setup again** opens it any time. |
 
 ## Tracking tuning
 

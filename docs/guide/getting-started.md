@@ -42,6 +42,8 @@ runtime/
   VrcftRuntime.exe ← runs VRCFT (.NET) modules
 ```
 
+On first launch the desktop app opens on a short setup. It asks which tracking module to use, one already in `plugins/` (such as `vd_module.dll`) or one from VRCFT's module registry, then whether you have a Quest Pro, to turn on the Quest Pro add-on. No module is chosen until you pick one, there or later. Settings' **Run setup again** opens it again.
+
 The easiest way to get a tracking module is the desktop app's **Modules** page. It lists VRCFT's module registry (the same modules the VRCFT app offers) and installs, updates and removes them. **Use** switches VRFT to a module, native or .NET, straight away: the running module is unloaded and the new one loaded without restarting VRFT or its extensions. If it doesn't load, the page says why and offers **Try again**. VRFT runs these .NET modules itself through `runtime/VrcftRuntime.exe`, so VRCFT doesn't need to be installed. Modules are made by their authors, not VRFT, so install only ones you trust.
 
 Each module installs into `plugins/registry/<ModuleId>/` with the registry entry saved as `module.json`, the layout VRCFT uses. A folder with a `module.json` counts as one module, the `.dll` its `DllFileName` names, so the dependencies beside it aren't listed as modules. You can copy module folders from a VRCFT install into `plugins/` and they're found the same way. An update to the module in use downloads straight away and replaces it the next time VRFT starts.

@@ -439,6 +439,7 @@ impl DebugPage {
                     .status()
                     .and_then(|status| status.daemon.as_ref())
                     .and_then(|daemon| daemon.module.as_ref())
+                    .filter(|module| module.chosen())
                     .map(|module| module.display_name());
                 (
                     module.unwrap_or_else(|| t!("debug.module").into()).into(),

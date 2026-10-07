@@ -212,6 +212,7 @@ pub fn view(config: &Path, plugins: &Path) -> Result<Config, String> {
                 }
             })
             .collect(),
+        setup_done: parsed.setup_done,
     })
 }
 
@@ -390,6 +391,9 @@ pub fn apply(
         if let Some(tuning) = &patch.tuning {
             write_tuning(section(root, "mutator"), tuning);
         }
+        if let Some(done) = patch.setup_done {
+            root.insert("setup_done".into(), json!(done));
+        }
         Ok(())
     })
 }
@@ -510,6 +514,7 @@ mod tests {
             send_port: Some(9100),
             max_fps: Some(0.0),
             smoothing: Some(0.5),
+            setup_done: Some(true),
             ..ConfigPatch::default()
         };
         apply(&config, &patch, &modules).unwrap();
@@ -521,6 +526,8 @@ mod tests {
         assert!(written["max_fps"].is_null(), "0 means no limit");
         assert_eq!(written["mutator"]["smoothness"], 0.5);
         assert_eq!(written["future"], true, "unknown settings are kept");
+        assert_eq!(written["setup_done"], true);
+        assert!(view(&config, &dir).unwrap().setup_done);
 
         let bad = |patch: ConfigPatch| apply(&config, &patch, &modules).unwrap_err();
         assert!(bad(ConfigPatch {

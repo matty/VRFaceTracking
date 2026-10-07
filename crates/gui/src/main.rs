@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
+mod config_file;
 mod debug;
 mod extension_switches;
 mod extensions;
@@ -10,6 +11,7 @@ mod home;
 mod logs;
 mod modules;
 mod settings;
+mod setup;
 mod shell;
 mod theme;
 mod tracking;

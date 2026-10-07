@@ -189,6 +189,14 @@ pub fn headline(
             t!("summary.loading_module"),
         );
     };
+    if !module.chosen() {
+        return Reading::new(
+            Tone::Waiting,
+            t!("summary.no_module"),
+            t!("summary.no_module_detail"),
+        )
+        .fix(Fix::Open(PageId::MODULES));
+    }
     if module.loading {
         return Reading::new(
             Tone::Waiting,
@@ -264,6 +272,14 @@ pub fn module(status: Option<&Status>, rates: &Rates) -> Reading {
     let Some(module) = &daemon.module else {
         return Reading::new(Tone::Waiting, t!("summary.loading"), "");
     };
+    if !module.chosen() {
+        return Reading::new(
+            Tone::Off,
+            t!("summary.none_chosen"),
+            t!("summary.choose_module"),
+        )
+        .fix(Fix::Open(PageId::MODULES));
+    }
     let runtime = runtime_label(module.runtime.as_deref());
     let name = module.display_name();
     if module.loading {
@@ -308,7 +324,7 @@ pub fn module_state(status: Option<&ModuleStatus>) -> (Tone, Cow<'static, str>) 
 /// Why the module in use didn't load, once VRFT has finished trying.
 pub fn module_failure(status: Option<&ModuleStatus>) -> Option<String> {
     status
-        .filter(|status| !status.loading && !status.loaded)
+        .filter(|status| status.chosen() && !status.loading && !status.loaded)
         .map(|status| {
             status
                 .error
@@ -547,6 +563,7 @@ mod tests {
     #[test]
     fn the_module_in_use_shows_how_loading_went() {
         let mut status = ModuleStatus {
+            name: "vd_module.dll".into(),
             loading: true,
             ..ModuleStatus::default()
         };
@@ -564,5 +581,16 @@ mod tests {
             Some("Failed to load")
         );
         assert_eq!(module_state(None).1, "Chosen");
+    }
+
+    #[test]
+    fn no_module_chosen_points_at_modules() {
+        let mut status = tracking_status();
+        status.daemon.as_mut().unwrap().module = Some(ModuleStatus::default());
+        let reading = headline(&Connection::Online, Some(&status), &LIVE, &Launch::Idle);
+        assert_eq!(reading.value, "No tracking module chosen");
+        assert_eq!(reading.fix, Some(Fix::Open(PageId::MODULES)));
+        assert_eq!(module(Some(&status), &LIVE).tone, Tone::Off);
+        assert_eq!(module_failure(Some(&ModuleStatus::default())), None);
     }
 }
