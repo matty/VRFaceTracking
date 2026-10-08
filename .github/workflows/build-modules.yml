@@ -1,0 +1,90 @@
+name: Build Tracking Modules
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'modules/**'
+      - 'crates/api/**'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'modules/**'
+      - 'crates/api/**'
+  workflow_dispatch:
+
+concurrency:
+  group: build-modules-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  build:
+    name: Build Modules (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build all modules
+        run: >
+          cargo build --release --target x86_64-pc-windows-msvc
+          -p vrft-babble-module
+          -p vrft-cymple-module
+          -p vrft-etvr-module
+          -p vrft-ifacialmocap-module
+          -p vrft-livelink-module
+          -p vrft-meowface-module
+          -p vrft-steamlink-module
+
+      - name: Package modules
+        shell: pwsh
+        run: |
+          $release = "target/x86_64-pc-windows-msvc/release"
+          $out = "tracking-modules"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $modules = @(
+            @{ name = "babble_module";      folder = "babble" }
+            @{ name = "cymple_module";      folder = "cymple" }
+            @{ name = "etvr_module";        folder = "etvr" }
+            @{ name = "ifacialmocap_module"; folder = "ifacialmocap" }
+            @{ name = "livelink_module";    folder = "livelink" }
+            @{ name = "meowface_module";    folder = "meowface" }
+            @{ name = "steamlink_module";   folder = "steamlink" }
+          )
+
+          foreach ($mod in $modules) {
+            $dir = "$out/$($mod.folder)"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            Copy-Item "$release/$($mod.name).dll" "$dir/"
+          }
+
+          Compress-Archive -Path "$out/*" -DestinationPath "tracking-modules.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracking-modules
+          path: tracking-modules.zip
+
+      - name: Publish dev release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload dev tracking-modules.zip --clobber || true
