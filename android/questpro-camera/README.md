@@ -44,14 +44,14 @@ On the PC, launch the Rust daemon from its normal working directory:
 .\vrft_d.exe
 ```
 
-Open the desktop app's Quest Pro pages to see cameras 2 and 3 and the latest frame sequence. (The daemon's browser preview is turned off for now: `BROWSER_PAGES` in `extensions/quest-pro/daemon/src/camera.rs`.) Use `.\vrft_d.exe --extensions-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
+Open the desktop app's Quest Pro pages to see cameras 2 and 3 and the latest frame sequence. (The daemon's browser preview is turned off for now: `BROWSER_PAGES` in `extensions/quest-pro/daemon/src/camera.rs`.) Use `.\vrft_d.exe --extensions-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. The daemon also keeps the address the headset last connected from (`.local/quest-pro-headset.txt` in its working directory) and tries it at start-up alongside mDNS, every 2 to 10 s until something answers. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
 
-For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`, `five_cameras`) and can press Start or Stop (`start_probe`, `stop_probe`). Quest reuses an open panel for a new `am start`, so the extras also work while the app is already open. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
+For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`, `five_cameras`) and can press Start or Stop (`start_probe`, `stop_probe`). While the app is already open, Horizon OS only brings it to the front and drops the extras unless the launch is single-top, so pass `--activity-single-top` (the desktop app does); the extras then arrive in the open panel. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
 
 ```powershell
 $adb = '..\..\..\android-tools\platform-tools\adb.exe'
-& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_enabled true --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true
-& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez stop_probe true
+& $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_enabled true --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true
+& $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez stop_probe true
 & $adb logcat -d -s VRFTCamera:I AndroidRuntime:E '*:S'
 ```
 
@@ -115,23 +115,26 @@ The five-camera stream needs a good 5 GHz or 6 GHz link alongside Virtual Deskto
 - **Relay supervision.** The app checks the relay process every 5 s and restarts it after two checks in a row find it stopped. After five restarts in one stream it gives up and shows the error; press Start again.
 - **Streamer re-injection.** When frames have stopped for 3 s, the relay checks every 5 s whether the streamer is still loaded in `vendor.oculus.hardware.sensors@1.0-service` (for example after the provider restarted) and runs the injector again if not (`STREAMER_MISSING`, `STREAMER_REINJECTED` in logcat under `Relay:`). An injection briefly pauses the provider, so after a failed attempt it waits 60 s before the next. A hung injector is killed after 30 s.
 - **Camera buffers.** The streamer identifies the provider's nine camera buffers by address and dmabuf inode. It checks them when capture starts and about once a second during capture, and finds them again if they changed, rather than reading addresses the provider may have unmapped, which would crash the provider and every tracking sensor with it. This narrows that window; it cannot close it.
-- **mDNS.** The service holds a Wi-Fi multicast lock while it runs, so the PC's mDNS queries reach the headset while Wi-Fi is idle, and retries a failed NSD registration every 30 s.
+- **mDNS.** The service holds a Wi-Fi multicast lock while it runs, so the PC's mDNS queries reach the headset while Wi-Fi is idle, and retries a failed NSD registration every 30 s. A router that repeats mDNS between networks (VLANs) can make Android see a name conflict for the service: it renames it (`VRFT Quest Pro Camera (2)` and so on, logged as `mDNS registered:`) and probes again for a few seconds, without answering queries meanwhile. `dumpsys servicediscovery` on the headset logs each `Found conflict`. The PC's remembered address covers those gaps.
 
 ## Independent eye gaze (experimental)
 
 When the **Independent eye gaze** checkbox is on, the service — before it injects the camera helper — runs a headset-local eye pipeline that exposes raw per-eye visual-axis vectors and streams them to the PC as `QPGAZE1` messages on the same TCP connection. The app does **not** convert to angles, calibrate, filter, or swap eyes; it only pairs the tag 0 / tag 1 detector events. The PC daemon does the angle/calibration/filtering work.
 
-The UI warns that this **temporarily replaces Meta's eye model while streaming and restores the stock model on Stop**.
+The UI warns that this **replaces Meta's eye model, which restarts the headset's tracking once after each reboot, and that turning it off puts the stock model back**.
 
 ### What it changes on the headset, and how it is restored
 
 While active, the pipeline:
 
 1. Reads the stock eye model `/odm/etc/eyetracking/runtime/models/Seacliff_V1_5/fbnet/int8/experimental/bolt/bolt.ptl`, patches it **in memory** (a byte-length-preserving edit that redirects the public gaze reshape from the binocular blend node 50 to the local per-eye node 18, with the member CRCs fixed up), and writes the patch to `/data/local/tmp/vrft-camera/bolt-independent-axes.ptl` (`root:root`, `0644`, SELinux `u:object_r:vendor_configs_file:s0`).
-2. Records the stock value of `persist.device_config.oculus_shared_vision.oculus_eyetracking_enable_experimental_model` and a `restore_pending` flag in `SharedPreferences` **before** mounting, then bind-mounts the patched file over the stock path, sets the property to `true`, and restarts `trackingservice`.
+2. Records the stock value of `persist.device_config.oculus_shared_vision.oculus_eyetracking_enable_experimental_model`, the DeviceConfig flag behind it (`device_config get oculus_shared_vision oculus_eyetracking_enable_experimental_model`) and a `restore_pending` flag in `SharedPreferences` **before** mounting, then bind-mounts the patched file over the stock path, sets the flag to `true` in DeviceConfig and in the property, and restarts `trackingservice`. The property mirrors DeviceConfig, which writes it again on every sync (hourly on the Quest Pro), so setting the property alone lasts only until the next sync.
 3. Adds a uprobe on `/odm/lib64/libtrackingengines.so` in its own tracefs instance `vrft_eye` (event group `vrft_eye`, event `detector_output`) and reads `trace_pipe` for the per-eye vectors. It never touches any other tool's tracefs instance.
+4. Runs a watchdog every 5 s while streaming. If the trace reader has ended (its root `cat` can be killed, and nothing else notices), it sets the trace up again and reads it; the eye status then says how many times the reader restarted, or turns to `error` after five failed restarts in a row. If the property is no longer `true`, for example after a sync from Meta's servers, it sets the flag again.
 
-**Restore** reverses exactly that: it stops the trace (disable, remove the uprobe, kill our `cat`, free and remove the `vrft_eye` instance), stops `trackingservice`, sets the property back to its recorded value, unmounts the bind mount, restarts `trackingservice`, removes the patched file, and clears the flag. Restore runs on the **Stop** button, on service destroy (background thread), and automatically at the next stream start if the `restore_pending` flag is still set (crash recovery). Nothing about the model change survives a completed restore or a reboot (a bind mount does not persist across reboot).
+The tracking service reads the model only as it starts (taking the headset off and on, or turning eye tracking off and on in Settings, doesn't make it read it again), so applying the patch restarts it, and all of the headset's tracking drops for a few seconds. The patch therefore stays between streams. **Stop** only stops the trace and the watchdog. The next start reuses the patch without a restart when the tracking service is the one that loaded it (its pid, the engine profile and the mounted file's hash are kept in `SharedPreferences`); if the service has restarted since, the start applies the patch again, keeping the values recorded before the first time.
+
+**Restore** reverses exactly that: it stops the trace (disable, remove the uprobe, kill our `cat`, free and remove the `vrft_eye` instance), stops `trackingservice`, puts the DeviceConfig flag back (deletes it if it had no value) and sets the property back to their recorded values, unmounts the bind mount, restarts `trackingservice`, removes the patched file, and clears the flag. Restore runs when **Independent eye gaze** is turned off: straight away when no stream runs, otherwise as the restarted stream starts without eye gaze; and at a stream start with eye gaze off while the `restore_pending` flag is still set. When the bind mount has already gone (after a reboot), it puts the flag back without stopping or starting `trackingservice`. A reboot removes the bind mount but not the flag, which is persistent, so until a restore or the next eye-gaze stream the tracking service runs Meta's experimental model unpatched.
 
 ### mount-master requirement
 
@@ -156,20 +159,20 @@ Profile 3 probes the same engine where it publishes the eye data, and reads both
 The APK uses profile 2 on this build unless the alternative probe is chosen over ADB. It has no on-screen control, and it applies from the next stream start:
 
 ```powershell
-& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe true
+& $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe true
 # back to profile 2:
-& $adb shell am start -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe false
+& $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_alt_probe false
 ```
 
 On a build without an alternative (profile 1) the setting is ignored. The running profile shows as **Eye model setup** on the desktop app's Eyes page, and in `QPSTAT1`.
 
 For every profile the app marks a vector invalid (`QPGAZE1` flag bits 0 and 1) unless it is finite with a squared length between 0.25 and 2.25, and VRFT drops such samples.
 
-**Validation note:** profile 1 (`51483620027600340`) is the build the fork established convergence on. **Neither profile 2 nor profile 3 has been confirmed on hardware.** For profile 2, the upstream Qpro-Enhanced-FT README says eye convergence was only tested on `51483620027600340` and may not work on newer firmware, and the Fwooffy fork's release notes say the newer build was probed but a complete convergence session was not established. Profile 3 comes without any recorded validation. To compare them, run a stream with each and check in the Eyes page that samples arrive, that closing one eye doesn't move the other, and that looking near makes the eyes converge. Trying a profile costs the usual tracking-service restarts at stream start and stop. This headset is not currently connected, so none of the on-device eye path in this release has been exercised on hardware.
+**Validation note:** profile 1 (`51483620027600340`) is the build the fork established convergence on. **Profile 2 delivers per-eye samples on hardware** (build `51503870024400340`, October 2026: paired tag 0 / tag 1 vectors of unit length about 20 µs apart, at about 72 Hz on the PC); whether the eyes converge with it hasn't been checked. Profile 3 has not been tried on hardware. For profile 2, the upstream Qpro-Enhanced-FT README says eye convergence was only tested on `51483620027600340` and may not work on newer firmware, and the Fwooffy fork's release notes say the newer build was probed but a complete convergence session was not established. Profile 3 comes without any recorded validation. To compare them, run a stream with each and check in the Eyes page that samples arrive, that closing one eye doesn't move the other, and that looking near makes the eyes converge. Trying a profile costs the usual tracking-service restarts at stream start and stop.
 
 ### Reading logs
 
-All service and eye-pipeline messages are tagged `VRFTCamera`. Relay output (including the `RELAY_LISTENING … eye_fps=<n>` line) is logged with a `Relay:` prefix. The eye state also appears in the app's on-screen status and in each `QPSTAT1` message.
+All service and eye-pipeline messages are tagged `VRFTCamera`. Relay output (including the `RELAY_LISTENING … eye_fps=<n>` line) is logged with a `Relay:` prefix. Status changes are logged, but not each frame count while streaming. While gaze flows, the trace reader logs `Eye trace: <n> gaze samples in the last minute` once a minute; the watchdog logs `Eye trace reader stopped; restarting it` and `Eye model flag was reset`. The eye state also appears in the app's on-screen status and in each `QPSTAT1` message.
 
 ```powershell
 ..\..\..\android-tools\platform-tools\adb.exe logcat -d -s VRFTCamera:I AndroidRuntime:E '*:S'
@@ -182,6 +185,7 @@ If the app is force-stopped or uninstalled while the patched model is mounted (s
 
 ```sh
 adb shell su --mount-master -c 'stop trackingservice'
+adb shell su --mount-master -c 'device_config put oculus_shared_vision oculus_eyetracking_enable_experimental_model false'
 adb shell su --mount-master -c 'setprop persist.device_config.oculus_shared_vision.oculus_eyetracking_enable_experimental_model false'
 adb shell su --mount-master -c "umount '/odm/etc/eyetracking/runtime/models/Seacliff_V1_5/fbnet/int8/experimental/bolt/bolt.ptl'"
 adb shell su --mount-master -c 'start trackingservice'

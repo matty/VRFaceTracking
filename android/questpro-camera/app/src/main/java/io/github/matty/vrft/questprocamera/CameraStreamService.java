@@ -75,7 +75,7 @@ public final class CameraStreamService extends Service {
     private static volatile EyePipeline.EyeStatus eyeStatus;
     /** Whether a stream runs, so the panel can restart it to apply eye gaze. */
     private static volatile boolean active;
-    /** The threads finishing a stop: the relay stop and the eye model restore. */
+    /** The threads finishing a stop: the relay stop and the eye trace stop. */
     private static final Set<Thread> finishing = ConcurrentHashMap.newKeySet();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     /** The newest PC connection. A new one replaces it, so a PC that vanished never blocks the next. */
@@ -186,14 +186,15 @@ public final class CameraStreamService extends Service {
             String root = runRoot("id", 60);
             if (!root.contains("uid=0")) throw new IOException("Magisk did not grant root");
 
-            // Crash recovery: undo a stale eye-model mount left by a previous run.
-            eyePipeline.recoverIfNeeded();
             // Eye pipeline runs before camera injection so the patched model is
-            // active before the tracking service is otherwise disturbed.
+            // active before the tracking service is otherwise disturbed. It
+            // reuses a patch an earlier stream left; with eye gaze off, Meta's
+            // model goes back.
             if (eyeEnabled) {
                 setStatus(Phase.STARTING, "Preparing eye gaze");
                 eyePipeline.start();
             } else {
+                eyePipeline.restore();
                 onEyeStatusChanged();
             }
 
@@ -603,9 +604,12 @@ public final class CameraStreamService extends Service {
     private static String quote(String path) { return "'" + path.replace("'", "'\\''") + "'"; }
 
     private static void setStatus(Phase next, String message) {
+        // The frame count changes every couple of seconds; logging each one
+        // pushed everything else out of the log within a minute.
+        boolean quiet = next == Phase.STREAMING && phase == Phase.STREAMING;
         phase = next;
         status = message;
-        Log.i(TAG, next + ": " + message);
+        if (!quiet) Log.i(TAG, next + ": " + message);
     }
 
     private static void finish(Thread thread) {

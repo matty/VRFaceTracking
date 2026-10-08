@@ -51,12 +51,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long the headset's adb takes to start listening on Wi-Fi.
 const WIRELESS_START_TIMEOUT: Duration = Duration::from_secs(10);
-/// Longest the headset app takes to stop, including putting Meta's eye model
-/// back, which restarts the headset's tracking service.
+/// Longest the headset app takes to stop. Its own stop takes a second or two;
+/// one from before it kept the per-eye model also put Meta's back, restarting
+/// the headset's tracking service.
 const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// The threads the headset app's service leaves behind as it stops: they stop
-/// the camera relay and put Meta's eye model back (`CameraStreamService`'s
-/// `onDestroy`).
+/// the camera relay and the eye trace (`CameraStreamService`'s `onDestroy`).
 const STOPPING_THREADS: [&str; 2] = ["stop-relay", "stop-eye"];
 /// A server that adb starts can inherit its pipes and hold them open, so once
 /// adb itself has exited, wait only this long for them to close.
@@ -228,7 +228,10 @@ impl Adb {
     /// Opens the headset app on the headset with `extras`, which it treats as
     /// its own controls: settings it saves, and presses of Start or Stop.
     pub fn open_app(&self, serial: &str, extras: &[(&str, bool)]) -> Result<()> {
-        let mut command = format!("am start -n {ACTIVITY}");
+        // Without single-top, Horizon OS only brings an open app to the front
+        // ("task to front") and drops the extras, so Start, Stop and settings
+        // went nowhere while the app's window was open.
+        let mut command = format!("am start --activity-single-top -n {ACTIVITY}");
         for (key, value) in extras {
             command.push_str(&format!(" --ez {key} {value}"));
         }
@@ -248,8 +251,9 @@ impl Adb {
     }
 
     /// Presses Stop in the headset app, then waits until it has finished
-    /// stopping, including putting Meta's eye model back. Replacing the app
-    /// before then would kill it half way through.
+    /// stopping (an app from before it kept the per-eye model also puts Meta's
+    /// eye model back). Replacing the app before then would kill it half way
+    /// through.
     pub fn stop_stream(&self, serial: &str) -> Result<()> {
         self.open_app(serial, &[("stop_probe", true)])?;
         let began = Instant::now();

@@ -6,12 +6,12 @@ This is a port of the independent-gaze feature from [Qpro-Enhanced-FT](https://g
 
 ## How it works
 
-1. When **Independent eye gaze** is on, the APK briefly replaces Meta's experimental eye model with a copy patched so its public gaze output comes from each eye's own branch instead of the blended one. The patch changes two bytes of the model graph. The original file is never modified: the patched copy is bind-mounted over it until the stream stops.
+1. When **Independent eye gaze** is on, the APK replaces Meta's experimental eye model with a copy patched so its public gaze output comes from each eye's own branch instead of the blended one. The patch changes two bytes of the model graph. The original file is never modified: the patched copy is bind-mounted over it.
 2. The APK traces the tracker's per-eye visual-axis vectors in the kernel and streams them to VRFT with the camera frames. A sample whose vectors aren't roughly unit length is not a direction, and VRFT drops it.
 3. VRFT converts each vector to yaw and pitch, applies a per-eye calibration, filters each eye separately (a three-sample median, then a One Euro filter), and replaces the tracking module's gaze. Eye openness, pupils and all face expressions still come from the tracking module, if one is running. Without one, VRFT still sends the per-eye gaze.
 4. If eye samples stop for 250 ms, VRFT falls back to the tracking module's gaze without interrupting anything else.
 
-Stopping the stream in the APK unmounts the patched model, restores Meta's setting and restarts the tracking service. If the APK or headset crashes first, the APK restores everything the next time it starts; a headset reboot also removes the mount. See the APK README for the manual restore commands.
+The tracking service reads the model only as it starts, so swapping it in restarts the service, and all of the headset's tracking drops for a few seconds. The APK does that once: stopping the stream leaves the patched model in place, and later streams reuse it without a restart while the same tracking service runs. Turning **Independent eye gaze** off unmounts the patched model, restores Meta's setting and restarts the tracking service once more. A headset reboot removes the mount; the next stream then swaps the model in again, or, with eye gaze off, the APK only puts Meta's setting back. See the APK README for the manual restore commands.
 
 ## Firmware support
 

@@ -179,14 +179,28 @@ pub fn compare(installed: Option<&InstalledApp>, package: &Package) -> Compariso
     }
     // Builds without a CalVer version, such as those from before it, don't
     // say which is newer.
-    match (version_code(version), version_code(&installed.version_name)) {
-        (Some(offered), Some(_)) => match offered.cmp(&installed.version_code) {
-            std::cmp::Ordering::Greater => Comparison::Update,
-            std::cmp::Ordering::Equal => Comparison::Same,
-            std::cmp::Ordering::Less => Comparison::Older,
-        },
-        _ => Comparison::Unknown,
+    let ordering = match (version_code(version), version_code(&installed.version_name)) {
+        // Dev builds past 99 commits share a versionCode, so their commit
+        // counts say which is newer.
+        (Some(offered), Some(_)) => offered.cmp(&installed.version_code).then_with(|| {
+            match (dev_commits(version), dev_commits(&installed.version_name)) {
+                (Some(offered), Some(installed)) => offered.cmp(&installed),
+                _ => std::cmp::Ordering::Equal,
+            }
+        }),
+        _ => return Comparison::Unknown,
+    };
+    match ordering {
+        std::cmp::Ordering::Greater => Comparison::Update,
+        std::cmp::Ordering::Equal => Comparison::Same,
+        std::cmp::Ordering::Less => Comparison::Older,
     }
+}
+
+/// The commits since the last release in a dev build's version, the 14 of
+/// `2026.9.1-dev.14`.
+fn dev_commits(version: &str) -> Option<u32> {
+    version.split_once("-dev.")?.1.parse().ok()
 }
 
 #[cfg(test)]
@@ -262,6 +276,16 @@ mod tests {
         assert_eq!(
             compare(Some(&installed("0.2")), &offer),
             Comparison::Unknown
+        );
+        // Past 99 commits, dev builds share a versionCode.
+        let dev = package(Some("2026.10.0-dev.116"));
+        assert_eq!(
+            compare(Some(&installed("2026.10.0-dev.101")), &dev),
+            Comparison::Update
+        );
+        assert_eq!(
+            compare(Some(&installed("2026.10.0-dev.130")), &dev),
+            Comparison::Older
         );
         assert_eq!(
             compare(Some(&installed("2026.9.0")), &package(None)),

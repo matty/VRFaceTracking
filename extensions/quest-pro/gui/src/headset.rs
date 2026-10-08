@@ -791,8 +791,8 @@ impl HeadsetPage {
     }
 
     /// Installs `package` over the headset's copy, or with `replace`, removes
-    /// that copy first. A running stream is stopped first, so the app can put
-    /// Meta's eye model back before Android replaces it.
+    /// that copy first. A running stream is stopped first, so the app finishes
+    /// stopping before Android replaces it.
     fn install(&mut self, package: Package, replace: bool, cx: &mut Context<Self>) {
         let Some(serial) = self.ready_serial() else {
             return;
