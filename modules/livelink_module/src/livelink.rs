@@ -224,6 +224,240 @@ impl TrackingModule for LiveLinkModule {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_packet(values: &[f32; 61]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(PAYLOAD_SIZE);
+        for &v in values {
+            buf.extend_from_slice(&v.to_be_bytes());
+        }
+        buf
+    }
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    fn module() -> LiveLinkModule {
+        LiveLinkModule::new()
+    }
+
+    fn shape(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
+        data.shapes[expr as usize].weight
+    }
+
+    #[test]
+    fn eye_openness_with_blink_and_squint() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        // Left: blink=0.6, squint=0.5
+        v[0] = 0.6;
+        v[5] = 0.5;
+        // Right: blink=0.3, squint=0.8
+        v[7] = 0.3;
+        v[12] = 0.8;
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        // left: 1 - clamp(0.6 + 0.6*0.5, 0, 1) = 1 - clamp(0.9, 0, 1) = 0.1
+        assert!(
+            approx(data.eye.left.openness, 0.1),
+            "left openness: {}",
+            data.eye.left.openness
+        );
+        // right: 1 - clamp(0.3 + 0.3*0.8, 0, 1) = 1 - clamp(0.54, 0, 1) = 0.46
+        assert!(
+            approx(data.eye.right.openness, 0.46),
+            "right openness: {}",
+            data.eye.right.openness
+        );
+    }
+
+    #[test]
+    fn eye_openness_clamps_to_zero() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        // blink=1.0, squint=1.0 -> 1+1*1=2 clamped to 1 -> openness=0
+        v[0] = 1.0;
+        v[5] = 1.0;
+        v[7] = 1.0;
+        v[12] = 1.0;
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(data.eye.left.openness, 0.0));
+        assert!(approx(data.eye.right.openness, 0.0));
+    }
+
+    #[test]
+    fn eye_gaze_mapping_and_pitch_negation() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[55] = 0.3; // left yaw
+        v[56] = 0.4; // left pitch (negated)
+        v[58] = -0.2; // right yaw
+        v[59] = 0.5; // right pitch (negated)
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(data.eye.left.gaze.x, 0.3));
+        assert!(approx(data.eye.left.gaze.y, -0.4));
+        assert!(approx(data.eye.right.gaze.x, -0.2));
+        assert!(approx(data.eye.right.gaze.y, -0.5));
+
+        assert!(approx(data.eye.left.pupil_diameter_mm, 5.0));
+        assert!(approx(data.eye.right.pupil_diameter_mm, 5.0));
+    }
+
+    #[test]
+    fn head_pose_negation() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[52] = 1.2; // yaw
+        v[53] = -0.5; // pitch
+        v[54] = 0.8; // roll
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(data.head.head_yaw, -1.2));
+        assert!(approx(data.head.head_pitch, 0.5));
+        assert!(approx(data.head.head_roll, -0.8));
+    }
+
+    #[test]
+    fn smile_maps_to_corner_pull_and_slant() {
+        use UnifiedExpressions::*;
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[23] = 0.7; // smile_l
+        v[24] = 0.4; // smile_r
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(shape(&data, MouthCornerPullLeft), 0.7));
+        assert!(approx(shape(&data, MouthCornerSlantLeft), 0.7));
+        assert!(approx(shape(&data, MouthCornerPullRight), 0.4));
+        assert!(approx(shape(&data, MouthCornerSlantRight), 0.4));
+    }
+
+    #[test]
+    fn brow_inner_maps_to_both_sides() {
+        use UnifiedExpressions::*;
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[43] = 0.65;
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(shape(&data, BrowInnerUpLeft), 0.65));
+        assert!(approx(shape(&data, BrowInnerUpRight), 0.65));
+    }
+
+    #[test]
+    fn cheek_puff_maps_to_both_sides() {
+        use UnifiedExpressions::*;
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[46] = 0.9;
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(shape(&data, CheekPuffLeft), 0.9));
+        assert!(approx(shape(&data, CheekPuffRight), 0.9));
+    }
+
+    #[test]
+    fn lip_suck_upper_clamping() {
+        use UnifiedExpressions::*;
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[32] = 0.8; // roll_upper
+        v[39] = 0.7; // upper_up_l
+        v[40] = 0.0; // upper_up_r (no clamp effect)
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        // Left: min(0.8, 1.0 - 0.7^(1/6))
+        let expected_l = 0.8f32.min(1.0 - 0.7f32.powf(1.0 / 6.0));
+        assert!(
+            approx(shape(&data, LipSuckUpperLeft), expected_l),
+            "left: {} vs {}",
+            shape(&data, LipSuckUpperLeft),
+            expected_l
+        );
+
+        // Right: min(0.8, 1.0 - 0.0^(1/6)) = min(0.8, 1.0) = 0.8
+        assert!(approx(shape(&data, LipSuckUpperRight), 0.8));
+    }
+
+    #[test]
+    fn lip_suck_upper_fully_clamped() {
+        use UnifiedExpressions::*;
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[32] = 0.9; // roll_upper
+        v[39] = 1.0; // upper_up_l = 1 -> 1^(1/6)=1 -> clamp = 0
+        v[40] = 1.0;
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(shape(&data, LipSuckUpperLeft), 0.0));
+        assert!(approx(shape(&data, LipSuckUpperRight), 0.0));
+    }
+
+    #[test]
+    fn packet_too_small_no_change() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+
+        m.parse_packet(&[0u8; 243], &mut data);
+
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn packet_larger_takes_last_244() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[17] = 0.42; // JawOpen
+
+        let payload = make_packet(&v);
+        // Prepend 100 garbage bytes
+        let mut big = vec![0xFFu8; 100];
+        big.extend_from_slice(&payload);
+        assert_eq!(big.len(), 344);
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&big, &mut data);
+
+        assert!(approx(shape(&data, UnifiedExpressions::JawOpen), 0.42));
+    }
+
+    #[test]
+    fn packet_exactly_244() {
+        let m = module();
+        let mut v = [0.0f32; 61];
+        v[14] = 0.33; // JawForward
+
+        let mut data = UnifiedTrackingData::default();
+        m.parse_packet(&make_packet(&v), &mut data);
+
+        assert!(approx(shape(&data, UnifiedExpressions::JawForward), 0.33));
+    }
+}
+
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {

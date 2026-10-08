@@ -270,6 +270,150 @@ impl TrackingModule for IFacialMocapModule {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vrft_api::UnifiedExpressions::*;
+
+    fn module() -> IFacialMocapModule {
+        IFacialMocapModule::new()
+    }
+
+    fn make_packet(entries: &[&str]) -> Vec<u8> {
+        let mut parts = vec!["ignored_first"];
+        parts.extend_from_slice(entries);
+        parts.push("ignored_last");
+        parts.join("|").into_bytes()
+    }
+
+    fn shape(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
+        data.shapes[expr as usize].weight
+    }
+
+    #[test]
+    fn blendshapes_ampersand_separator_with_jaw_swap() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let pkt = make_packet(&["jawOpen&75", "jawRight&50", "jawLeft&30"]);
+        m.parse_packet(&pkt, &mut data);
+
+        assert!((shape(&data, JawOpen) - 0.75).abs() < 1e-6);
+        // L/R swapped: jawRight -> JawLeft, jawLeft -> JawRight
+        assert!((shape(&data, JawLeft) - 0.50).abs() < 1e-6);
+        assert!((shape(&data, JawRight) - 0.30).abs() < 1e-6);
+    }
+
+    #[test]
+    fn blendshapes_dash_separator() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let pkt = make_packet(&["jawOpen-60"]);
+        m.parse_packet(&pkt, &mut data);
+
+        assert!((shape(&data, JawOpen) - 0.60).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eye_gaze_from_pose_data_with_lr_swap() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        // rightEye values -> left gaze (swapped), leftEye -> right gaze
+        let pkt = make_packet(&["rightEye#30.0,45.0,0.0", "leftEye#20.0,10.0,0.0"]);
+        m.parse_packet(&pkt, &mut data);
+
+        let expected_left_x = (45.0f32 / 90.0).tan();
+        let expected_left_y = -(30.0f32 / 90.0).tan();
+        assert!((data.eye.left.gaze.x - expected_left_x).abs() < 1e-6);
+        assert!((data.eye.left.gaze.y - expected_left_y).abs() < 1e-6);
+
+        let expected_right_x = (10.0f32 / 90.0).tan();
+        let expected_right_y = -(20.0f32 / 90.0).tan();
+        assert!((data.eye.right.gaze.x - expected_right_x).abs() < 1e-6);
+        assert!((data.eye.right.gaze.y - expected_right_y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eye_openness_with_blink_squint_and_lr_swap() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        // eyeBlink_R=60 (0.6), eyeSquint_R=50 (0.5) -> left openness (swapped)
+        // eyeBlink_L=40 (0.4), eyeSquint_L=20 (0.2) -> right openness (swapped)
+        let pkt = make_packet(&[
+            "eyeBlink_R&60",
+            "eyeSquint_R&50",
+            "eyeBlink_L&40",
+            "eyeSquint_L&20",
+        ]);
+        m.parse_packet(&pkt, &mut data);
+
+        let blink_r = 0.6f32;
+        let squint_r = 0.5f32;
+        let expected_left = 1.0 - (blink_r + blink_r * squint_r).clamp(0.0, 1.0);
+        assert!((data.eye.left.openness - expected_left).abs() < 1e-6);
+
+        let blink_l = 0.4f32;
+        let squint_l = 0.2f32;
+        let expected_right = 1.0 - (blink_l + blink_l * squint_l).clamp(0.0, 1.0);
+        assert!((data.eye.right.openness - expected_right).abs() < 1e-6);
+    }
+
+    #[test]
+    fn head_pose_divided_by_100() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let pkt = make_packet(&["=head#1500,2000,-500,10.0,20.0,30.0"]);
+        m.parse_packet(&pkt, &mut data);
+
+        assert!((data.head.head_pitch - 15.0).abs() < 1e-6);
+        assert!((data.head.head_yaw - 20.0).abs() < 1e-6);
+        assert!((data.head.head_roll - -5.0).abs() < 1e-6);
+        assert!((data.head.head_pos_x - 10.0).abs() < 1e-6);
+        assert!((data.head.head_pos_y - 20.0).abs() < 1e-6);
+        assert!((data.head.head_pos_z - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn too_few_pipe_parts_no_change() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let original = UnifiedTrackingData::default();
+
+        // Only 2 parts: "a|b"
+        m.parse_packet(b"a|b", &mut data);
+        assert_eq!(data.head.head_pitch, original.head.head_pitch);
+        assert_eq!(data.eye.left.openness, original.eye.left.openness);
+
+        // Only 1 part
+        m.parse_packet(b"no_pipes", &mut data);
+        assert_eq!(data.head.head_pitch, original.head.head_pitch);
+    }
+
+    #[test]
+    fn non_utf8_packet_no_change() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let original = UnifiedTrackingData::default();
+
+        let pkt: Vec<u8> = vec![0xFF, 0xFE, b'|', b'x', b'|', 0x80];
+        m.parse_packet(&pkt, &mut data);
+        assert_eq!(data.head.head_pitch, original.head.head_pitch);
+        assert_eq!(data.eye.left.openness, original.eye.left.openness);
+    }
+
+    #[test]
+    fn mouth_smile_lr_swap() {
+        let m = module();
+        let mut data = UnifiedTrackingData::default();
+        let pkt = make_packet(&["mouthSmile_R&80", "mouthSmile_L&40"]);
+        m.parse_packet(&pkt, &mut data);
+
+        // mouthSmile_R -> MouthCornerPullLeft (swapped)
+        assert!((shape(&data, MouthCornerPullLeft) - 0.80).abs() < 1e-6);
+        // mouthSmile_L -> MouthCornerPullRight (swapped)
+        assert!((shape(&data, MouthCornerPullRight) - 0.40).abs() < 1e-6);
+    }
+}
+
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {

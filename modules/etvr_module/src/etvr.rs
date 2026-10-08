@@ -225,3 +225,211 @@ impl TrackingModule for EtvrModule {
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
     Box::new(EtvrModule::new())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rosc::{OscMessage, OscType};
+    use vrft_api::UnifiedExpressions::*;
+
+    fn msg(addr: &str, value: f32) -> OscMessage {
+        OscMessage {
+            addr: addr.to_string(),
+            args: vec![OscType::Float(value)],
+        }
+    }
+
+    fn apply(addr: &str, value: f32) -> (UnifiedTrackingData, bool, bool) {
+        let mut data = UnifiedTrackingData::default();
+        let mut is_v2 = false;
+        let mut is_dual_eye = false;
+        apply_message(msg(addr, value), &mut is_v2, &mut is_dual_eye, &mut data);
+        (data, is_v2, is_dual_eye)
+    }
+
+    fn apply_v2_msg(addr: &str, value: f32) -> (UnifiedTrackingData, bool) {
+        let mut data = UnifiedTrackingData::default();
+        let mut is_v2 = true;
+        let mut is_dual_eye = false;
+        apply_message(msg(addr, value), &mut is_v2, &mut is_dual_eye, &mut data);
+        (data, is_dual_eye)
+    }
+
+    // V1 eye gaze
+    #[test]
+    fn v1_left_eye_x() {
+        let (data, ..) = apply("/etvr/LeftEyeX", 0.7);
+        assert_eq!(data.eye.left.gaze.x, 0.7);
+    }
+
+    #[test]
+    fn v1_right_eye_x() {
+        let (data, ..) = apply("/etvr/RightEyeX", -0.3);
+        assert_eq!(data.eye.right.gaze.x, -0.3);
+    }
+
+    #[test]
+    fn v1_eyes_y_sets_both() {
+        let (data, ..) = apply("/etvr/EyesY", 0.5);
+        assert_eq!(data.eye.left.gaze.y, 0.5);
+        assert_eq!(data.eye.right.gaze.y, 0.5);
+    }
+
+    // V1 lid openness with clamp
+    #[test]
+    fn v1_lid_clamps_above_one() {
+        let (data, ..) = apply("/etvr/LeftEyeLidExpandedSqueeze", 1.5);
+        assert_eq!(data.eye.left.openness, 1.0);
+    }
+
+    #[test]
+    fn v1_lid_clamps_below_zero() {
+        let (data, ..) = apply("/etvr/RightEyeLidExpandedSqueeze", -0.5);
+        assert_eq!(data.eye.right.openness, 0.0);
+    }
+
+    #[test]
+    fn v1_lid_normal_value() {
+        let (data, ..) = apply("/etvr/LeftEyeLidExpandedSqueeze", 0.6);
+        assert!((data.eye.left.openness - 0.6).abs() < 1e-6);
+    }
+
+    // V2 auto-detection
+    #[test]
+    fn v2_autodetect_sets_is_v2() {
+        let (_, is_v2, _) = apply("/etvr/v2/EyeX", 0.1);
+        assert!(is_v2);
+    }
+
+    #[test]
+    fn v1_addr_does_not_set_v2() {
+        let (_, is_v2, _) = apply("/etvr/LeftEyeX", 0.1);
+        assert!(!is_v2);
+    }
+
+    // V2 single-eye mode
+    #[test]
+    fn v2_eye_x_sets_both_eyes() {
+        let (data, is_dual_eye) = apply_v2_msg("/etvr/v2/EyeX", 0.4);
+        assert_eq!(data.eye.left.gaze.x, 0.4);
+        assert_eq!(data.eye.right.gaze.x, 0.4);
+        assert!(!is_dual_eye);
+    }
+
+    #[test]
+    fn v2_eye_y_sets_both_eyes() {
+        let (data, is_dual_eye) = apply_v2_msg("/etvr/v2/EyeY", -0.2);
+        assert_eq!(data.eye.left.gaze.y, -0.2);
+        assert_eq!(data.eye.right.gaze.y, -0.2);
+        assert!(!is_dual_eye);
+    }
+
+    // V2 dual-eye mode
+    #[test]
+    fn v2_eye_left_x_sets_dual_eye() {
+        let (data, is_dual_eye) = apply_v2_msg("/etvr/v2/EyeLeftX", 0.3);
+        assert_eq!(data.eye.left.gaze.x, 0.3);
+        assert!(is_dual_eye);
+    }
+
+    #[test]
+    fn v2_eye_right_x_sets_dual_eye() {
+        let (data, is_dual_eye) = apply_v2_msg("/etvr/v2/EyeRightX", -0.6);
+        assert_eq!(data.eye.right.gaze.x, -0.6);
+        assert!(is_dual_eye);
+    }
+
+    #[test]
+    fn v2_eye_left_y() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeLeftY", 0.8);
+        assert_eq!(data.eye.left.gaze.y, 0.8);
+    }
+
+    #[test]
+    fn v2_eye_right_y() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeRightY", -0.1);
+        assert_eq!(data.eye.right.gaze.y, -0.1);
+    }
+
+    // V2 EyeLid
+    #[test]
+    fn v2_eyelid_sets_both() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeLid", 0.7);
+        assert!((data.eye.left.openness - 0.7).abs() < 1e-6);
+        assert!((data.eye.right.openness - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn v2_eyelid_left_only() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeLidLeft", 0.3);
+        assert!((data.eye.left.openness - 0.3).abs() < 1e-6);
+        assert_eq!(data.eye.right.openness, 0.0);
+    }
+
+    #[test]
+    fn v2_eyelid_right_only() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeLidRight", 0.9);
+        assert!((data.eye.right.openness - 0.9).abs() < 1e-6);
+        assert_eq!(data.eye.left.openness, 0.0);
+    }
+
+    #[test]
+    fn v2_eyelid_clamps() {
+        let (data, _) = apply_v2_msg("/etvr/v2/EyeLid", 2.0);
+        assert_eq!(data.eye.left.openness, 1.0);
+        assert_eq!(data.eye.right.openness, 1.0);
+    }
+
+    // BrowExpression
+    #[test]
+    fn brow_at_025_lowerer() {
+        let (data, _) = apply_v2_msg("/etvr/v2/BrowExpression", 0.25);
+        // lowerer = (0.5 - 0.25) * 2.0 = 0.5
+        assert!((data.shapes[BrowLowererLeft as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowLowererRight as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowPinchLeft as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowPinchRight as usize].weight - 0.5).abs() < 1e-6);
+        assert_eq!(data.shapes[BrowOuterUpLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowInnerUpLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowOuterUpRight as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowInnerUpRight as usize].weight, 0.0);
+    }
+
+    #[test]
+    fn brow_at_075_raise() {
+        let (data, _) = apply_v2_msg("/etvr/v2/BrowExpression", 0.75);
+        // raise = (0.75 - 0.5) * 2.0 = 0.5
+        assert!((data.shapes[BrowOuterUpLeft as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowInnerUpLeft as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowOuterUpRight as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowInnerUpRight as usize].weight - 0.5).abs() < 1e-6);
+        assert_eq!(data.shapes[BrowLowererLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowPinchLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowLowererRight as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowPinchRight as usize].weight, 0.0);
+    }
+
+    #[test]
+    fn brow_at_05_neutral() {
+        let (data, _) = apply_v2_msg("/etvr/v2/BrowExpression", 0.5);
+        // 0.5 >= 0.5 -> raise branch, weight = (0.5 - 0.5) * 2.0 = 0.0
+        assert_eq!(data.shapes[BrowOuterUpLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowInnerUpLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowLowererLeft as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowPinchLeft as usize].weight, 0.0);
+    }
+
+    // BrowExpressionLeft only affects left side
+    #[test]
+    fn brow_expression_left_only() {
+        let (data, _) = apply_v2_msg("/etvr/v2/BrowExpressionLeft", 0.25);
+        // Left side: lowerer = 0.5
+        assert!((data.shapes[BrowLowererLeft as usize].weight - 0.5).abs() < 1e-6);
+        assert!((data.shapes[BrowPinchLeft as usize].weight - 0.5).abs() < 1e-6);
+        // Right side: untouched (default 0.0)
+        assert_eq!(data.shapes[BrowLowererRight as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowPinchRight as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowOuterUpRight as usize].weight, 0.0);
+        assert_eq!(data.shapes[BrowInnerUpRight as usize].weight, 0.0);
+    }
+}

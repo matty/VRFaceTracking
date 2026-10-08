@@ -206,6 +206,145 @@ impl TrackingModule for SteamLinkModule {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vrft_api::UnifiedExpressions::*;
+
+    fn osc_msg(addr: &str, value: f32) -> rosc::OscMessage {
+        rosc::OscMessage {
+            addr: String::from(addr),
+            args: vec![rosc::OscType::Float(value)],
+        }
+    }
+
+    fn weight(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
+        data.shapes[expr as usize].weight
+    }
+
+    #[test]
+    fn gaze_point_calculation() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/eyeTrackedGazePoint"),
+            args: vec![
+                rosc::OscType::Float(1.0),
+                rosc::OscType::Float(0.5),
+                rosc::OscType::Float(-2.0),
+            ],
+        };
+        module.apply_message(&msg, &mut data);
+        let expected_x = (1.0_f32 / 2.0).atan();
+        let expected_y = (0.5_f32 / 2.0).atan();
+        assert!((data.eye.left.gaze.x - expected_x).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y - expected_y).abs() < 1e-5);
+        assert!((data.eye.right.gaze.x - expected_x).abs() < 1e-5);
+        assert!((data.eye.right.gaze.y - expected_y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gaze_point_z_near_zero_skipped() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/eyeTrackedGazePoint"),
+            args: vec![
+                rosc::OscType::Float(1.0),
+                rosc::OscType::Float(0.5),
+                rosc::OscType::Float(0.0),
+            ],
+        };
+        module.apply_message(&msg, &mut data);
+        assert!((data.eye.left.gaze.x - 0.0).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn eye_openness_with_squint_interaction() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        // Set squint first
+        data.shapes[EyeSquintLeft as usize].weight = 0.5;
+        // Now apply eye closed
+        module.apply_message(&osc_msg("/sl/xrfb/facew/EyesClosedL", 0.4), &mut data);
+        let squint = 0.5_f32;
+        let value = 0.4_f32;
+        let expected = (1.0 - (value + value * squint).clamp(0.0, 1.0)).max(0.0);
+        assert!((data.eye.left.openness - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn eye_openness_no_squint() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        module.apply_message(&osc_msg("/sl/xrfb/facew/EyesClosedL", 0.7), &mut data);
+        let expected = 1.0 - 0.7_f32;
+        assert!((data.eye.left.openness - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn jaw_drop_to_jaw_open() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        module.apply_message(&osc_msg("/sl/xrfb/facew/JawDrop", 0.8), &mut data);
+        assert!((weight(&data, JawOpen) - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn brow_lowerer_one_to_many() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        module.apply_message(&osc_msg("/sl/xrfb/facew/BrowLowererL", 0.6), &mut data);
+        assert!((weight(&data, BrowPinchLeft) - 0.6).abs() < 1e-5);
+        assert!((weight(&data, BrowLowererLeft) - 0.6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lip_pucker_one_to_many() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        module.apply_message(&osc_msg("/sl/xrfb/facew/LipPuckerL", 0.5), &mut data);
+        assert!((weight(&data, LipPuckerLowerLeft) - 0.5).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperLeft) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bool_type_arg_true() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/xrfb/facew/JawDrop"),
+            args: vec![rosc::OscType::Bool(true)],
+        };
+        module.apply_message(&msg, &mut data);
+        assert!((weight(&data, JawOpen) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bool_type_arg_false() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        // Set JawOpen to a non-zero value first
+        data.shapes[JawOpen as usize].weight = 0.9;
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/xrfb/facew/JawDrop"),
+            args: vec![rosc::OscType::Bool(false)],
+        };
+        module.apply_message(&msg, &mut data);
+        assert!((weight(&data, JawOpen) - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn unknown_face_name_no_change() {
+        let module = SteamLinkModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        module.apply_message(&osc_msg("/sl/xrfb/facew/UnknownShape", 0.5), &mut data);
+        assert_eq!(data, before);
+    }
+}
+
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {

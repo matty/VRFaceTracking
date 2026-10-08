@@ -243,6 +243,149 @@ impl TrackingModule for MeowFaceModule {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vrft_api::UnifiedExpressions::*;
+
+    fn weight(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
+        data.shapes[expr as usize].weight
+    }
+
+    fn make_packet(
+        face_found: bool,
+        eye_left: (f32, f32),
+        eye_right: (f32, f32),
+        shapes: &[(&str, f32)],
+    ) -> Vec<u8> {
+        let blend: Vec<String> = shapes
+            .iter()
+            .map(|(k, v)| format!(r#"{{"k":"{}","v":{}}}"#, k, v))
+            .collect();
+        let json = format!(
+            r#"{{"FaceFound":{},"EyeLeft":{{"x":{},"y":{},"z":0}},"EyeRight":{{"x":{},"y":{},"z":0}},"BlendShapes":[{}],"Timestamp":0,"Hotkey":0}}"#,
+            face_found,
+            eye_left.0,
+            eye_left.1,
+            eye_right.0,
+            eye_right.1,
+            blend.join(","),
+        );
+        json.into_bytes()
+    }
+
+    #[test]
+    fn eye_gaze_degrees_to_radians() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(true, (10.0, 20.0), (15.0, 25.0), &[]);
+        module.parse_packet(&packet, &mut data);
+        // gaze.x = eye.y * DEG_TO_RAD, gaze.y = -eye.x * DEG_TO_RAD
+        let expected_left_x = 20.0 * DEG_TO_RAD;
+        let expected_left_y = -10.0 * DEG_TO_RAD;
+        let expected_right_x = 25.0 * DEG_TO_RAD;
+        let expected_right_y = -15.0 * DEG_TO_RAD;
+        assert!((data.eye.left.gaze.x - expected_left_x).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y - expected_left_y).abs() < 1e-5);
+        assert!((data.eye.right.gaze.x - expected_right_x).abs() < 1e-5);
+        assert!((data.eye.right.gaze.y - expected_right_y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn eye_openness_formula() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let blink = 0.3_f32;
+        let squint = 0.5_f32;
+        let packet = make_packet(
+            true,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            &[
+                ("eyeBlinkLeft", blink),
+                ("eyeSquintLeft", squint),
+                ("eyeBlinkRight", 0.0),
+                ("eyeSquintRight", 0.0),
+            ],
+        );
+        module.parse_packet(&packet, &mut data);
+        let expected = 1.0 - (blink + blink.powf(0.33) * squint.powf(1.25)).min(1.0);
+        assert!((data.eye.left.openness - expected).abs() < 1e-5);
+        // Right eye: blink=0, squint=0 -> openness=1
+        let expected_r = 1.0 - (0.0_f32 + 0.0_f32.powf(0.33) * 0.0_f32.powf(1.25)).min(1.0);
+        assert!((data.eye.right.openness - expected_r).abs() < 1e-5);
+    }
+
+    #[test]
+    fn smile_one_to_many() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(true, (0.0, 0.0), (0.0, 0.0), &[("mouthSmileRight", 0.7)]);
+        module.parse_packet(&packet, &mut data);
+        assert!((weight(&data, MouthCornerPullRight) - 0.7).abs() < 1e-5);
+        assert!((weight(&data, MouthCornerSlantRight) - 0.7).abs() < 1e-5);
+        assert!((weight(&data, CheekSquintRight) - 0.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn simulated_expressions() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(
+            true,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            &[("mouthSmileRight", 0.6), ("mouthFrownRight", 0.4)],
+        );
+        module.parse_packet(&packet, &mut data);
+        // MouthDimpleRight = smile * 0.5
+        assert!((weight(&data, MouthDimpleRight) - 0.6 * 0.5).abs() < 1e-5);
+        // MouthStretchRight = frown * 0.5
+        assert!((weight(&data, MouthStretchRight) - 0.4 * 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pucker_fan_out() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(true, (0.0, 0.0), (0.0, 0.0), &[("mouthPucker", 0.8)]);
+        module.parse_packet(&packet, &mut data);
+        assert!((weight(&data, LipPuckerUpperRight) - 0.8).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperLeft) - 0.8).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerLowerRight) - 0.8).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerLowerLeft) - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn brow_down_one_to_many() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(true, (0.0, 0.0), (0.0, 0.0), &[("browDownLeft", 0.55)]);
+        module.parse_packet(&packet, &mut data);
+        assert!((weight(&data, BrowPinchLeft) - 0.55).abs() < 1e-5);
+        assert!((weight(&data, BrowLowererLeft) - 0.55).abs() < 1e-5);
+    }
+
+    #[test]
+    fn face_found_false_no_change() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        let packet = make_packet(false, (10.0, 20.0), (10.0, 20.0), &[("jawOpen", 0.9)]);
+        module.parse_packet(&packet, &mut data);
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn case_insensitive_key_match() {
+        let module = MeowFaceModule::new();
+        let mut data = UnifiedTrackingData::default();
+        let packet = make_packet(true, (0.0, 0.0), (0.0, 0.0), &[("JAWOPEN", 0.65)]);
+        module.parse_packet(&packet, &mut data);
+        assert!((weight(&data, JawOpen) - 0.65).abs() < 1e-5);
+    }
+}
+
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {

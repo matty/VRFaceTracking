@@ -170,6 +170,105 @@ impl TrackingModule for BabbleModule {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vrft_api::UnifiedExpressions::*;
+
+    fn osc_msg(addr: &str, value: f32) -> rosc::OscMessage {
+        rosc::OscMessage {
+            addr: String::from(addr),
+            args: vec![rosc::OscType::Float(value)],
+        }
+    }
+
+    fn weight(data: &UnifiedTrackingData, expr: UnifiedExpressions) -> f32 {
+        data.shapes[expr as usize].weight
+    }
+
+    #[test]
+    fn jaw_open_one_to_one() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/jawOpen", 0.75), &mut data);
+        assert!((weight(&data, JawOpen) - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mouth_funnel_multiplier_fan_out() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/mouthFunnel", 0.2), &mut data);
+        let expected = 0.2 * 4.0;
+        assert!((weight(&data, LipFunnelLowerLeft) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipFunnelLowerRight) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipFunnelUpperLeft) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipFunnelUpperRight) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mouth_pucker_multiplier_fan_out() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/mouthPucker", 0.15), &mut data);
+        let expected = 0.15 * 4.0;
+        assert!((weight(&data, LipPuckerLowerLeft) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerLowerRight) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperLeft) - expected).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperRight) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mouth_left_multiplier() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/mouthLeft", 0.3), &mut data);
+        let expected = 0.3 * 2.0;
+        assert!((weight(&data, MouthUpperLeft) - expected).abs() < 1e-5);
+        assert!((weight(&data, MouthLowerLeft) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mouth_right_multiplier() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/mouthRight", 0.4), &mut data);
+        let expected = 0.4 * 2.0;
+        assert!((weight(&data, MouthUpperRight) - expected).abs() < 1e-5);
+        assert!((weight(&data, MouthLowerRight) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mouth_roll_upper_to_lip_suck() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/mouthRollUpper", 0.6), &mut data);
+        assert!((weight(&data, LipSuckUpperLeft) - 0.6).abs() < 1e-5);
+        assert!((weight(&data, LipSuckUpperRight) - 0.6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tongue_out() {
+        let mut data = UnifiedTrackingData::default();
+        apply_message(&osc_msg("/tongueOut", 0.9), &mut data);
+        assert!((weight(&data, TongueOut) - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn unknown_address_no_change() {
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        apply_message(&osc_msg("/unknownParam", 1.0), &mut data);
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn non_float_arg_ignored() {
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        let msg = rosc::OscMessage {
+            addr: String::from("/jawOpen"),
+            args: vec![rosc::OscType::Int(1)],
+        };
+        apply_message(&msg, &mut data);
+        assert_eq!(data, before);
+    }
+}
+
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
