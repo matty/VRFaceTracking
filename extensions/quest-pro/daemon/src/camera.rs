@@ -35,9 +35,16 @@ const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
 /// is quiet.
 const MISMATCH_RECHECK: Duration = Duration::from_secs(30);
 /// Wait before the first retry of a headset that dropped or can't be reached;
-/// it doubles with each failure in a row, up to [`RETRY_MAX`].
+/// it doubles with each failure in a row, up to [`RETRY_MAX`]. A refused or
+/// timed-out connection on the local network costs nothing, and a longer wait
+/// looked like VRFT had given up on the headset.
 const RETRY_FIRST: Duration = Duration::from_secs(2);
-const RETRY_MAX: Duration = Duration::from_secs(60);
+const RETRY_MAX: Duration = Duration::from_secs(10);
+/// Where the headset's address is kept once it has connected, so the next run
+/// tries it without waiting for mDNS, which can miss the headset: a router
+/// that repeats mDNS between networks makes the headset rename itself and
+/// re-probe, and it doesn't answer while it does.
+const LAST_HEADSET_FILE: &str = ".local/quest-pro-headset.txt";
 /// A connection that lasted this long was healthy, so losing it starts the
 /// backoff over.
 const RETRY_RESET_AFTER: Duration = Duration::from_secs(30);
@@ -733,6 +740,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
         ..FeedState::default()
     }));
     let root = root.to_path_buf();
+    let last_headset = root.join(LAST_HEADSET_FILE);
     let settings = SettingsStore::load(&root);
     let eye_state = EyeState::new(crate::eye::load_calibration(&root));
     let pupil_state = PupilState::default();
@@ -819,7 +827,16 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     };
     thread::Builder::new()
         .name("quest-pro-camera".into())
-        .spawn(move || receive_loop(shared, receiver_capture, processors, running, retry))
+        .spawn(move || {
+            receive_loop(
+                shared,
+                receiver_capture,
+                processors,
+                running,
+                retry,
+                &last_headset,
+            )
+        })
         .expect("couldn't start the Quest Pro camera thread");
     let overlay = QuestProOverlay {
         latest: inference_state,
@@ -1123,6 +1140,7 @@ fn receive_loop(
     mut processors: Processors,
     running: Arc<AtomicBool>,
     retry: Arc<AtomicBool>,
+    last_headset: &Path,
 ) {
     let explicit = std::env::var("VRFT_QUEST_PRO_ADDR").ok();
     let manual = explicit
@@ -1157,7 +1175,16 @@ fn receive_loop(
         }
     }
     let _keep_mdns_alive = mdns;
-    let mut candidate = manual;
+    // The address the headset last connected from, tried alongside mDNS
+    // until it answers; failing to reach it then still reads as looking.
+    let mut unconfirmed = manual
+        .is_none()
+        .then(|| read_last_headset(last_headset))
+        .flatten();
+    if let Some(address) = unconfirmed {
+        info!("Quest Pro camera: also trying the headset's last address, {address}");
+    }
+    let mut candidate = manual.or(unconfirmed);
     // A headset app that couldn't be read, and when it was: it's tried again
     // now and then, in case it was updated and its announcement was missed.
     let mut recheck: Option<(SocketAddr, Instant)> = None;
@@ -1189,8 +1216,21 @@ fn receive_loop(
         // A press of Retry from before this attempt means nothing now.
         retry.store(false, Ordering::SeqCst);
         let attempt = Instant::now();
-        let error = match connect_and_receive(address, &shared, &capture, &mut processors, &running)
-        {
+        let remember = |address: SocketAddr| write_last_headset(last_headset, address);
+        let result = connect_and_receive(
+            address,
+            &shared,
+            &capture,
+            &mut processors,
+            &running,
+            &remember,
+        );
+        let looking =
+            unconfirmed == Some(address) && matches!(result, Err(Disconnect::Unreachable(_)));
+        if !looking {
+            unconfirmed = None;
+        }
+        let error = match result {
             Ok(()) => break,
             Err(Disconnect::Mismatch(mismatch)) => {
                 report_mismatch(&shared, mismatch);
@@ -1217,7 +1257,12 @@ fn receive_loop(
         }
         let delay = retry_delay(failures);
         failures = failures.saturating_add(1);
-        if logged.as_deref() != Some(error.as_str()) {
+        if looking {
+            debug!(
+                "Quest Pro camera: {error}. Trying again in {}s",
+                delay.as_secs()
+            );
+        } else if logged.as_deref() != Some(error.as_str()) {
             warn!(
                 "Quest Pro camera: {error}. Retrying, waiting up to {}s between tries",
                 RETRY_MAX.as_secs()
@@ -1231,7 +1276,11 @@ fn receive_loop(
         }
         {
             let mut state = shared.write().unwrap();
-            state.status = error;
+            state.status = if looking {
+                format!("Looking for the headset on the network and at {address}")
+            } else {
+                error
+            };
             state.retry_at = Some(Instant::now() + delay);
         }
         // Keep retrying the address until mDNS announces another, even when
@@ -1243,6 +1292,21 @@ fn receive_loop(
             failures = 0;
         }
         shared.write().unwrap().retry_at = None;
+    }
+}
+
+/// The address in `path`, where a connection to the headset kept it.
+fn read_last_headset(path: &Path) -> Option<SocketAddr> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn write_last_headset(path: &Path, address: SocketAddr) {
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, address.to_string()));
+    if let Err(error) = written {
+        debug!("Quest Pro camera: couldn't keep the headset's address ({error})");
     }
 }
 
@@ -1325,6 +1389,7 @@ fn connect_and_receive(
     capture: &CaptureManager,
     processors: &mut Processors,
     running: &AtomicBool,
+    remember: &dyn Fn(SocketAddr),
 ) -> Result<(), Disconnect> {
     debug!("Quest Pro camera: connecting to the headset at {address}");
     shared.write().unwrap().status = format!("Connecting to the headset at {address}");
@@ -1343,6 +1408,8 @@ fn connect_and_receive(
     }
     let mut last_log = Instant::now();
     let mut last_frame_at = Instant::now();
+    // The headset app's status proves it's the headset; its address is kept once.
+    let mut remembered = false;
     let mut eye_schedule = EyeSchedule::new(DEFAULT_EYE_FPS);
     while running.load(Ordering::SeqCst) {
         match read_message(&mut stream) {
@@ -1406,6 +1473,10 @@ fn connect_and_receive(
                     .and_then(serde_json::Value::as_str);
                 check_protocol(status_protocol(&status), apk_version)
                     .map_err(Disconnect::Mismatch)?;
+                if !remembered {
+                    remember(address);
+                    remembered = true;
+                }
                 if let Some(eye) = status.get("eye") {
                     info!("Quest Pro headset eye pipeline: {eye}");
                 }
@@ -2854,9 +2925,9 @@ mod tests {
     }
 
     #[test]
-    fn retries_back_off_to_a_minute() {
-        let delays: Vec<u64> = (0..8).map(|n| retry_delay(n).as_secs()).collect();
-        assert_eq!(delays, [2, 4, 8, 16, 32, 60, 60, 60]);
+    fn retries_back_off_to_ten_seconds() {
+        let delays: Vec<u64> = (0..5).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [2, 4, 8, 10, 10]);
         assert_eq!(retry_delay(u32::MAX), RETRY_MAX);
     }
 
@@ -2908,6 +2979,7 @@ mod tests {
             &CaptureManager::default(),
             &mut processors,
             &AtomicBool::new(true),
+            &|_| {},
         );
         let Err(Disconnect::Mismatch(mismatch)) = result else {
             panic!("expected a protocol mismatch, got {result:?}");
