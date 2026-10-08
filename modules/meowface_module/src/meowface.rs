@@ -243,6 +243,12 @@ impl TrackingModule for MeowFaceModule {
     }
 }
 
+#[no_mangle]
+#[allow(improper_ctypes_definitions)]
+pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
+    Box::new(MeowFaceModule::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,10 +390,4 @@ mod tests {
         module.parse_packet(&packet, &mut data);
         assert!((weight(&data, JawOpen) - 0.65).abs() < 1e-5);
     }
-}
-
-#[no_mangle]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
-    Box::new(MeowFaceModule::new())
 }
