@@ -244,6 +244,20 @@ public final class PureTests {
         check("a both-eyes line needs no partner", new TraceParser().parse(
                 bothLine("5000.300000", "3f800000", "00000000", "00000000",
                         "3f800000", "00000000", "00000000")) != null);
+
+        // engine profile 2 on build 51503870024400340, as traced on a Quest
+        // Pro: the tag's upper bytes aren't zero, and the eyes come ~20 µs apart
+        TraceParser real = new TraceParser();
+        real.parse("         FaceCam-26175 [003] .... 162638.298577: detector_output: "
+                + "(0x75195c53e8) x=0x3daaff1c y=0xbd1ec02f z=0x3f7ee9c1 tag=0x61630000");
+        TraceParser.GazePair traced = real.parse(
+                "         FaceCam-26175 [003] .... 162638.298599: detector_output: "
+                + "(0x75195c53e8) x=0xbeac61db y=0xbea9c394 z=0x3f619d73 tag=0x61630001");
+        check("profile 2 headset lines pair", traced != null);
+        if (traced != null) {
+            check("profile 2 headset vectors are directions",
+                    traced.tag0Valid && traced.tag1Valid);
+        }
     }
 
     // ---- camera frames --------------------------------------------------

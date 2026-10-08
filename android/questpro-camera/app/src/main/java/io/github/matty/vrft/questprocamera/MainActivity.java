@@ -22,7 +22,7 @@ import io.github.matty.vrft.questprocamera.Ui.Tone;
 
 /** Control panel for the camera service. Any streaming app can remain in front. */
 public final class MainActivity extends Activity {
-    /** Longest a stop takes, including putting Meta's eye model back. */
+    /** Longest a stop takes. */
     private static final long RESTART_TIMEOUT_MS = 60_000;
     /** The panel's column stops growing here on a wide window. */
     private static final int MAX_WIDTH_DP = 720;
@@ -207,10 +207,13 @@ public final class MainActivity extends Activity {
             Settings.setEyeEnabled(this, checked);
             // A running stream reads the setting only as it starts.
             if (CameraStreamService.isActive()) restartStream();
+            else if (!checked) restoreEyeModel();
             showStatus();
         });
         card.addView(settingRow("Independent eye gaze",
-                "Tracks each eye on its own while streaming. Meta's eye model is put back when you stop.",
+                "Tracks each eye on its own while streaming. Its eye model needs a few seconds' "
+                        + "tracking restart, once after each reboot. Turning this off puts Meta's "
+                        + "model back.",
                 eyeGaze));
         card.addView(ui.rule(Ui.LINE_SOFT));
         Ui.Toggle fiveCameras = new Ui.Toggle(this);
@@ -283,7 +286,7 @@ public final class MainActivity extends Activity {
         } else if (finishing) {
             tone = Tone.WAITING;
             title = "Stopping\u2026";
-            line = "Putting Meta's eye model back.";
+            line = "Stopping the cameras and eye gaze.";
         } else if (!active && phase == Phase.FAILED) {
             tone = Tone.PROBLEM;
             title = "Couldn't start streaming";
@@ -415,9 +418,9 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * Stops the stream and starts it again once Meta's eye model is back, so
-     * it picks up the eye gaze setting. A second change while this waits is
-     * read by the same start.
+     * Stops the stream and starts it again once it has stopped, so it picks
+     * up the eye gaze setting; with eye gaze off, that start puts Meta's eye
+     * model back. A second change while this waits is read by the same start.
      */
     private void restartStream() {
         if (restarting) return;
@@ -439,7 +442,20 @@ public final class MainActivity extends Activity {
         }, "restart-stream").start();
     }
 
-    /** Quest reuses the open panel for a new {@code am start}, so extras arrive here. */
+    /**
+     * Puts Meta's eye model back now, when eye gaze is turned off between
+     * streams; a stream leaves the per-eye model in place for the next.
+     */
+    private void restoreEyeModel() {
+        Context app = getApplicationContext();
+        new Thread(() -> new EyePipeline(app, null, null).restore(), "restore-eye").start();
+    }
+
+    /**
+     * A single-top {@code am start} reaches the open panel here with its
+     * extras; without single-top, Horizon OS only brings the panel to the
+     * front and drops them.
+     */
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -493,7 +509,13 @@ public final class MainActivity extends Activity {
      */
     private void applySettingExtras(Intent intent) {
         if (intent.hasExtra("eye_enabled")) {
-            Settings.setEyeEnabled(this, intent.getBooleanExtra("eye_enabled", false));
+            boolean enabled = intent.getBooleanExtra("eye_enabled", false);
+            Settings.setEyeEnabled(this, enabled);
+            // A start in the same intent puts it back itself.
+            if (!enabled && !CameraStreamService.isActive()
+                    && !intent.getBooleanExtra("start_probe", false)) {
+                restoreEyeModel();
+            }
         }
         if (intent.hasExtra("eye_alt_probe")) {
             Settings.setEyeAltProbe(this, intent.getBooleanExtra("eye_alt_probe", false));

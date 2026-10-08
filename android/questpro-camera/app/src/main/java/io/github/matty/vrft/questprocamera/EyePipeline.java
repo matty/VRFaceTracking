@@ -24,6 +24,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@code native-eye-local-branch-test.ps1} / {@code prepare-eye-model.ps1} /
  * {@code native_raw_eye_probe.py} into the APK.
  *
+ * <p>The tracking service reads the model only as it starts, so applying the
+ * patch restarts it, which drops all of the headset's tracking for a few
+ * seconds. The patch therefore stays between streams: a later stream reuses it
+ * while the same tracking service runs, and Meta's model goes back when
+ * independent eye gaze is turned off (or the headset reboots, which drops the
+ * bind mount).
+ *
  * <p>Safety: every root command runs under Magisk {@code su --mount-master -c}
  * (global mount namespace) with a timeout; restore state is persisted before
  * mounting; any failure after mounting attempts a full restore; the engine is
@@ -38,8 +45,14 @@ public final class EyePipeline {
             "/odm/etc/eyetracking/runtime/models/Seacliff_V1_5/fbnet/int8/experimental/bolt/bolt.ptl";
     static final String PATCHED = "/data/local/tmp/vrft-camera/bolt-independent-axes.ptl";
     private static final String ROOT_DIR = "/data/local/tmp/vrft-camera";
-    static final String PROPERTY =
-            "persist.device_config.oculus_shared_vision.oculus_eyetracking_enable_experimental_model";
+    /**
+     * The flag that makes the tracking service load the experimental model.
+     * Its property mirrors DeviceConfig, which writes it again on every sync
+     * (hourly on the Quest Pro), so it is set in DeviceConfig as well.
+     */
+    private static final String FLAG_NAMESPACE = "oculus_shared_vision";
+    private static final String FLAG_KEY = "oculus_eyetracking_enable_experimental_model";
+    static final String PROPERTY = "persist.device_config." + FLAG_NAMESPACE + "." + FLAG_KEY;
     private static final String SELINUX_CONTEXT = "u:object_r:vendor_configs_file:s0";
 
     private static final String TRACE_ROOT = "/sys/kernel/tracing";
@@ -51,8 +64,21 @@ public final class EyePipeline {
     private static final String RESTORE_PREFS = "vrft_eye_restore";
     private static final String KEY_RESTORE_PENDING = "restore_pending";
     private static final String KEY_ORIG_PROP = "orig_prop";
+    /** DeviceConfig's value before the patch, {@code null} as the tool prints it when unset. */
+    private static final String KEY_ORIG_FLAG = "orig_flag";
+    /** The tracking service that loaded the patch, its engine profile and the patch's hash. */
+    private static final String KEY_SERVICE_PID = "service_pid";
+    private static final String KEY_PROFILE = "profile";
+    private static final String KEY_PATCH_SHA = "patch_sha256";
 
     private static final int MIN_MODEL_BYTES = 100000;
+
+    /** How often the watchdog checks the trace reader and the model flag. */
+    private static final long WATCH_INTERVAL_MS = 5000;
+    /** Restarts in a row that fail before the watchdog gives up on the reader. */
+    private static final int MAX_READER_FAILURES = 5;
+    /** How often the trace reader logs how many samples it sent. */
+    private static final long SAMPLE_LOG_INTERVAL_NS = TimeUnit.SECONDS.toNanos(60);
 
     static final String STATE_OFF = "off";
     static final String STATE_STARTING = "starting";
@@ -169,16 +195,18 @@ public final class EyePipeline {
      * Serializes recover/start/stop. Stop can be requested from another thread
      * while start is still applying the patch; without this, a restore could
      * run in the middle of start, which would then mount again after the
-     * restore state had been cleared.
+     * restore state had been cleared. Static, because the screen restores
+     * through a pipeline of its own when the setting is turned off.
      */
-    private final Object lifecycle = new Object();
+    private static final Object lifecycle = new Object();
 
     private volatile EyeStatus status;
     private volatile int engineProfileId;
     private volatile boolean modelActive;
     private volatile boolean stopping;
     private volatile Process traceCat;
-    private Thread traceThread;
+    private volatile Thread traceThread;
+    private int readerRestarts;
 
     public EyePipeline(Context context, StatusListener statusListener, GazeSink gazeSink) {
         this.context = context;
@@ -194,11 +222,15 @@ public final class EyePipeline {
 
     // ---- lifecycle -------------------------------------------------------
 
-    /** Crash recovery: if a previous run left a mount, restore it at start. */
-    public void recoverIfNeeded() {
+    /**
+     * Puts Meta's eye model back if a stream left the patch in place: when
+     * independent eye gaze is off, and after a crash or a reboot. Restarts the
+     * tracking service only while the patch is still mounted.
+     */
+    public void restore() {
         synchronized (lifecycle) {
             if (!restorePendingFlag()) return;
-            setStatus(STATE_RESTORING, "Restoring stock eye model after a previous run",
+            setStatus(STATE_RESTORING, "Putting Meta's eye model back",
                     engineProfileId, modelActive, true);
             if (!mountRootAvailable()) {
                 setStatus(STATE_ERROR,
@@ -234,13 +266,25 @@ public final class EyePipeline {
                 Profile profile = detectProfile();
                 engineProfileId = profile.id;
 
-                String mounts = rootAllow("grep -F " + quote(TARGET) + " /proc/mounts", 15).out;
-                if (!mounts.trim().isEmpty()) {
+                boolean mounted = isMounted();
+                if (mounted && !restorePendingFlag()) {
                     setStatus(STATE_ERROR,
                             "Another tool already has an eye model mounted", profile.id,
                             false, false);
                     return false;
                 }
+                if (mounted && patchStillLoaded(profile)) {
+                    String warning = resumeTrace(profile);
+                    setStatus(STATE_RUNNING,
+                            warning != null ? warning
+                                    : "Independent eye gaze active (per-eye model kept from "
+                                            + "an earlier stream)",
+                            profile.id, modelActive, true);
+                    return true;
+                }
+                // Ours, but the tracking service has restarted since, so it may
+                // not have loaded the patch: apply it again.
+                if (mounted) rootAllow("umount " + quote(TARGET), 15);
 
                 String warning = applyAndTrace(profile);
                 setStatus(STATE_RUNNING,
@@ -259,20 +303,19 @@ public final class EyePipeline {
         }
     }
 
-    /** Stop tracing and restore the stock model. Safe to call more than once. */
+    /**
+     * Stops tracing, leaving the patch for the next stream; {@link #restore()}
+     * puts Meta's model back. Safe to call more than once.
+     */
     public void stop() {
         // Flag first so a start() still applying the patch aborts at its next
-        // checkpoint and restores; then wait for it before restoring here.
+        // checkpoint (and restores); then wait for it before stopping here.
         stopping = true;
         synchronized (lifecycle) {
-            if (restorePendingFlag() || modelActive) {
-                if (!mountRootAvailable()) {
-                    setStatus(STATE_ERROR,
-                            "Cannot restore stock eye model: su --mount-master root unavailable",
-                            engineProfileId, modelActive, true);
-                    return;
-                }
-                doRestore();
+            if (restorePendingFlag()) {
+                safeTraceCleanup();
+                setStatus(STATE_OFF, "Eye gaze off; the per-eye model stays for the next "
+                        + "stream", engineProfileId, modelActive, true);
             } else {
                 destroyTraceCat();
                 setStatus(STATE_OFF, "Eye gaze off", 0, false, false);
@@ -311,10 +354,18 @@ public final class EyePipeline {
                 + " && chcon " + SELINUX_CONTEXT + " " + quote(PATCHED), 30);
 
         abortIfStopping();
-        // Persist restore state BEFORE mounting (commit, not apply).
-        String orig = rootAllow("getprop " + PROPERTY, 15).out.trim();
+        // Persist restore state BEFORE mounting (commit, not apply). Applying
+        // again over our own patch keeps the values from before the first.
+        boolean pending = restorePendingFlag();
+        String orig = pending ? readOrigProp() : rootAllow("getprop " + PROPERTY, 15).out.trim();
         if (orig.isEmpty()) orig = "false";
-        persistRestore(true, orig);
+        String origFlag = pending ? readOrigFlag() : null;
+        if (origFlag == null) {
+            origFlag = lastToken(
+                    rootChecked("device_config get " + FLAG_NAMESPACE + " " + FLAG_KEY, 15));
+            if (origFlag.isEmpty()) origFlag = "null";
+        }
+        persistRestore(true, orig, origFlag);
         setStatus(STATE_STARTING, "Mounting patched eye model", profile.id, false, true);
 
         boolean traced = false;
@@ -327,10 +378,11 @@ public final class EyePipeline {
                 throw new EyeException("Mounted eye model failed its hash check");
             }
             abortIfStopping();
-            rootChecked("setprop " + PROPERTY + " true", 15);
+            setExperimentalModel();
             rootChecked("stop trackingservice", 15);
             rootChecked("start trackingservice", 15);
             waitTrackingRunning();
+            persistLoaded(trackingPid(), profile.id, patched.sha256);
             // Mounted and the tracking service is back. Gaze packets carry bit 2
             // only if the service can actually see the patched model; otherwise
             // both eyes still follow Meta's blended gaze.
@@ -339,6 +391,7 @@ public final class EyePipeline {
             abortIfStopping();
             startTrace(profile);
             traced = true;
+            startWatchdog(profile);
             switch (check) {
                 case NOT_VISIBLE:
                     return "Tracking service cannot see the patched model; streaming "
@@ -359,6 +412,40 @@ public final class EyePipeline {
             if (failure instanceof EyeException) throw failure;
             throw new EyeException("Eye pipeline failed: " + failure.getMessage());
         }
+    }
+
+    /**
+     * Whether the running tracking service is the one that loaded the patch,
+     * with the same engine profile, and the mounted file is still the patch.
+     */
+    private boolean patchStillLoaded(Profile profile) throws Exception {
+        SharedPreferences prefs = restorePrefs();
+        String pid = trackingPid();
+        if (pid.isEmpty() || !pid.equals(prefs.getString(KEY_SERVICE_PID, ""))) return false;
+        if (prefs.getInt(KEY_PROFILE, 0) != profile.id) return false;
+        String expected = prefs.getString(KEY_PATCH_SHA, "");
+        String mountedSum = firstToken(
+                rootChecked("sha256sum " + quote(TARGET), 30).trim()).toLowerCase();
+        return !expected.isEmpty() && mountedSum.equals(expected);
+    }
+
+    /** Starts tracing over a patch an earlier stream left loaded; no restart. */
+    private String resumeTrace(Profile profile) throws Exception {
+        setStatus(STATE_STARTING, "Reusing the per-eye model", profile.id, false, true);
+        setExperimentalModel();
+        MountCheck check = verifyMountVisible();
+        modelActive = check != MountCheck.NOT_VISIBLE;
+        abortIfStopping();
+        startTrace(profile);
+        startWatchdog(profile);
+        return check == MountCheck.NOT_VISIBLE
+                ? "Tracking service cannot see the patched model; streaming "
+                        + "Meta's blended gaze (no convergence)"
+                : null;
+    }
+
+    private boolean isMounted() {
+        return !rootAllow("grep -F " + quote(TARGET) + " /proc/mounts", 15).out.trim().isEmpty();
     }
 
     private void startTrace(Profile profile) throws Exception {
@@ -382,12 +469,21 @@ public final class EyePipeline {
 
     private void readTrace(Process cat, Profile profile) {
         TraceParser parser = new TraceParser();
+        long samples = 0;
+        long loggedAt = System.nanoTime();
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(cat.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while (!stopping && (line = reader.readLine()) != null) {
+                long now = System.nanoTime();
+                if (now - loggedAt >= SAMPLE_LOG_INTERVAL_NS) {
+                    Log.i(TAG, "Eye trace: " + samples + " gaze samples in the last minute");
+                    samples = 0;
+                    loggedAt = now;
+                }
                 TraceParser.GazePair pair = parser.parse(line);
                 if (pair == null) continue;
+                samples++;
                 long sequence = gazeSequence.incrementAndGet();
                 int flags = (pair.tag0Valid ? GazePackets.FLAG_TAG0_VALID : 0)
                         | (pair.tag1Valid ? GazePackets.FLAG_TAG1_VALID : 0)
@@ -396,9 +492,77 @@ public final class EyePipeline {
                         flags, profile.id, pair.tag0, pair.tag1);
                 gazeSink.sendGazePacket(packet);
             }
-        } catch (IOException stopped) {
-            if (!stopping) Log.i(TAG, "Eye trace reader ended: " + stopped);
+            if (!stopping) Log.w(TAG, "Eye trace reader ended: its cat exited");
+        } catch (IOException | RuntimeException ended) {
+            if (!stopping) Log.w(TAG, "Eye trace reader ended: " + ended);
         }
+    }
+
+    // ---- watchdog --------------------------------------------------------
+
+    /**
+     * Every few seconds while running: starts the trace reader again if it
+     * has ended (its root {@code cat} can be killed, and nothing else would
+     * notice), and sets the model flag again if a DeviceConfig sync reset it.
+     */
+    private void startWatchdog(Profile profile) {
+        readerRestarts = 0;
+        Thread watchdog = new Thread(() -> {
+            int failures = 0;
+            while (!stopping) {
+                sleepMillis(WATCH_INTERVAL_MS);
+                synchronized (lifecycle) {
+                    if (stopping) return;
+                    Thread reader = traceThread;
+                    if (failures < MAX_READER_FAILURES && (reader == null || !reader.isAlive())) {
+                        failures = restartReader(profile) ? 0 : failures + 1;
+                    }
+                    keepExperimentalModel();
+                }
+            }
+        }, "eye-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /** Restarts the trace from scratch; returns whether it is reading again. */
+    private boolean restartReader(Profile profile) {
+        readerRestarts++;
+        Log.w(TAG, "Eye trace reader stopped; restarting it (restart " + readerRestarts + ")");
+        try {
+            startTrace(profile);
+            setStatus(STATE_RUNNING, "Independent eye gaze active (gaze reader restarted "
+                    + readerRestarts + (readerRestarts == 1 ? " time)" : " times)"),
+                    profile.id, modelActive, true);
+            return true;
+        } catch (Exception failure) {
+            Log.w(TAG, "Eye trace reader restart failed: " + failure.getMessage());
+            setStatus(STATE_ERROR, "Eye gaze reader stopped and could not restart: "
+                    + failure.getMessage(), profile.id, modelActive, true);
+            return false;
+        }
+    }
+
+    /** Sets the model flag again if something reset it, which DeviceConfig syncs do. */
+    private void keepExperimentalModel() {
+        String value = rootAllow("getprop " + PROPERTY, 10).out.trim();
+        if ("true".equals(value)) return;
+        Log.w(TAG, "Eye model flag was reset to '" + value + "'; setting it again");
+        try {
+            setExperimentalModel();
+        } catch (Exception failure) {
+            Log.w(TAG, "Could not set the eye model flag again: " + failure.getMessage());
+        }
+    }
+
+    /**
+     * Turns on the flag in DeviceConfig, so its syncs keep it, and in the
+     * property the tracking service reads, which DeviceConfig's copy reaches
+     * only after a moment.
+     */
+    private void setExperimentalModel() throws Exception {
+        rootChecked("device_config put " + FLAG_NAMESPACE + " " + FLAG_KEY + " true", 15);
+        rootChecked("setprop " + PROPERTY + " true", 15);
     }
 
     // ---- restore / cleanup ----------------------------------------------
@@ -408,17 +572,31 @@ public final class EyePipeline {
                 modelActive, true);
         safeTraceCleanup();
         String orig = readOrigProp();
-        rootAllow("stop trackingservice", 15);
+        String origFlag = readOrigFlag();
+        // After a reboot the bind mount has gone and the tracking service runs
+        // Meta's model files, so only the flag needs putting back.
+        boolean mounted = isMounted();
+        if (mounted) rootAllow("stop trackingservice", 15);
+        // "null" means DeviceConfig had no value; null, that the patch came
+        // from a build that didn't touch DeviceConfig, so it is left alone.
+        if ("null".equals(origFlag)) {
+            rootAllow("device_config delete " + FLAG_NAMESPACE + " " + FLAG_KEY, 15);
+        } else if (origFlag != null) {
+            rootAllow("device_config put " + FLAG_NAMESPACE + " " + FLAG_KEY + " "
+                    + quote(origFlag), 15);
+        }
         rootAllow("setprop " + PROPERTY + " " + orig, 15);
-        rootAllow("umount " + quote(TARGET), 15);
-        rootAllow("start trackingservice", 15);
-        try {
-            waitTrackingRunning();
-        } catch (Exception ignored) {
-            // service will come back on its own; nothing more we can do here
+        if (mounted) {
+            rootAllow("umount " + quote(TARGET), 15);
+            rootAllow("start trackingservice", 15);
+            try {
+                waitTrackingRunning();
+            } catch (Exception ignored) {
+                // service will come back on its own; nothing more we can do here
+            }
         }
         rootAllow("rm -f " + quote(PATCHED), 15);
-        persistRestore(false, "false");
+        persistRestore(false, "false", null);
         modelActive = false;
         engineProfileId = 0;
         setStatus(STATE_OFF, "Stock eye model restored", 0, false, false);
@@ -507,14 +685,20 @@ public final class EyePipeline {
 
     /** Whether the running tracking service's mount namespace has our bind mount. */
     private MountCheck verifyMountVisible() {
+        String pid = trackingPid();
+        if (pid.isEmpty()) return MountCheck.UNVERIFIED;
+        String seen = rootAllow(
+                "grep -F " + quote(TARGET) + " /proc/" + pid + "/mounts", 10).out;
+        return seen.trim().isEmpty() ? MountCheck.NOT_VISIBLE : MountCheck.VISIBLE;
+    }
+
+    /** The running tracking service's pid, or empty when it can't be found. */
+    private String trackingPid() {
         String pid = rootAllow("getprop init.svc_debug_pid.trackingservice", 10).out.trim();
         if (pid.isEmpty() || !pid.matches("\\d+")) {
             pid = firstToken(rootAllow("pidof trackingservice", 10).out.trim());
         }
-        if (pid.isEmpty() || !pid.matches("\\d+")) return MountCheck.UNVERIFIED;
-        String seen = rootAllow(
-                "grep -F " + quote(TARGET) + " /proc/" + pid + "/mounts", 10).out;
-        return seen.trim().isEmpty() ? MountCheck.NOT_VISIBLE : MountCheck.VISIBLE;
+        return pid.matches("\\d+") ? pid : "";
     }
 
     // ---- persistence -----------------------------------------------------
@@ -532,10 +716,27 @@ public final class EyePipeline {
         return orig == null || orig.isEmpty() ? "false" : orig;
     }
 
-    private void persistRestore(boolean pending, String orig) {
-        restorePrefs().edit()
+    /** DeviceConfig's flag before the patch, or {@code null} when none was recorded. */
+    private String readOrigFlag() {
+        return restorePrefs().getString(KEY_ORIG_FLAG, null);
+    }
+
+    private void persistRestore(boolean pending, String orig, String origFlag) {
+        SharedPreferences.Editor editor = restorePrefs().edit()
                 .putBoolean(KEY_RESTORE_PENDING, pending)
                 .putString(KEY_ORIG_PROP, orig)
+                .putString(KEY_ORIG_FLAG, origFlag);
+        if (!pending) {
+            editor.remove(KEY_SERVICE_PID).remove(KEY_PROFILE).remove(KEY_PATCH_SHA);
+        }
+        editor.commit();
+    }
+
+    private void persistLoaded(String pid, int profile, String patchSha) {
+        restorePrefs().edit()
+                .putString(KEY_SERVICE_PID, pid)
+                .putInt(KEY_PROFILE, profile)
+                .putString(KEY_PATCH_SHA, patchSha)
                 .commit();
     }
 
