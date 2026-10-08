@@ -38,7 +38,7 @@ CI does not run these, so run them yourself when you touch the area:
 - Tongue training runs below normal priority while `VRChat.exe` runs, checked every 2 s (`extensions/quest-pro/daemon/src/priority.rs`).
 - Threads are named (`output`, `local-api`, `quest-pro-tongue`, ...), so Process Explorer's Threads tab shows which one is busy.
 - Logging: `RUST_LOG=info,vrft_d=debug`.
-- Env overrides: `VRFT_QUEST_PRO_ADDR`, `VRFT_TONGUE_MODEL_DIR`, `VRFT_FACE_MODEL` (a universal face checkpoint, or a `universal-face-v2` `.npz` such as QFT+'s, non-commercial and never shipped; the Training page downloads QFT+'s into `models/qftplus/` on request, where it's the face model unless the model in use has its own), `VRFT_TONGUE_DEVICE`, `VRFT_EYE_CALIBRATION`.
+- Env overrides: `VRFT_QUEST_PRO_ADDR`, `VRFT_TONGUE_MODEL_DIR`, `VRFT_FACE_MODEL` (a universal face checkpoint, or a `universal-face-v2` `.npz` such as QFT+'s, non-commercial and never shipped; the Training page downloads QFT+'s into `models/qftplus/` on request, where it's the face model unless the model in use has its own; personal training fine-tunes its heads into `.local/tongue-models/<run>/`), `VRFT_TONGUE_DEVICE`, `VRFT_EYE_CALIBRATION`.
 - Tongue model inference runs on ONNX Runtime when its library is found (`crates/tongue/src/onnx/`), else on Burn:
   - The library is `onnxruntime.dll` beside `vrft_d.exe` (releases ship it with `DirectML.dll`), `.local/onnxruntime/` for a development build (`tools/onnxruntime/fetch.ps1`), or `VRFT_ONNXRUNTIME`.
   - The graphs are built from the safetensors weights at load. On the CPU a model calibrates on its first 48 frames, switches to int8 in the background and saves `<checkpoint>.int8.onnx` beside the checkpoint.
