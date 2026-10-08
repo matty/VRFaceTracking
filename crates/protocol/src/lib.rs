@@ -492,6 +492,13 @@ pub fn module_name(file: &str) -> String {
     match file {
         "vd_module.dll" => "Virtual Desktop".into(),
         "test_logger.dll" => "Test logger (no tracking)".into(),
+        "babble_module.dll" => "Project Babble".into(),
+        "steamlink_module.dll" => "SteamLink".into(),
+        "etvr_module.dll" => "EyeTrackVR".into(),
+        "livelink_module.dll" => "LiveLink".into(),
+        "meowface_module.dll" => "MeowFace".into(),
+        "ifacialmocap_module.dll" => "iFacialMocap".into(),
+        "cymple_module.dll" => "Cymple".into(),
         _ => file
             .strip_suffix(".dll")
             .unwrap_or(file)

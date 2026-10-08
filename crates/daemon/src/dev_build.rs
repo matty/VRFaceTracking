@@ -49,9 +49,12 @@ pub fn use_repository_root() -> Option<PathBuf> {
 
 /// Copies the workspace's tracking modules, the crates under `modules`, from
 /// `build`, where cargo leaves them beside the executable, into `plugins`,
-/// where the daemon loads them from, as a release package has them. Only
-/// those that changed are copied, so a module rebuilt since the daemon last
-/// started is picked up by the next start.
+/// where the daemon loads them from, as a release package has them. Each
+/// module goes into its own subfolder (`plugins/<name>/<name>.dll`), matching
+/// the layout the plugin loader discovers recursively.
+///
+/// Only those that changed are copied, so a module rebuilt since the daemon
+/// last started is picked up by the next start.
 pub fn install_modules(build: &Path, modules: &Path, plugins: &Path) {
     for name in module_names(modules) {
         let file = format!(
@@ -64,13 +67,18 @@ pub fn install_modules(build: &Path, modules: &Path, plugins: &Path) {
         if !built.is_file() {
             continue;
         }
-        match copy_if_changed(&built, &plugins.join(&file)) {
-            Ok(true) => info!("Copied {file} from this build into {}", plugins.display()),
+        let dest_dir = plugins.join(&name);
+        if let Err(error) = fs::create_dir_all(&dest_dir) {
+            warn!("Couldn't create {}: {error}", dest_dir.display());
+            continue;
+        }
+        match copy_if_changed(&built, &dest_dir.join(&file)) {
+            Ok(true) => info!("Copied {file} from this build into {}", dest_dir.display()),
             Ok(false) => {}
             Err(error) => warn!(
                 "Couldn't copy {} into {}, so the one there may be out of date: {error}",
                 built.display(),
-                plugins.display()
+                dest_dir.display()
             ),
         }
     }
@@ -193,13 +201,19 @@ mod tests {
         fs::write(build.join(library("mine")), b"first").unwrap();
 
         install_modules(&build, &modules, &plugins);
-        assert_eq!(fs::read(plugins.join(library("mine"))).unwrap(), b"first");
+        assert_eq!(
+            fs::read(plugins.join("mine").join(library("mine"))).unwrap(),
+            b"first"
+        );
         assert!(!plugins.join(library("other")).exists());
         assert!(!plugins.join(library("unbuilt")).exists());
 
         fs::write(build.join(library("mine")), b"rebuilt").unwrap();
         install_modules(&build, &modules, &plugins);
-        assert_eq!(fs::read(plugins.join(library("mine"))).unwrap(), b"rebuilt");
+        assert_eq!(
+            fs::read(plugins.join("mine").join(library("mine"))).unwrap(),
+            b"rebuilt"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
