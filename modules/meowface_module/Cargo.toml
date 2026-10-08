@@ -1,0 +1,15 @@
+[package]
+name = "vrft-meowface-module"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meowface_module"
+crate-type = ["cdylib"]
+
+[dependencies]
+vrft-api = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

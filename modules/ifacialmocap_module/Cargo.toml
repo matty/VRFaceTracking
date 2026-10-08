@@ -1,0 +1,13 @@
+[package]
+name = "vrft-ifacialmocap-module"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ifacialmocap_module"
+crate-type = ["cdylib"]
+
+[dependencies]
+vrft-api = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "vrft-steamlink-module"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "steamlink_module"
+crate-type = ["cdylib"]
+
+[dependencies]
+vrft-api = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+rosc = "0.10"
