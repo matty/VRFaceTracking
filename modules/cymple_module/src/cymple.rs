@@ -601,9 +601,3 @@ mod tests {
         assert!(approx(w(&data, TongueOut), 1.0));
     }
 }
-
-#[no_mangle]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
-    Box::new(CympleModule::new())
-}

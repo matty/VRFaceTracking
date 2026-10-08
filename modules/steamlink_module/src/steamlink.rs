@@ -206,6 +206,12 @@ impl TrackingModule for SteamLinkModule {
     }
 }
 
+#[no_mangle]
+#[allow(improper_ctypes_definitions)]
+pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
+    Box::new(SteamLinkModule::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,10 +349,4 @@ mod tests {
         module.apply_message(&osc_msg("/sl/xrfb/facew/UnknownShape", 0.5), &mut data);
         assert_eq!(data, before);
     }
-}
-
-#[no_mangle]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
-    Box::new(SteamLinkModule::new())
 }

@@ -170,6 +170,12 @@ impl TrackingModule for BabbleModule {
     }
 }
 
+#[no_mangle]
+#[allow(improper_ctypes_definitions)]
+pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
+    Box::new(BabbleModule::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,10 +273,4 @@ mod tests {
         apply_message(&msg, &mut data);
         assert_eq!(data, before);
     }
-}
-
-#[no_mangle]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn create_module() -> Box<dyn TrackingModule> {
-    Box::new(BabbleModule::new())
 }
