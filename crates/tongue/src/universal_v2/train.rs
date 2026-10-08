@@ -1208,7 +1208,6 @@ pub(crate) fn run(
         .flatten()
         .collect(),
         face_setup: face_setup.map(|(dir, _)| dir.display().to_string()),
-        ..TrainingReport::default()
     };
     write_json(&output.join("report.json"), &serde_json::to_value(&report)?)?;
     progress.report(TrainingProgress {

@@ -3,17 +3,10 @@
 use std::str::FromStr;
 
 /// GPU through wgpu (DX12 or Vulkan), so NVIDIA, AMD and Intel all work
-/// without CUDA or ROCm. The `cuda` feature uses NVIDIA's CUDA instead, for
-/// rented Linux machines that have no Vulkan driver.
-#[cfg(not(feature = "cuda"))]
+/// without CUDA or ROCm.
 pub type Gpu = burn::backend::Wgpu;
-#[cfg(feature = "cuda")]
-pub type Gpu = burn::backend::Cuda;
-/// How progress and reports name the GPU backend.
-#[cfg(not(feature = "cuda"))]
+/// How the model status names the GPU backend.
 pub const GPU_NAME: &str = "GPU (wgpu)";
-#[cfg(feature = "cuda")]
-pub const GPU_NAME: &str = "GPU (CUDA)";
 pub type Cpu = burn::backend::Flex;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

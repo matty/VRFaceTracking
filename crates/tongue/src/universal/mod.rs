@@ -4,7 +4,9 @@
 //! whenever the headset sends only the mouth cameras.
 //!
 //! The design follows QFT+'s "universal face" model (MIT license), rebuilt
-//! in Burn and trained from VRFT's own v8 encoder rather than QFT+'s weights:
+//! in Burn and trained from VRFT's own v8 encoder rather than QFT+'s weights.
+//! Models of it that earlier versions trained still run; personal training
+//! now fine-tunes QFT+'s own model (`universal_v2`) instead.
 //!
 //! - Each camera view, shrunk to [`IMAGE_SIZE`] px, goes through a shared
 //!   front: the first three stages of the v8 encoder (`encoder.network.0-11`,
@@ -28,7 +30,6 @@ pub mod checkpoint;
 pub mod data;
 pub mod infer;
 pub mod net;
-pub mod train;
 
 pub use checkpoint::{FaceCheckpoint, FaceMetadata};
 pub use infer::{Enrollment, FaceModel, FacePrediction};
@@ -100,25 +101,6 @@ pub const BROW_START: usize = MOUTH_START + MOUTH_OUTPUTS.len();
 pub const SIGNED: [usize; 2] = [2, 3];
 
 const _: () = assert!(BROW_START + BROW_OUTPUTS.len() == FACE_TARGETS.len());
-
-/// The anchor slot a recorded pose shows, for recordings made before the
-/// face setup, whose poses carry no slot of their own.
-pub fn slot_for_pose(pose: &str) -> Option<usize> {
-    let slot = match pose {
-        "Neutral" | "Relax and look ahead" => "neutral",
-        "Jaw open, no tongue" => "jaw_open",
-        "Pucker, no tongue" => "pucker",
-        "Both cheeks puffed" | "Cheeks puffed" => "puff",
-        "Tongue straight out" => "tongue_out",
-        "Cheeks sucked in" => "suck",
-        _ => return None,
-    };
-    ANCHOR_SLOTS.iter().position(|name| *name == slot)
-}
-
-pub fn slot_index(name: &str) -> Option<usize> {
-    ANCHOR_SLOTS.iter().position(|slot| *slot == name)
-}
 
 pub fn target_index(name: &str) -> Option<usize> {
     FACE_TARGETS.iter().position(|target| *target == name)

@@ -394,7 +394,6 @@ fn qftplus_heads_fine_tune_into_a_model_qfts_loader_reads() {
     let options = Options {
         epochs: 4,
         learning_rate: Some(1e-3),
-        ..Options::default()
     };
     run(&root.join("request.json"), &output, &options).unwrap();
 

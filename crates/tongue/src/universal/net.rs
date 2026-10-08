@@ -381,35 +381,10 @@ fn global_mean<B: Backend>(features: Tensor<B, 4>) -> Tensor<B, 2> {
         .reshape([n, channels])
 }
 
-/// The front and the three tails from a v8 tongue checkpoint's encoder
-/// (`encoder.network.*`, the same shapes); everything else is left for
-/// fresh initialisation.
-pub fn from_v8_encoder(v8: &Weights) -> Weights {
-    let mut out = Weights::new();
-    for (name, data) in v8 {
-        let Some(rest) = name.strip_prefix("encoder.network.") else {
-            continue;
-        };
-        let index: usize = match rest.split('.').next().and_then(|i| i.parse().ok()) {
-            Some(index) => index,
-            None => continue,
-        };
-        if index < TAIL.0 {
-            out.insert(format!("front.{rest}"), data.clone());
-        } else {
-            for tail in TAILS {
-                out.insert(format!("{tail}.{rest}"), data.clone());
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::Cpu;
-    use crate::model::TongueNet;
 
     #[test]
     fn shapes_follow_the_reference_layout() {
@@ -469,36 +444,6 @@ mod tests {
         let mut missing = weights;
         missing.remove("brow_missing");
         assert!(FaceNet::<Cpu>::from_weights(missing, false, &device).is_err());
-    }
-
-    #[test]
-    fn the_front_and_tails_start_from_the_v8_encoder() {
-        let device = Default::default();
-        let v8 = TongueNet::<Cpu>::init(&device).weights();
-        let start = from_v8_encoder(&v8);
-        assert_eq!(start["front.0.weight"], v8["encoder.network.0.weight"]);
-        assert_eq!(
-            start["front.11.network.4.running_var"],
-            v8["encoder.network.11.network.4.running_var"]
-        );
-        for tail in TAILS {
-            assert_eq!(
-                start[&format!("{tail}.12.weight")],
-                v8["encoder.network.12.weight"]
-            );
-            assert_eq!(
-                start[&format!("{tail}.15.network.0.weight")],
-                v8["encoder.network.15.network.0.weight"]
-            );
-        }
-        assert!(!start
-            .keys()
-            .any(|name| name.starts_with("stereo_fusion") || name.starts_with("head")));
-        let net = FaceNet::<Cpu>::from_weights(start.clone(), true, &device).unwrap();
-        assert_eq!(
-            net.weights()["brow_tail.13.weight"],
-            start["brow_tail.13.weight"]
-        );
     }
 
     #[test]
