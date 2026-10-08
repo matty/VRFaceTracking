@@ -22,6 +22,15 @@ impl EtvrModule {
             is_dual_eye: false,
         }
     }
+
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
 }
 
 fn apply_message(
@@ -431,5 +440,116 @@ mod tests {
         assert_eq!(data.shapes[BrowPinchRight as usize].weight, 0.0);
         assert_eq!(data.shapes[BrowOuterUpRight as usize].weight, 0.0);
         assert_eq!(data.shapes[BrowInnerUpRight as usize].weight, 0.0);
+    }
+
+    // UDP simulation tests
+
+    #[test]
+    fn udp_round_trip_v2_eye_gaze() {
+        use rosc::{OscBundle, OscPacket};
+
+        let mut module = EtvrModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        let bundle = OscBundle {
+            timetag: rosc::OscTime {
+                seconds: 0,
+                fractional: 0,
+            },
+            content: vec![
+                OscPacket::Message(OscMessage {
+                    addr: "/etvr/v2/EyeLeftX".to_string(),
+                    args: vec![OscType::Float(0.3)],
+                }),
+                OscPacket::Message(OscMessage {
+                    addr: "/etvr/v2/EyeLeftY".to_string(),
+                    args: vec![OscType::Float(-0.2)],
+                }),
+                OscPacket::Message(OscMessage {
+                    addr: "/etvr/v2/EyeRightX".to_string(),
+                    args: vec![OscType::Float(-0.5)],
+                }),
+                OscPacket::Message(OscMessage {
+                    addr: "/etvr/v2/EyeRightY".to_string(),
+                    args: vec![OscType::Float(0.4)],
+                }),
+            ],
+        };
+
+        let encoded = rosc::encoder::encode(&OscPacket::Bundle(bundle)).unwrap();
+        sender.send_to(&encoded, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        assert!(module.is_v2, "module should auto-detect V2 protocol");
+        assert!(module.is_dual_eye, "module should detect dual-eye mode");
+        assert!((data.eye.left.gaze.x - 0.3).abs() < 1e-6);
+        assert!((data.eye.left.gaze.y - (-0.2)).abs() < 1e-6);
+        assert!((data.eye.right.gaze.x - (-0.5)).abs() < 1e-6);
+        assert!((data.eye.right.gaze.y - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn udp_round_trip_v1_eye_data() {
+        use rosc::OscPacket;
+
+        let mut module = EtvrModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        // Send a V1 LeftEyeX message
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/etvr/LeftEyeX".to_string(),
+            args: vec![OscType::Float(0.7)],
+        });
+        let encoded = rosc::encoder::encode(&packet).unwrap();
+        sender.send_to(&encoded, addr).unwrap();
+
+        // Send a V1 EyesY message
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/etvr/EyesY".to_string(),
+            args: vec![OscType::Float(-0.4)],
+        });
+        let encoded = rosc::encoder::encode(&packet).unwrap();
+        sender.send_to(&encoded, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        assert!(
+            !module.is_v2,
+            "V1 addresses should not trigger V2 detection"
+        );
+        assert!((data.eye.left.gaze.x - 0.7).abs() < 1e-6);
+        assert!((data.eye.left.gaze.y - (-0.4)).abs() < 1e-6);
+        assert!((data.eye.right.gaze.y - (-0.4)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut module = EtvrModule::new();
+        let _addr = module.bind_test_socket();
+
+        let mut data = UnifiedTrackingData::default();
+        // No data sent, update should succeed without error
+        module.update(&mut data).unwrap();
+
+        // Data should remain at defaults
+        assert_eq!(data.eye.left.gaze.x, 0.0);
+        assert_eq!(data.eye.left.gaze.y, 0.0);
+        assert_eq!(data.eye.right.gaze.x, 0.0);
+        assert_eq!(data.eye.right.gaze.y, 0.0);
+        assert_eq!(data.eye.left.openness, 0.0);
+        assert_eq!(data.eye.right.openness, 0.0);
+        assert!(!module.is_v2);
+        assert!(!module.is_dual_eye);
     }
 }

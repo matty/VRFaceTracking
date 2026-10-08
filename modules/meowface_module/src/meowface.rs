@@ -21,6 +21,15 @@ impl MeowFaceModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_packet(&self, packet: &[u8], data: &mut UnifiedTrackingData) {
         let Ok(mf) = serde_json::from_slice::<MeowFaceData>(packet) else {
             return;
@@ -389,5 +398,104 @@ mod tests {
         let packet = make_packet(true, (0.0, 0.0), (0.0, 0.0), &[("JAWOPEN", 0.65)]);
         module.parse_packet(&packet, &mut data);
         assert!((weight(&data, JawOpen) - 0.65).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_round_trip_json_face_data() {
+        let mut module = MeowFaceModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let packet = make_packet(
+            true,
+            (10.0, 20.0),
+            (15.0, 25.0),
+            &[
+                ("jawOpen", 0.75),
+                ("mouthSmileRight", 0.6),
+                ("eyeBlinkLeft", 0.4),
+                ("eyeSquintLeft", 0.2),
+            ],
+        );
+        sender.send_to(&packet, addr).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        // Eye gaze: gaze.x = eye.y * DEG_TO_RAD, gaze.y = -eye.x * DEG_TO_RAD
+        assert!((data.eye.left.gaze.x - 20.0 * DEG_TO_RAD).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y - (-10.0 * DEG_TO_RAD)).abs() < 1e-5);
+        assert!((data.eye.right.gaze.x - 25.0 * DEG_TO_RAD).abs() < 1e-5);
+        assert!((data.eye.right.gaze.y - (-15.0 * DEG_TO_RAD)).abs() < 1e-5);
+
+        // JawOpen
+        assert!((weight(&data, JawOpen) - 0.75).abs() < 1e-5);
+
+        // Smile fan-out
+        assert!((weight(&data, MouthCornerPullRight) - 0.6).abs() < 1e-5);
+        assert!((weight(&data, MouthCornerSlantRight) - 0.6).abs() < 1e-5);
+        assert!((weight(&data, CheekSquintRight) - 0.6).abs() < 1e-5);
+
+        // Eye openness from blink/squint
+        let blink = 0.4_f32;
+        let squint = 0.2_f32;
+        let expected_openness = 1.0 - (blink + blink.powf(0.33) * squint.powf(1.25)).min(1.0);
+        assert!((data.eye.left.openness - expected_openness).abs() < 1e-5);
+
+        // Pupil diameter set
+        assert!((data.eye.left.pupil_diameter_mm - 5.0).abs() < 1e-5);
+        assert!((data.eye.right.pupil_diameter_mm - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_round_trip_partial_data() {
+        let mut module = MeowFaceModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        // Only JawOpen and mouthPucker, no eye data, no other shapes
+        let packet = make_packet(
+            true,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            &[("jawOpen", 0.9), ("mouthPucker", 0.5)],
+        );
+        sender.send_to(&packet, addr).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        // Provided fields are set
+        assert!((weight(&data, JawOpen) - 0.9).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperRight) - 0.5).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerUpperLeft) - 0.5).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerLowerRight) - 0.5).abs() < 1e-5);
+        assert!((weight(&data, LipPuckerLowerLeft) - 0.5).abs() < 1e-5);
+
+        // Fields not in the payload stay at 0
+        assert!((weight(&data, MouthCornerPullRight)).abs() < 1e-5);
+        assert!((weight(&data, TongueOut)).abs() < 1e-5);
+        assert!((weight(&data, BrowPinchLeft)).abs() < 1e-5);
+        assert!((weight(&data, NoseSneerRight)).abs() < 1e-5);
+
+        // Eye gaze stays at 0 (eyes at origin)
+        assert!((data.eye.left.gaze.x).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut module = MeowFaceModule::new();
+        let _addr = module.bind_test_socket();
+
+        // Don't send anything, just call update
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        module.update(&mut data).unwrap();
+
+        // Data unchanged
+        assert_eq!(data, before);
     }
 }

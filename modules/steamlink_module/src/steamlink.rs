@@ -19,6 +19,15 @@ impl SteamLinkModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_osc_and_apply(&self, packet: &[u8], data: &mut UnifiedTrackingData) -> Result<()> {
         let (_, msg) = rosc::decoder::decode_udp(packet)?;
         match msg {
@@ -347,6 +356,89 @@ mod tests {
         let mut data = UnifiedTrackingData::default();
         let before = data.clone();
         module.apply_message(&osc_msg("/sl/xrfb/facew/UnknownShape", 0.5), &mut data);
+        assert_eq!(data, before);
+    }
+
+    // --- UDP simulation tests ---
+
+    fn send_osc_packet(target: std::net::SocketAddr, msg: rosc::OscMessage) {
+        let packet = rosc::OscPacket::Message(msg);
+        let buf = rosc::encoder::encode(&packet).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&buf, target).unwrap();
+    }
+
+    #[test]
+    fn udp_round_trip_face_expression() {
+        let mut module = SteamLinkModule::new();
+        let addr = module.bind_test_socket();
+        let mut data = UnifiedTrackingData::default();
+
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/xrfb/facew/JawDrop"),
+            args: vec![rosc::OscType::Float(0.65)],
+        };
+        send_osc_packet(addr, msg);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        module.update(&mut data).unwrap();
+        assert!((weight(&data, JawOpen) - 0.65).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_round_trip_gaze() {
+        let mut module = SteamLinkModule::new();
+        let addr = module.bind_test_socket();
+        let mut data = UnifiedTrackingData::default();
+
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/eyeTrackedGazePoint"),
+            args: vec![
+                rosc::OscType::Float(1.0),
+                rosc::OscType::Float(0.5),
+                rosc::OscType::Float(-2.0),
+            ],
+        };
+        send_osc_packet(addr, msg);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        module.update(&mut data).unwrap();
+        let expected_x = (1.0_f32 / 2.0).atan();
+        let expected_y = (0.5_f32 / 2.0).atan();
+        assert!((data.eye.left.gaze.x - expected_x).abs() < 1e-5);
+        assert!((data.eye.left.gaze.y - expected_y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_round_trip_eye_openness() {
+        let mut module = SteamLinkModule::new();
+        let addr = module.bind_test_socket();
+        let mut data = UnifiedTrackingData::default();
+
+        // Set squint first
+        data.shapes[EyeSquintLeft as usize].weight = 0.5;
+
+        let msg = rosc::OscMessage {
+            addr: String::from("/sl/xrfb/facew/EyesClosedL"),
+            args: vec![rosc::OscType::Float(0.4)],
+        };
+        send_osc_packet(addr, msg);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        module.update(&mut data).unwrap();
+        let expected = (1.0 - (0.4_f32 + 0.4 * 0.5).clamp(0.0, 1.0)).max(0.0);
+        assert!((data.eye.left.openness - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut module = SteamLinkModule::new();
+        let _addr = module.bind_test_socket();
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+
+        // Send nothing, just call update
+        module.update(&mut data).unwrap();
         assert_eq!(data, before);
     }
 }

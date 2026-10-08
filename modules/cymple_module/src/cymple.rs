@@ -25,6 +25,15 @@ impl CympleModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_packet(&self, packet: &[u8], data: &mut UnifiedTrackingData) {
         if packet.len() != PACKET_SIZE {
             return;
@@ -599,5 +608,91 @@ mod tests {
         assert!(approx(w(&data, EyeSquintLeft), 1.0));
         assert!(approx(w(&data, JawOpen), 0.0));
         assert!(approx(w(&data, TongueOut), 1.0));
+    }
+
+    #[test]
+    fn udp_round_trip_binary_packet() {
+        let mut module = CympleModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        let mut f = [0.0f32; 70];
+        f[0] = 0.3; // left gaze y
+        f[1] = -0.4; // right gaze y
+        f[2] = 0.5; // left gaze x
+        f[3] = -0.6; // right gaze x
+        f[4] = 0.7; // left pupil diameter
+        f[5] = 0.8; // right pupil diameter
+        f[6] = 0.2; // left lid close -> openness = 0.8
+        f[7] = 0.9; // right lid close -> openness = 0.1
+        f[8] = 0.11; // EyeSquintLeft
+        f[31] = 0.75; // JawOpen
+        f[61] = 0.42; // TongueOut
+
+        let packet = make_packet(FLAG_MOUTH | FLAG_EYE, &f);
+        sender.send_to(&packet, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        // Eye gaze
+        assert!(approx(data.eye.left.gaze.y, 0.3));
+        assert!(approx(data.eye.right.gaze.y, -0.4));
+        assert!(approx(data.eye.left.gaze.x, 0.5));
+        assert!(approx(data.eye.right.gaze.x, -0.6));
+        // Pupil diameter
+        assert!(approx(data.eye.left.pupil_diameter_mm, 0.7));
+        assert!(approx(data.eye.right.pupil_diameter_mm, 0.8));
+        // Openness
+        assert!(approx(data.eye.left.openness, 0.8));
+        assert!(approx(data.eye.right.openness, 0.1));
+        // Expressions
+        assert!(approx(w(&data, EyeSquintLeft), 0.11));
+        assert!(approx(w(&data, JawOpen), 0.75));
+        assert!(approx(w(&data, TongueOut), 0.42));
+    }
+
+    #[test]
+    fn udp_undersized_packet_ignored() {
+        let mut module = CympleModule::new();
+        let addr = module.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        // Send a packet that is too small (100 bytes instead of 292).
+        let short_packet = vec![0u8; 100];
+        sender.send_to(&short_packet, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        // Everything should remain at defaults.
+        assert!(approx(data.eye.left.gaze.x, 0.0));
+        assert!(approx(data.eye.left.gaze.y, 0.0));
+        assert!(approx(data.eye.left.openness, 0.0));
+        assert!(approx(w(&data, JawOpen), 0.0));
+        assert!(approx(w(&data, TongueOut), 0.0));
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut module = CympleModule::new();
+        let _addr = module.bind_test_socket();
+
+        // Don't send anything; just call update on an empty socket.
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        // No error, and all data remains at defaults.
+        assert!(approx(data.eye.left.gaze.x, 0.0));
+        assert!(approx(data.eye.left.gaze.y, 0.0));
+        assert!(approx(data.eye.left.openness, 0.0));
+        assert!(approx(w(&data, JawOpen), 0.0));
+        assert!(approx(w(&data, TongueOut), 0.0));
     }
 }

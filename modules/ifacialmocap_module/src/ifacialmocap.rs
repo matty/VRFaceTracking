@@ -23,6 +23,15 @@ impl IFacialMocapModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_packet(&self, packet: &[u8], data: &mut UnifiedTrackingData) {
         let text = match std::str::from_utf8(packet) {
             Ok(t) => t,
@@ -411,6 +420,109 @@ mod tests {
         assert!((shape(&data, MouthCornerPullLeft) - 0.80).abs() < 1e-6);
         // mouthSmile_L -> MouthCornerPullRight (swapped)
         assert!((shape(&data, MouthCornerPullRight) - 0.40).abs() < 1e-6);
+    }
+
+    #[test]
+    fn udp_round_trip_face_data() {
+        let mut m = module();
+        let addr = m.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let payload = make_packet(&[
+            "jawOpen&75",
+            "cheekPuff&50",
+            "tongueOut&90",
+            "mouthClose&30",
+            "=head#1000,2000,-500,1.0,2.0,3.0",
+        ]);
+        sender.send_to(&payload, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        m.update(&mut data).unwrap();
+
+        assert!((shape(&data, JawOpen) - 0.75).abs() < 1e-6);
+        assert!((shape(&data, CheekPuffLeft) - 0.50).abs() < 1e-6);
+        assert!((shape(&data, CheekPuffRight) - 0.50).abs() < 1e-6);
+        assert!((shape(&data, TongueOut) - 0.90).abs() < 1e-6);
+        assert!((shape(&data, MouthClosed) - 0.30).abs() < 1e-6);
+
+        assert!((data.head.head_pitch - 10.0).abs() < 1e-6);
+        assert!((data.head.head_yaw - 20.0).abs() < 1e-6);
+        assert!((data.head.head_roll - -5.0).abs() < 1e-6);
+        assert!((data.head.head_pos_x - 1.0).abs() < 1e-6);
+        assert!((data.head.head_pos_y - 2.0).abs() < 1e-6);
+        assert!((data.head.head_pos_z - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn udp_round_trip_left_right_swap() {
+        let mut m = module();
+        let addr = m.bind_test_socket();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        // ARKit _R blendshapes should map to Unified Left (and vice versa)
+        let payload = make_packet(&[
+            "eyeSquint_R&70",
+            "eyeSquint_L&30",
+            "noseSneer_R&60",
+            "noseSneer_L&20",
+            "mouthSmile_R&80",
+            "mouthSmile_L&40",
+            "browOuterUp_R&55",
+            "browOuterUp_L&25",
+            "rightEye#30.0,45.0,0.0",
+            "leftEye#20.0,10.0,0.0",
+        ]);
+        sender.send_to(&payload, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        m.update(&mut data).unwrap();
+
+        // Face shapes: _R -> Left, _L -> Right
+        assert!((shape(&data, EyeSquintLeft) - 0.70).abs() < 1e-6);
+        assert!((shape(&data, EyeSquintRight) - 0.30).abs() < 1e-6);
+        assert!((shape(&data, NoseSneerLeft) - 0.60).abs() < 1e-6);
+        assert!((shape(&data, NoseSneerRight) - 0.20).abs() < 1e-6);
+        assert!((shape(&data, MouthCornerPullLeft) - 0.80).abs() < 1e-6);
+        assert!((shape(&data, MouthCornerPullRight) - 0.40).abs() < 1e-6);
+        assert!((shape(&data, BrowOuterUpLeft) - 0.55).abs() < 1e-6);
+        assert!((shape(&data, BrowOuterUpRight) - 0.25).abs() < 1e-6);
+
+        // Eye gaze: rightEye -> left gaze, leftEye -> right gaze
+        let expected_left_x = (45.0f32 / 90.0).tan();
+        let expected_left_y = -(30.0f32 / 90.0).tan();
+        assert!((data.eye.left.gaze.x - expected_left_x).abs() < 1e-6);
+        assert!((data.eye.left.gaze.y - expected_left_y).abs() < 1e-6);
+
+        let expected_right_x = (10.0f32 / 90.0).tan();
+        let expected_right_y = -(20.0f32 / 90.0).tan();
+        assert!((data.eye.right.gaze.x - expected_right_x).abs() < 1e-6);
+        assert!((data.eye.right.gaze.y - expected_right_y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut m = module();
+        m.bind_test_socket();
+
+        let mut data = UnifiedTrackingData::default();
+        let original = UnifiedTrackingData::default();
+
+        // No data sent, update should succeed with no changes
+        m.update(&mut data).unwrap();
+
+        assert_eq!(data.head.head_pitch, original.head.head_pitch);
+        assert_eq!(data.head.head_yaw, original.head.head_yaw);
+        assert_eq!(data.eye.left.openness, original.eye.left.openness);
+        assert_eq!(data.eye.right.openness, original.eye.right.openness);
+        assert_eq!(
+            data.shapes[JawOpen as usize].weight,
+            original.shapes[JawOpen as usize].weight
+        );
     }
 }
 

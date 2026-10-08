@@ -19,6 +19,15 @@ impl BabbleModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_osc_and_apply(&self, packet: &[u8], data: &mut UnifiedTrackingData) -> Result<()> {
         let (_, msg) = rosc::decoder::decode_udp(packet)?;
         match msg {
@@ -271,6 +280,76 @@ mod tests {
             args: vec![rosc::OscType::Int(1)],
         };
         apply_message(&msg, &mut data);
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn udp_round_trip_osc_message() {
+        let mut module = BabbleModule::new();
+        let addr = module.bind_test_socket();
+
+        let msg = rosc::OscMessage {
+            addr: String::from("/jawOpen"),
+            args: vec![rosc::OscType::Float(0.75)],
+        };
+        let packet = rosc::encoder::encode(&rosc::OscPacket::Message(msg)).unwrap();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&packet, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        assert!((weight(&data, JawOpen) - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_round_trip_osc_bundle() {
+        let mut module = BabbleModule::new();
+        let addr = module.bind_test_socket();
+
+        let bundle = rosc::OscBundle {
+            timetag: rosc::OscTime {
+                seconds: 0,
+                fractional: 0,
+            },
+            content: vec![
+                rosc::OscPacket::Message(rosc::OscMessage {
+                    addr: String::from("/jawOpen"),
+                    args: vec![rosc::OscType::Float(0.5)],
+                }),
+                rosc::OscPacket::Message(rosc::OscMessage {
+                    addr: String::from("/tongueOut"),
+                    args: vec![rosc::OscType::Float(0.8)],
+                }),
+            ],
+        };
+        let packet = rosc::encoder::encode(&rosc::OscPacket::Bundle(bundle)).unwrap();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&packet, addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut data = UnifiedTrackingData::default();
+        module.update(&mut data).unwrap();
+
+        assert!((weight(&data, JawOpen) - 0.5).abs() < 1e-5);
+        assert!((weight(&data, TongueOut) - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn udp_no_data_no_error() {
+        let mut module = BabbleModule::new();
+        module.bind_test_socket();
+
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+
+        module.update(&mut data).unwrap();
+
         assert_eq!(data, before);
     }
 }

@@ -21,6 +21,15 @@ impl LiveLinkModule {
         }
     }
 
+    #[cfg(test)]
+    fn bind_test_socket(&mut self) -> std::net::SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let addr = socket.local_addr().unwrap();
+        self.socket = Some(socket);
+        addr
+    }
+
     fn parse_packet(&self, packet: &[u8], data: &mut UnifiedTrackingData) {
         if packet.len() < PAYLOAD_SIZE {
             return;
@@ -455,6 +464,93 @@ mod tests {
         m.parse_packet(&make_packet(&v), &mut data);
 
         assert!(approx(shape(&data, UnifiedExpressions::JawForward), 0.33));
+    }
+
+    /// Build a full Live Link Face packet with UE4 FArchive framing:
+    /// version(4) + UUID(16) + name_len(4) + name(N) + frame_num(4) +
+    /// frame_denom(4) + sub_frame(4) + count(4) + 61 BE floats(244).
+    fn make_livelink_packet(device_name: &str, values: &[f32; 61]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&6u32.to_be_bytes()); // version
+        buf.extend_from_slice(&[0u8; 16]); // UUID
+        let name_bytes = device_name.as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as i32).to_be_bytes());
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&1i32.to_be_bytes()); // frame number
+        buf.extend_from_slice(&30i32.to_be_bytes()); // frame denom
+        buf.extend_from_slice(&0.0f32.to_be_bytes()); // sub-frame
+        buf.extend_from_slice(&61i32.to_be_bytes()); // blend shape count
+        for &v in values {
+            buf.extend_from_slice(&v.to_be_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn udp_round_trip_with_realistic_packet() {
+        let mut m = LiveLinkModule::new();
+        let addr = m.bind_test_socket();
+
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut v = [0.0f32; 61];
+        v[17] = 0.75; // JawOpen
+        v[51] = 0.9; // TongueOut
+        v[55] = 0.2; // EyeYawLeft
+        v[56] = 0.1; // EyePitchLeft (negated)
+        v[52] = 0.5; // HeadYaw (negated)
+
+        let packet = make_livelink_packet("iPhone", &v);
+        sender.send_to(&packet, addr).unwrap();
+
+        let mut data = UnifiedTrackingData::default();
+        m.update(&mut data).unwrap();
+
+        assert!(approx(shape(&data, UnifiedExpressions::JawOpen), 0.75));
+        assert!(approx(shape(&data, UnifiedExpressions::TongueOut), 0.9));
+        assert!(approx(data.eye.left.gaze.x, 0.2));
+        assert!(approx(data.eye.left.gaze.y, -0.1));
+        assert!(approx(data.head.head_yaw, -0.5));
+    }
+
+    #[test]
+    fn udp_multiple_packets_last_wins() {
+        let mut m = LiveLinkModule::new();
+        let addr = m.bind_test_socket();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        let mut v1 = [0.0f32; 61];
+        v1[17] = 0.3;
+        sender
+            .send_to(&make_livelink_packet("iPhone", &v1), addr)
+            .unwrap();
+
+        let mut v2 = [0.0f32; 61];
+        v2[17] = 0.9;
+        sender
+            .send_to(&make_livelink_packet("iPhone", &v2), addr)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let mut data = UnifiedTrackingData::default();
+        m.update(&mut data).unwrap();
+
+        assert!(
+            approx(shape(&data, UnifiedExpressions::JawOpen), 0.9),
+            "last packet should win: {}",
+            shape(&data, UnifiedExpressions::JawOpen)
+        );
+    }
+
+    #[test]
+    fn udp_no_data_does_not_error() {
+        let mut m = LiveLinkModule::new();
+        m.bind_test_socket();
+
+        let mut data = UnifiedTrackingData::default();
+        let before = data.clone();
+        m.update(&mut data).unwrap();
+        assert_eq!(data, before);
     }
 }
 
