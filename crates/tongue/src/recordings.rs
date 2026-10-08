@@ -1,8 +1,8 @@
 //! Guided recordings, as the daemon saves them under
 //! `.local/tongue-captures/<recording>/`. Recordings from before the cheek
 //! puff heads carry tongue labels alone, so their cheeks count as unlabelled.
-//! Synthetic sets use the same format, stored already shrunk to the model's
-//! input size (`examples/pack_synthetic.rs`).
+//! Rendered sets from earlier versions use the same format, stored already
+//! shrunk to a model's input size.
 //!
 //! A frame holds the views of the cameras `metadata.json` lists in `cameras`,
 //! side by side: the mouth pair (2 and 3) in recordings from before the
@@ -36,8 +36,6 @@ pub struct Sample {
     /// Whether the cheek puffs were labelled, which they were in every
     /// recording made since they were added.
     pub cheeks_labelled: bool,
-    /// The tracking module's TongueOut at this frame, if one was running.
-    pub native: Option<f32>,
     /// A follow-the-dot frame, whose label moves with the dot.
     pub moving: bool,
     /// Labels for the universal face model's outputs beyond the tongue, by
@@ -55,7 +53,6 @@ pub struct Sample {
 #[derive(Deserialize)]
 struct Metadata {
     format: Option<String>,
-    mode: Option<String>,
     #[serde(rename = "bytesPerFrame")]
     bytes_per_frame: Option<usize>,
     targets: Option<Vec<String>>,
@@ -67,7 +64,6 @@ struct Line {
     step: u64,
     pose: String,
     targets: Vec<f32>,
-    native_tongue_out: Option<f32>,
     dot: Option<serde_json::Value>,
     #[serde(default)]
     face: BTreeMap<String, f32>,
@@ -85,12 +81,10 @@ pub struct Recording {
     /// Frames usable for training: not in a skipped or unticked pose.
     pub samples: Vec<Sample>,
     /// Each camera view's width and height: 400 as the headset sends them,
-    /// less in a synthetic set stored at the model's input size.
+    /// less in a rendered set stored at the model's input size.
     pub view: usize,
     /// The cameras each frame holds.
     pub layout: CameraLayout,
-    /// Rendered rather than recorded.
-    pub synthetic: bool,
 }
 
 impl Recording {
@@ -162,14 +156,6 @@ impl Recording {
                     dir.display()
                 );
             }
-            if let Some(native) = line.native_tongue_out {
-                if !native.is_finite() || !(0.0..=1.0).contains(&native) {
-                    bail!(
-                        "Invalid native TongueOut for sample {index} in {}",
-                        dir.display()
-                    );
-                }
-            }
             if line
                 .face
                 .values()
@@ -189,7 +175,6 @@ impl Recording {
                 pose: line.pose,
                 targets,
                 cheeks_labelled,
-                native: line.native_tongue_out,
                 moving: line.dot.is_some_and(|dot| !dot.is_null()),
                 face: line.face,
                 anchor: line.anchor,
@@ -201,7 +186,6 @@ impl Recording {
             samples,
             view,
             layout,
-            synthetic: metadata.mode.as_deref() == Some("synthetic"),
         })
     }
 

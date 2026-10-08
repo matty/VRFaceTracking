@@ -8,7 +8,7 @@ name = "vrft_tongue"
 path = "src/lib.rs"
 
 [dependencies]
-burn = { version = "=0.21.0", default-features = false, features = ["std", "wgpu", "flex", "simd", "autodiff", "fusion", "autotune"] }
+burn = { version = "=0.21.0", default-features = false, features = ["std", "wgpu", "flex", "simd", "fusion", "autotune"] }
 anyhow = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
@@ -27,10 +27,6 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-24", "directml"] }
-
-[features]
-# Train and run on NVIDIA's CUDA rather than wgpu, for Linux GPU servers.
-cuda = ["burn/cuda"]
 
 # examples/benchmark.rs reads the process's working set.
 [target.'cfg(windows)'.dev-dependencies]

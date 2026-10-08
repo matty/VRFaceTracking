@@ -99,7 +99,7 @@ Live, a fine-tuned model runs exactly as the QFTPlus Model does, with the face s
 
 ## Older models
 
-Models trained by earlier versions stay selectable and run as before: tongue pairs (`.safetensors`, or `.pt` from older still) and VRFT's own universal face model (`universal-face-v1.safetensors`). Training those is now a developer tool (`cargo run -p vrft-tongue --release --example train`; see [tools/tongue-remote](../../tools/tongue-remote/README.md)), and the rendered training examples they mixed in are no longer downloaded.
+Models trained by earlier versions stay selectable and run as before: tongue pairs (`.safetensors`, or `.pt` from older still) and VRFT's own universal face model (`universal-face-v1.safetensors`). They are no longer trained: training fine-tunes the QFTPlus Model.
 
 ## Local files
 

@@ -1,19 +1,17 @@
-//! The universal face model end to end on a tiny fixture, on the CPU: one
-//! training pass at 64 px over two rendered-style faces with enrollment
-//! poses, then loading the result, enrolling a face setup and predicting.
+//! Universal face models that earlier versions trained still load, enroll
+//! a face setup and predict, on the CPU, from a freshly initialised 64 px
+//! model.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use vrft_quest_pro_protocol::{CameraLayout, STRIP_BYTES};
 use vrft_tongue::backend::Cpu;
-use vrft_tongue::checkpoint::{Metadata, VisibilityGate};
-use vrft_tongue::model::{TongueNet, ARCHITECTURE};
-use vrft_tongue::train::{run, Options};
+use vrft_tongue::universal::net::FaceNet;
 use vrft_tongue::universal::{
-    Enrollment, FaceCheckpoint, FaceModel, ANCHOR_SLOTS, FACE_TARGETS, FILE_NAME,
+    Enrollment, FaceCheckpoint, FaceMetadata, FaceModel, ANCHOR_SLOTS, FACE_TARGETS, FILE_NAME,
 };
-use vrft_tongue::{Accelerator, Checkpoint, Role, TARGETS};
+use vrft_tongue::{Accelerator, TARGETS};
 
 const SIZE: usize = 64;
 
@@ -27,25 +25,6 @@ fn temp(name: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-fn base_models(dir: &Path) {
-    std::fs::create_dir_all(dir).unwrap();
-    for role in [Role::Gate, Role::Direction] {
-        Checkpoint {
-            metadata: Metadata {
-                architecture: ARCHITECTURE.into(),
-                image_size: 32,
-                visibility_gate: VisibilityGate::default(),
-                disabled_targets: vec![],
-                personal_training: None,
-                tongue_out: None,
-            },
-            weights: TongueNet::<Cpu>::init(&Default::default()).weights(),
-        }
-        .save(&role.safetensors(dir))
-        .unwrap();
-    }
 }
 
 /// One frame's labels: the tongue's twelve, then `face` labels and slot.
@@ -181,72 +160,18 @@ fn write_set(dir: &Path, layout: &CameraLayout, identities: &[&str], per_pose: u
 }
 
 #[test]
-fn trains_loads_enrolls_and_predicts() {
+fn loads_enrolls_and_predicts() {
     let root = temp("universal");
-    let base = root.join("base");
-    base_models(&base);
-    let packed = CameraLayout {
-        cameras: vec![0, 1, 2, 3, 4],
-        view: SIZE,
-    };
-    let set = root.join("set");
-    write_set(&set, &packed, &["id-a", "id-b"], 8);
-    let request = root.join("request.json");
-    std::fs::write(
-        &request,
-        json!({"name": "Faces", "device": "cpu", "base_model_dir": base,
-            "recordings": [set], "architecture": "universal-face-v1"})
-        .to_string(),
-    )
-    .unwrap();
-    let output = root.join("output");
-    let options = Options {
-        epochs: 1,
-        batch_size: 8,
-        image_size: Some(SIZE),
-        ..Options::default()
-    };
-    run(&request, &output, &options).unwrap();
-
-    let report: Value =
-        serde_json::from_slice(&std::fs::read(output.join("report.json")).unwrap()).unwrap();
-    assert_eq!(report["name"], "Faces");
-    assert_eq!(report["frames"], 2 * 11 * 8);
-    assert_eq!(report["coverage"]["faces"], 2);
-    assert_eq!(report["coverage"]["facesWithSlot"]["neutral"], 2);
-    let supported: Vec<&str> = report["supported_targets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|name| name.as_str().unwrap())
-        .collect();
-    for trained in [
-        "visibility",
-        "horizontal",
-        "vertical",
-        "cheek_puff_left",
-        "cheek_suck_right",
-        "jaw_open",
-        "brow_inner_up_left",
-    ] {
-        assert!(
-            supported.contains(&trained),
-            "{trained} trains: {supported:?}"
-        );
+    let path = root.join(FILE_NAME);
+    FaceCheckpoint {
+        metadata: FaceMetadata::new(SIZE),
+        weights: FaceNet::<Cpu>::init(&Default::default()).weights(),
     }
-    // Nothing labels the outer brows or the frown.
-    assert!(report["disabled_targets"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("brow_pinch_left")));
-    let progress: Value =
-        serde_json::from_slice(&std::fs::read(output.join("progress.json")).unwrap()).unwrap();
-    assert_eq!(progress["stage"], "complete");
-
-    let checkpoint = FaceCheckpoint::load(&output.join(FILE_NAME)).unwrap();
+    .save(&path)
+    .unwrap();
+    let checkpoint = FaceCheckpoint::load(&path).unwrap();
     assert_eq!(checkpoint.metadata.image_size, SIZE);
     assert_eq!(checkpoint.metadata.outputs, FACE_TARGETS);
-    assert_eq!(checkpoint.metadata.training.unwrap()["epochs"], 1);
 
     // A face setup at the headset's size: every camera, 400 px.
     let setup = root.join("setup");
@@ -255,7 +180,7 @@ fn trains_loads_enrolls_and_predicts() {
     assert!(ANCHOR_SLOTS
         .iter()
         .all(|slot| enrollment.frames.contains_key(*slot)));
-    let mut model = FaceModel::load(&output.join(FILE_NAME), Accelerator::Cpu).unwrap();
+    let mut model = FaceModel::load(&path, Accelerator::Cpu).unwrap();
     let blank = vec![90u8; STRIP_BYTES];
     let before = model.predict(&blank).unwrap();
     model.enroll(&enrollment).unwrap();
@@ -271,38 +196,5 @@ fn trains_loads_enrolls_and_predicts() {
     }
     // Enrolling changes what the anchor-conditioned heads read.
     assert_ne!(before.values[4..], after.values[4..]);
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn mouth_only_recordings_need_no_upper_face() {
-    let root = temp("universal-mouth");
-    let base = root.join("base");
-    base_models(&base);
-    let mouth = CameraLayout {
-        cameras: vec![2, 3],
-        view: SIZE,
-    };
-    let set = root.join("set");
-    write_set(&set, &mouth, &["only"], 8);
-    let request = root.join("request.json");
-    std::fs::write(
-        &request,
-        json!({"device": "cpu", "base_model_dir": base, "recordings": [set],
-            "architecture": "universal-face-v1"})
-        .to_string(),
-    )
-    .unwrap();
-    let output = root.join("output");
-    let options = Options {
-        epochs: 1,
-        batch_size: 8,
-        image_size: Some(SIZE),
-        ..Options::default()
-    };
-    run(&request, &output, &options).unwrap();
-    let report: Value =
-        serde_json::from_slice(&std::fs::read(output.join("report.json")).unwrap()).unwrap();
-    assert_eq!(report["coverage"]["upperFace"], 0);
     std::fs::remove_dir_all(root).unwrap();
 }

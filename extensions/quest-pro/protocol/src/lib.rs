@@ -985,16 +985,15 @@ pub struct TrainerRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub device: TrainingDevice,
-    /// The model training starts from: the pair, whose direction model
-    /// gives `universal-face-v1` its encoder, or the folder of the
-    /// `universal-face-v2` model whose heads are fine-tuned.
+    /// The folder of the `universal-face-v2` model whose heads are
+    /// fine-tuned.
     pub base_model_dir: PathBuf,
     /// The recordings' folders.
     pub recordings: Vec<PathBuf>,
     #[serde(default)]
     pub architecture: TrainerArchitecture,
-    /// The face setup recording a `universal-face-v2` model reads frames
-    /// against while it trains.
+    /// The face setup recording the model reads frames against while it
+    /// trains.
     #[serde(default)]
     pub face_setup: Option<PathBuf>,
 }
@@ -1101,69 +1100,28 @@ pub struct TrainingReport {
     pub supported_targets: Vec<String>,
     pub disabled_targets: Vec<String>,
     pub base_model_dir: String,
-    pub calibration: ReportCalibration,
     pub seconds: Option<f64>,
     /// Recorded frames held back from training to score it; 0 when there
     /// were too few, so every frame trained and the last pass was kept.
     pub held_out_frames: u64,
-    /// Which pass of each model was kept, when frames were held back.
+    /// Which pass of each part was kept, when frames were held back.
     pub kept: Vec<ReportKept>,
-    /// Whether TongueOut follows the extension output, when frames were
-    /// held back to check it.
-    pub tongue_out: Option<ReportTongueOut>,
     /// The face setup recording's folder a `universal-face-v2` model was
     /// fine-tuned with.
     pub face_setup: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ReportCalibration {
-    pub camera_weight: f64,
-    pub threshold: f64,
-    pub plateau: Option<Value>,
-    /// Chosen on frames held back from training, which also chose the
-    /// weight when each had a tracking module TongueOut.
-    pub held_out: bool,
-}
-
-/// How one model's pass was chosen on the held-back frames.
+/// How one part's pass was chosen on the held-back frames.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReportKept {
-    /// `gate` or `direction`; for a fine-tuned QFTPlus Model, `face` (the
-    /// heads) or `tongue` (the tongue map: pass 1 is the new one).
+    /// `face` (the heads), or `tongue` (the tongue map: pass 1 is the new
+    /// one). Pairs trained by earlier versions say `gate` or `direction`.
     pub focus: String,
     /// The pass kept; 0 is the model training started from.
     pub epoch: u32,
     /// The starting model's score, then each pass's; lower is better.
     pub scores: Vec<f64>,
-}
-
-/// The check of whether the extension output separates the recorded
-/// amounts of tongue out, on held-back straight-ahead poses.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ReportTongueOut {
-    /// TongueOut is `scale * extension + offset`; otherwise it's the larger
-    /// of the tongue-out confidence and extension.
-    pub calibrated: bool,
-    pub scale: f64,
-    pub offset: f64,
-    pub correlation: f64,
-    /// Highest amount's mean output less the lowest's.
-    pub spread: f64,
-    pub levels: Vec<ReportLevel>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ReportLevel {
-    /// The amount of tongue out the poses asked for.
-    pub amount: f64,
-    /// The extension output's mean for it.
-    pub predicted: f64,
-    pub frames: u64,
 }
 
 /// The QFTPlus Model's download: the mouth-camera pair, then QFT+'s model.
@@ -1397,6 +1355,7 @@ mod tests {
         let progress: TrainingProgress = serde_json::from_str(
             r#"{"stage": "complete", "message": "Done", "fraction": 1.0,
                 "report": {"name": "Mine", "recordings": ["a"], "seconds": 12.5,
+                           "kept": [{"focus": "face", "epoch": 3}],
                            "calibration": {"camera_weight": 0.7, "threshold": 0.5}}}"#,
         )
         .unwrap();
