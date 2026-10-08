@@ -138,7 +138,7 @@
   .blockers .icon { width: 16px; height: 16px; margin-top: 3px; color: var(--warn); }
   .blockers li span { display: block; color: var(--muted); font-size: .85rem; font-weight: 400; }
 
-  /* Step 1: record */
+  /* Steps 1 to 3: the model, the face setup, recording */
   .facts { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; }
   .facts li { padding: 10px 14px; min-width: 0; }
   .facts li + li { border-left: 1px solid var(--line); }
@@ -176,7 +176,7 @@
   #follow-pad { width: min(100%, 300px); height: auto; aspect-ratio: 1; background: none; }
   .prompt-next { margin: 12px 0 0; color: var(--muted); font-size: .88rem; }
 
-  /* Step 2: train */
+  /* Step 4: fine-tune */
   .recordings { display: flex; flex-direction: column; }
   .recording { border: 1px solid var(--line); }
   .recording + .recording { border-top: 0; }
@@ -312,33 +312,8 @@
     </article>
 
     <div class="steps">
-      <article class="card" id="step-record">
-        <header class="card-head"><span class="step-num">1</span><div class="card-title"><h2>Record</h2><p>Put the headset on and keep this page in view.</p></div></header>
-        <div id="record-idle">
-          <ul class="facts">
-            <li><strong>14</strong><span>poses</span></li>
-            <li><strong>4 s</strong><span>to get ready</span></li>
-            <li><strong>4 s</strong><span>holding each</span></li>
-            <li><strong>~2 min</strong><span>in total</span></li>
-          </ul>
-          <p class="hint">Do what each prompt says, such as "half out", rather than going to the extreme. Keep your tongue where both cameras can see it.</p>
-          <ul id="record-blockers" class="blockers"></ul>
-          <div class="actions">
-            <button id="start-core" type="button" class="primary big">Start recording</button>
-            <label class="switch"><input id="voice" type="checkbox"> Read prompts aloud</label>
-          </div>
-          <p id="record-result" class="notice" role="status" hidden></p>
-          <details class="more">
-            <summary>Extra recordings <small>optional</small></summary>
-            <p class="hint">Use these if something still tracks badly after training. They add to your basic recording rather than replace it.</p>
-            <div class="option-list">
-              <div class="option"><div><strong>Follow the dot</strong><span>Follow a moving dot with the tip of your tongue, with short tongue-in rests between. It covers every direction, including the ones in between, so it's the best way to keep adding data. About 2½ min.</span></div><button id="start-follow" type="button" aria-label="Record follow the dot">Record</button></div>
-              <div class="option"><div><strong>Direction poses</strong><span>Halfway and diagonal directions. Use this if left–right or up–down jumps straight to the extremes. About 2 min.</span></div><button id="start-direction" type="button" aria-label="Record direction poses">Record</button></div>
-              <div class="option"><div><strong>Expression poses</strong><span>Smiles, vowels and puffed cheeks, mostly with your tongue in. Use this if the tongue shows when it shouldn't. About 2 min.</span></div><button id="start-negatives" type="button" aria-label="Record expression poses">Record</button></div>
-            </div>
-          </details>
-        </div>
-        <div id="record-active" class="prompt-panel" hidden>
+      <article class="card" id="step-capture" hidden>
+        <div id="record-active" class="prompt-panel">
           <div class="prompt-top"><span id="prompt-count">Pose 1 of 14</span><span id="prompt-phase" class="phase ready">Get ready</span></div>
           <progress id="capture-progress" max="14" value="0" aria-label="Recording progress"></progress>
           <div id="prompt-pose" class="prompt-pose" aria-live="polite">—</div>
@@ -354,13 +329,59 @@
             <button id="skip-pose" type="button">Skip this pose</button>
             <button id="stop-capture" type="button" class="danger">Stop</button>
           </div>
-          <p id="capture-hint" class="hint">Can't do a pose, or your tongue is out of view? Skip it. If you stop, everything recorded so far is kept.</p>
+          <p id="capture-hint" class="hint">Can't do a pose, or it's out of view? Skip it. If you stop, everything recorded so far is kept.</p>
         </div>
         <p id="record-error" class="notice bad" role="alert" hidden></p>
       </article>
 
+      <article class="card" id="step-model">
+        <header class="card-head"><span class="step-num">1</span><div class="card-title"><h2>QFTPlus Model</h2><p>QFT+'s face model, run as QFT+ runs it, and the model training fine-tunes.</p></div></header>
+        <p class="hint">It reads all five cameras for the cheeks, brows and tongue. Its weights are for non-commercial use only (CC BY-NC 4.0): VRFaceTracking downloads them from QFT+'s release only when you ask, and never shares them.</p>
+        <p id="qftplus-message" class="notice" role="status"></p>
+        <div class="actions">
+          <button id="install-qftplus" type="button" class="primary" hidden>Download</button>
+          <button id="cancel-qftplus" type="button" hidden>Cancel</button>
+        </div>
+      </article>
+
+      <article class="card" id="step-face-setup">
+        <header class="card-head"><span class="step-num">2</span><div class="card-title"><h2>Face setup</h2><p>About a minute of QFT+'s own poses, which the model reads every frame against, and training reads your recordings against.</p></div></header>
+        <p id="face-setup-state" class="notice" role="status"></p>
+        <div class="actions">
+          <button id="start-enrollment" type="button" class="primary">Start the face setup</button>
+          <label class="switch"><input id="voice" type="checkbox"> Read prompts aloud</label>
+        </div>
+        <div id="face-setup-result" class="notice" role="status" hidden></div>
+      </article>
+
+      <article class="card" id="step-record">
+        <header class="card-head"><span class="step-num">3</span><div class="card-title"><h2>Record</h2><p>Put the headset on and keep this page in view.</p></div></header>
+        <div id="record-idle">
+          <ul class="facts">
+            <li><strong>16</strong><span>prompts</span></li>
+            <li><strong>3</strong><span>amounts each</span></li>
+            <li><strong>+ 9</strong><span>look-alikes and reading</span></li>
+            <li><strong>~5 min</strong><span>in total</span></li>
+          </ul>
+          <p class="hint">QFT+'s own prompts: puffs, sucked-in cheeks, your tongue and your brows. Aim for the amount each asks, such as halfway, rather than the extreme.</p>
+          <ul id="record-blockers" class="blockers"></ul>
+          <div class="actions">
+            <button id="start-face" type="button" class="primary big">Start recording</button>
+          </div>
+          <p id="record-result" class="notice" role="status" hidden></p>
+          <details class="more">
+            <summary>Extra recordings <small>optional</small></summary>
+            <p class="hint">More of your tongue's directions, for fitting how it reads each way. They add to your face recording rather than replace it.</p>
+            <div class="option-list">
+              <div class="option"><div><strong>Follow the dot</strong><span>Follow a moving dot with the tip of your tongue, with short tongue-in rests between. It covers every direction, including the ones in between. About 2½ min.</span></div><button id="start-follow" type="button" aria-label="Record follow the dot">Record</button></div>
+              <div class="option"><div><strong>Direction poses</strong><span>Halfway and diagonal directions. About 2 min.</span></div><button id="start-direction" type="button" aria-label="Record direction poses">Record</button></div>
+            </div>
+          </details>
+        </div>
+      </article>
+
       <article class="card" id="step-train">
-        <header class="card-head"><span class="step-num">2</span><div class="card-title"><h2>Train</h2><p>Trains a tongue model on your recordings, here on this PC. It switches on as soon as it's ready.</p></div></header>
+        <header class="card-head"><span class="step-num">4</span><div class="card-title"><h2>Fine-tune</h2><p>Fine-tunes the QFTPlus Model on your recordings, here on this PC. It switches on as soon as it's ready.</p></div></header>
         <div class="eyebrow">Recordings to train on</div>
         <div id="recordings" class="recordings"></div>
         <p id="recordings-message" class="notice bad" role="alert" hidden></p>
@@ -371,14 +392,10 @@
           <p class="hint">You can keep using VRFaceTracking meanwhile. Your current model stays on until the new one is ready.</p>
         </div>
         <div class="actions">
-          <button id="start-training" type="button" class="primary big" disabled>Train my model</button>
+          <button id="start-training" type="button" class="primary big" disabled>Fine-tune</button>
           <button id="cancel-training" type="button" class="danger" hidden>Cancel training</button>
         </div>
         <div id="training-result" class="notice" role="status" hidden></div>
-        <div id="builtin" hidden>
-          <p id="builtin-message" class="notice" role="status"></p>
-          <div class="actions"><button id="install-builtin" type="button" class="primary">Download built-in model</button></div>
-        </div>
         <div class="model-row">
           <label for="saved-model">Model in use</label>
           <select id="saved-model"></select>
@@ -391,7 +408,7 @@
             <label>Run on <select id="training-device"><option value="auto">Automatic</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
             <label>Training passes <input id="training-epochs" type="number" min="1" max="60" value="12"></label>
           </div>
-          <p class="hint">Automatic uses the GPU (NVIDIA, AMD or Intel) when one works, and the CPU if not. The CPU is much slower. More passes take longer.</p>
+          <p class="hint">Automatic reads your recordings through the model on the GPU when one works, and the CPU if not. More passes fit your recordings more closely; the best pass on frames held back from training is kept.</p>
         </details>
       </article>
 
@@ -567,8 +584,8 @@ voice.onchange = () => { store.set('voice', voice.checked); hush(); lastSpoken =
 document.addEventListener('visibilitychange', () => { if (document.hidden) { hush(); lastSpoken = null; } });
 window.addEventListener('pagehide', hush);
 
-// Step 1: recording
-const MODE_NAMES = {core: 'Basic poses', direction: 'Direction poses', negatives: 'Expression poses', follow: 'Follow the dot'};
+// Steps 2 and 3: the face setup and recording
+const MODE_NAMES = {face: 'Face recording', enrollment: 'Face setup', direction: 'Direction poses', follow: 'Follow the dot'};
 let currentCapture = null;
 let trainingBusy = false;
 let recordReady = false;
@@ -590,8 +607,8 @@ function showCapture(capture) {
   const started = capture.active && !currentCapture?.active;
   const finished = currentCapture?.active && !capture.active;
   currentCapture = capture;
-  byId('record-idle').hidden = capture.active;
-  byId('record-active').hidden = !capture.active;
+  byId('step-capture').hidden = !capture.active;
+  if (started) byId('step-capture').scrollIntoView({block: 'nearest'});
   for (const mode of Object.keys(MODE_NAMES)) byId(`start-${mode}`).disabled = capture.active || trainingBusy || !recordReady;
   if (started) showTab('tongue');
   if (capture.active) {
@@ -618,7 +635,15 @@ function showCapture(capture) {
       'Can\'t do a pose, or your tongue is out of view? Skip it. If you stop, everything recorded so far is kept.';
   } else if (capture.message) {
     const complete = capture.message.startsWith('Recording complete');
-    notice('record-result', complete && !trainingBusy ? `${capture.message} Now press Train my model.` : capture.message, complete ? 'ok' : 'warn');
+    const setup = capture.face_setup && capture.directory &&
+      capture.directory.replaceAll('\\', '/').split('/').pop() === capture.face_setup.recording ? capture.face_setup : null;
+    if (setup) {
+      const misses = setup.poses.filter(pose => !pose.passed)
+        .map(pose => `${pose.pose}: ${pose.skipped ? 'skipped.' : pose.reason || 'didn\'t come through.'}`);
+      notice('face-setup-result', [capture.message, ...misses].join(' '), setup.in_use ? 'ok' : 'warn');
+    } else {
+      notice('record-result', complete && !trainingBusy ? `${capture.message} Now press Fine-tune.` : capture.message, complete ? 'ok' : 'warn');
+    }
   }
   trackFollow(capture);
   const spoken = capture.active && !capture.paused ? `${capture.directory}:${capture.step}` : null;
@@ -633,9 +658,10 @@ function showCapture(capture) {
 }
 
 let shownBlockers = '';
-function showBlockers(cameraLive, capture) {
+function showBlockers(cameraLive, fiveCameras) {
   const blockers = [];
   if (!cameraLive) blockers.push(['The mouth cameras aren\'t sending anything.', 'On the headset, open VRFT Quest Pro Camera and press Start camera stream, then put the headset on.']);
+  else if (!fiveCameras) blockers.push(['All five cameras is off.', 'Turn on All five cameras in VRFT Quest Pro Camera on the headset, or on the app\'s Headset page. The face setup and recordings need them.']);
   if (trainingBusy) blockers.push(['Training is running.', 'You can record again once it finishes.']);
   recordReady = blockers.length === 0;
   const key = JSON.stringify(blockers);
@@ -994,7 +1020,7 @@ async function refresh() {
     byId('status').textContent = live ? `Live · frame ${state.sequence} · ${state.frame_age_ms} ms old` : state.status;
     if (live) await drawFrame(String(state.sequence));
     showSettings(state.settings);
-    showBlockers(live, capture);
+    showBlockers(live, state.five_cameras);
     showCapture(capture);
     showTongue(state);
     showEyes(state);

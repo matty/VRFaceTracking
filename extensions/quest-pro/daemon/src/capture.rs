@@ -58,94 +58,8 @@ const fn pose(name: &'static str, instruction: &'static str, targets: [f32; 12])
     }
 }
 
-const CORE_POSES: [Pose; 17] = [
-    pose(
-        "Neutral",
-        "Keep the tongue fully inside and relax your mouth.",
-        NEUTRAL,
-    ),
-    pose(
-        "Natural speech",
-        "Speak normally while keeping the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Smile, no tongue",
-        "Smile and show teeth with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Jaw open, no tongue",
-        "Open your mouth wide with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Tongue tip",
-        "Show just the tip of your tongue past your lips and hold it still.",
-        out(0.25, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue half out",
-        "Extend your tongue about halfway and hold it.",
-        out(0.5, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue straight out",
-        "Extend your tongue fully straight out and hold it.",
-        out(1.0, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue left",
-        "Extend your tongue toward your left and hold it.",
-        out(1.0, -1.0, 0.0),
-    ),
-    pose(
-        "Tongue right",
-        "Extend your tongue toward your right and hold it.",
-        out(1.0, 1.0, 0.0),
-    ),
-    pose(
-        "Tongue up",
-        "Extend your tongue upward and hold it.",
-        out(1.0, 0.0, 1.0),
-    ),
-    pose(
-        "Tongue down",
-        "Extend your tongue downward and hold it.",
-        out(1.0, 0.0, -1.0),
-    ),
-    pose(
-        "Tongue in cheek, hidden",
-        "Push your tongue into the inside of your left cheek, lips closed.",
-        NEUTRAL,
-    ),
-    pose(
-        "Pucker, no tongue",
-        "Pucker your lips with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Left cheek puffed",
-        "Puff out only your left cheek, lips closed.",
-        puff(1.0, 0.0),
-    ),
-    pose(
-        "Right cheek puffed",
-        "Puff out only your right cheek, lips closed.",
-        puff(0.0, 1.0),
-    ),
-    pose(
-        "Both cheeks puffed",
-        "Puff out both cheeks, lips closed.",
-        puff(1.0, 1.0),
-    ),
-    pose(
-        "Final neutral",
-        "Retract your tongue completely and relax.",
-        NEUTRAL,
-    ),
-];
-
+/// More of the tongue's directions, halfway and diagonal, for the tongue
+/// map training fits.
 const DIRECTION_POSES: [Pose; 15] = [
     pose(
         "Relaxed, mouth slightly open",
@@ -224,83 +138,6 @@ const DIRECTION_POSES: [Pose; 15] = [
     ),
 ];
 
-/// Tongue-hidden poses that commonly trigger false detections, each paired
-/// with a matching visible pose, as in the reference correction set.
-const NEGATIVE_POSES: [Pose; 14] = [
-    pose(
-        "Slight smile, no tongue",
-        "Give a slight, relaxed smile with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Lower teeth showing",
-        "Pull your lower lip down to show your lower teeth, tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Vowels, no tongue",
-        "Slowly say ee, ah, oh, repeating, with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Cheeks puffed",
-        "Puff out both cheeks with your lips closed.",
-        puff(1.0, 1.0),
-    ),
-    pose(
-        "Cheeks sucked in",
-        "Suck in your cheeks with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Tongue in right cheek",
-        "Push your tongue into the inside of your right cheek, lips closed.",
-        NEUTRAL,
-    ),
-    pose("Lips pressed", "Press your lips firmly together.", NEUTRAL),
-    pose(
-        "Chin tucked, no tongue",
-        "Tuck your chin down toward your chest with the tongue inside.",
-        NEUTRAL,
-    ),
-    pose(
-        "Tongue out, smiling",
-        "Smile and extend your tongue straight out.",
-        out(1.0, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue tip, smiling",
-        "Smile and show just the tip of your tongue.",
-        out(0.25, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue tip, jaw wide",
-        "Open your jaw wide and show only the tip of your tongue.",
-        out(0.25, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue out, chin tucked",
-        "Keep your chin tucked and extend your tongue straight out.",
-        out(1.0, 0.0, 0.0),
-    ),
-    pose(
-        "Tongue three-quarters out",
-        "Extend your tongue about three-quarters of the way and hold it.",
-        out(0.75, 0.0, 0.0),
-    ),
-    pose(
-        "Final neutral",
-        "Retract your tongue completely and relax.",
-        NEUTRAL,
-    ),
-];
-
-const MODES: [(&str, &[Pose]); 3] = [
-    ("core", &CORE_POSES),
-    ("direction", &DIRECTION_POSES),
-    ("negatives", &NEGATIVE_POSES),
-];
-
 /// Follow the dot: the wearer tracks a dot gliding between these points with
 /// the tongue, so every frame gets its own direction label. Diagonals stop at
 /// 0.7 like the direction poses.
@@ -344,7 +181,222 @@ const FOLLOW_RESTS: [(&str, &str); 4] = [
 const REST_SECONDS: f32 = 3.0;
 const REST_SETTLE: f32 = 1.0;
 
-const MODE_NAMES: &str = "core, direction, negatives, follow, or enrollment";
+const MODE_NAMES: &str = "face, direction, follow, or enrollment";
+
+/// The face recording: QFT+'s own labelled prompts, the targets and
+/// look-alikes of its short benchmark (`guided_session.py`), which personal
+/// training fine-tunes the face model on. A relaxed face first, then each
+/// target at three amounts with a rest after each, then look-alikes that
+/// mustn't read as a target, and reading out loud. About five minutes.
+const FACE_AMOUNTS: [(&str, f32); 3] = [("halfway", 0.6), ("most of the way", 0.8), ("full", 1.0)];
+/// A target: `FACE_RAMP` seconds to get into it, then held, saved.
+const FACE_HOLD: f32 = 2.5;
+const FACE_RAMP: f32 = 1.0;
+const FACE_REST: f32 = 1.5;
+/// Frames a second each kind of step saves at most: near-identical
+/// neighbours add disk, not information.
+const TARGET_RATE: f32 = 12.0;
+const LONG_RATE: f32 = 6.0;
+
+/// What a face recording target asks for, at an amount.
+#[derive(Clone, Copy)]
+enum Target {
+    /// Left and right cheeks.
+    Puff(f32, f32),
+    Suck,
+    /// Horizontal and vertical, the tongue out.
+    Tongue(f32, f32),
+    /// The brows that move, and those that stay still; the rest go
+    /// unlabelled, since not everyone can keep them still.
+    Brows(&'static [&'static str], &'static [&'static str]),
+}
+
+const BROW_RAISES: [&str; 4] = [
+    "brow_inner_up_left",
+    "brow_inner_up_right",
+    "brow_outer_up_left",
+    "brow_outer_up_right",
+];
+const BROW_DOWN: [&str; 4] = [
+    "brow_lowerer_left",
+    "brow_lowerer_right",
+    "brow_pinch_left",
+    "brow_pinch_right",
+];
+const LIPS_SEALED: &str = "Fill with air and keep your lips sealed.";
+const AS_YOU_FEEL_IT: &str = "Your left and right, as you feel it.";
+const AS_FAR: &str = "Point it as far as feels comfortable.";
+const ONE_BROW: &str = "Keep the other one still if you can. If you can't, just try.";
+const FACE_TARGETS: [(&str, &str, Target); 16] = [
+    ("Puff both cheeks", LIPS_SEALED, Target::Puff(1.0, 1.0)),
+    ("Puff your left cheek", LIPS_SEALED, Target::Puff(1.0, 0.0)),
+    ("Puff your right cheek", LIPS_SEALED, Target::Puff(0.0, 1.0)),
+    (
+        "Suck in your cheeks",
+        "Pull both cheeks in between your teeth.",
+        Target::Suck,
+    ),
+    ("Stick your tongue out", AS_FAR, Target::Tongue(0.0, 0.0)),
+    (
+        "Stick your tongue out, pointing left",
+        AS_YOU_FEEL_IT,
+        Target::Tongue(-1.0, 0.0),
+    ),
+    (
+        "Stick your tongue out, pointing right",
+        AS_YOU_FEEL_IT,
+        Target::Tongue(1.0, 0.0),
+    ),
+    (
+        "Stick your tongue out, pointing up",
+        AS_FAR,
+        Target::Tongue(0.0, 1.0),
+    ),
+    (
+        "Stick your tongue out, pointing down",
+        AS_FAR,
+        Target::Tongue(0.0, -1.0),
+    ),
+    (
+        "Stick your tongue out, pointing up and to the left",
+        AS_YOU_FEEL_IT,
+        Target::Tongue(-0.7, 0.7),
+    ),
+    (
+        "Stick your tongue out, pointing up and to the right",
+        AS_YOU_FEEL_IT,
+        Target::Tongue(0.7, 0.7),
+    ),
+    (
+        "Raise both eyebrows",
+        "As if surprised.",
+        Target::Brows(&BROW_RAISES, &BROW_DOWN),
+    ),
+    (
+        "Raise only your left eyebrow",
+        ONE_BROW,
+        Target::Brows(&["brow_inner_up_left", "brow_outer_up_left"], &BROW_DOWN),
+    ),
+    (
+        "Raise only your right eyebrow",
+        ONE_BROW,
+        Target::Brows(&["brow_inner_up_right", "brow_outer_up_right"], &BROW_DOWN),
+    ),
+    (
+        "Look worried",
+        "Lift the middle of your brows, as if worried or sad.",
+        Target::Brows(&["brow_inner_up_left", "brow_inner_up_right"], &[]),
+    ),
+    (
+        "Frown",
+        "Pull your brows down and together, as if annoyed.",
+        Target::Brows(&BROW_DOWN, &BROW_RAISES),
+    ),
+];
+/// Look-alikes: the tongue in, the cheeks neither puffed nor sucked.
+const FACE_LOOKALIKES: [(&str, &str); 7] = [
+    (
+        "Chew",
+        "Chew slowly, as if you had gum, with your lips closed.",
+    ),
+    (
+        "Push your tongue into your left cheek",
+        "Lips closed; make a bump from the inside.",
+    ),
+    (
+        "Push your tongue into your right cheek",
+        "Lips closed; make a bump from the inside.",
+    ),
+    (
+        "Suck your lips in",
+        "Press both lips in between your teeth.",
+    ),
+    ("Pout", "Push your lips forward like a sulking child."),
+    ("Smile and talk", "Big smiles, then a few words."),
+    ("Squint", "As if looking into bright sun."),
+];
+const LOOKALIKE_SECONDS: f32 = 10.0;
+const FACE_READING: [&str; 2] = [
+    "The thick path through the thirty thin birch trees bent north, then south, then back again.",
+    "Bob put the big map by the pump, but Pam mopped the mud before it dried on the mat.",
+];
+const READING_SECONDS: f32 = 15.0;
+const RELAXED_SECONDS: f32 = 15.0;
+
+impl Target {
+    /// The tongue and cheek labels, and the face labels, at `amount`.
+    fn labels(self, amount: f32) -> ([f32; 12], BTreeMap<&'static str, f32>) {
+        let mut face: BTreeMap<&'static str, f32> =
+            [("cheek_suck_left", 0.0), ("cheek_suck_right", 0.0)].into();
+        let targets = match self {
+            Target::Puff(left, right) => puff(left * amount, right * amount),
+            Target::Suck => {
+                face.insert("cheek_suck_left", amount);
+                face.insert("cheek_suck_right", amount);
+                NEUTRAL
+            }
+            Target::Tongue(horizontal, vertical) => out(amount, horizontal, vertical),
+            Target::Brows(moving, still) => {
+                face.extend(moving.iter().map(|&name| (name, amount)));
+                face.extend(still.iter().map(|&name| (name, 0.0)));
+                NEUTRAL
+            }
+        };
+        (targets, face)
+    }
+}
+
+/// The face recording's steps.
+fn face_steps() -> Vec<Step> {
+    let unpuffed: BTreeMap<&'static str, f32> =
+        [("cheek_suck_left", 0.0), ("cheek_suck_right", 0.0)].into();
+    let long = |name: &str, instruction: &str, seconds: f32, face: BTreeMap<_, _>| Step {
+        name: name.into(),
+        instruction: instruction.into(),
+        seconds,
+        settle: 1.0,
+        targets: Some(NEUTRAL),
+        path: None,
+        anchor: None,
+        face: Some(face),
+        rate: Some(LONG_RATE),
+    };
+    let mut steps = vec![long(
+        "Relax and look around",
+        "Keep your face relaxed and still; move your eyes and head normally.",
+        RELAXED_SECONDS,
+        NEUTRAL_FACE.into_iter().collect(),
+    )];
+    for (title, instruction, target) in FACE_TARGETS {
+        for (amount_name, amount) in FACE_AMOUNTS {
+            let (targets, face) = target.labels(amount);
+            steps.push(Step {
+                name: format!("{title}, {amount_name}"),
+                instruction: instruction.into(),
+                seconds: FACE_HOLD,
+                settle: FACE_RAMP,
+                targets: Some(targets),
+                path: None,
+                anchor: None,
+                face: Some(face),
+                rate: Some(TARGET_RATE),
+            });
+            steps.push(relax_step(FACE_REST));
+        }
+    }
+    for (name, instruction) in FACE_LOOKALIKES {
+        steps.push(long(name, instruction, LOOKALIKE_SECONDS, unpuffed.clone()));
+    }
+    for text in FACE_READING {
+        steps.push(long(
+            "Read this out loud, again and again",
+            text,
+            READING_SECONDS,
+            unpuffed.clone(),
+        ));
+    }
+    steps
+}
 
 /// The one-minute face setup, QFT+'s own (`guided_session.py`): a neutral
 /// face, then each pose the universal face model reads frames against,
@@ -508,9 +560,10 @@ fn enrollment_steps() -> Vec<Step> {
             path: None,
             anchor: slot,
             face: (!face.is_empty()).then(|| face.iter().copied().collect()),
+            rate: None,
         });
         if rest {
-            steps.push(relax_step());
+            steps.push(relax_step(ENROLL_REST));
         }
     }
     steps.extend(ENROLL_ENDING.map(|(name, instruction, seconds)| Step {
@@ -522,21 +575,23 @@ fn enrollment_steps() -> Vec<Step> {
         path: None,
         anchor: None,
         face: None,
+        rate: None,
     }));
     steps
 }
 
-/// The face setup's rest between poses: all settle, so nothing is saved.
-fn relax_step() -> Step {
+/// A rest between poses: all settle, so nothing is saved.
+fn relax_step(seconds: f32) -> Step {
     Step {
         name: "Relax".into(),
         instruction: "Let your face go loose.".into(),
-        seconds: ENROLL_REST,
-        settle: ENROLL_REST,
+        seconds,
+        settle: seconds,
         targets: Some(NEUTRAL),
         path: None,
         anchor: None,
         face: None,
+        rate: None,
     }
 }
 
@@ -559,6 +614,9 @@ struct Step {
     /// Labels for the universal face model's other outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     face: Option<BTreeMap<&'static str, f32>>,
+    /// Frames a second saved at most; every frame when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate: Option<f32>,
 }
 
 impl Step {
@@ -572,6 +630,7 @@ impl Step {
             path: None,
             anchor: None,
             face: None,
+            rate: None,
         }
     }
 
@@ -669,6 +728,7 @@ fn follow_steps(seed: u64) -> Vec<Step> {
             path: Some(path),
             anchor: None,
             face: None,
+            rate: None,
         });
         let (name, instruction) = FOLLOW_RESTS[round % FOLLOW_RESTS.len()];
         steps.push(Step {
@@ -680,23 +740,28 @@ fn follow_steps(seed: u64) -> Vec<Step> {
             path: None,
             anchor: None,
             face: None,
+            rate: None,
         });
     }
     steps
 }
 
-/// The static mode name and the steps of a guided recording.
+/// The static mode name and the steps of a guided recording. Recordings
+/// from before the face recording, basic and expression poses, can't be
+/// made any more.
 fn steps_for(name: &str, seed: u64) -> Option<(&'static str, Vec<Step>)> {
     if name == "follow" {
         return Some(("follow", follow_steps(seed)));
     }
-    if name == "enrollment" {
-        return Some(("enrollment", enrollment_steps()));
+    match name {
+        "face" => Some(("face", face_steps())),
+        "enrollment" => Some(("enrollment", enrollment_steps())),
+        "direction" => Some((
+            "direction",
+            DIRECTION_POSES.iter().map(Step::held).collect(),
+        )),
+        _ => None,
     }
-    MODES
-        .into_iter()
-        .find(|(mode, _)| *mode == name)
-        .map(|(mode, poses)| (mode, poses.iter().map(Step::held).collect()))
 }
 
 use crate::face_check::{self, Hold, RETRY_BEFORE_SECONDS};
@@ -755,6 +820,9 @@ struct Session {
     checks: Option<FaceChecks>,
     /// Holds that failed their check, left out like skipped poses.
     failed_steps: HashSet<usize>,
+    /// The step and the seconds into its hold of the last frame saved, for
+    /// steps that save fewer.
+    last_saved: Option<(usize, f32)>,
 }
 
 /// A face setup's checks, as its poses end.
@@ -812,6 +880,13 @@ fn captures_root() -> Result<PathBuf, String> {
 /// Names the face setup in use: `{"recording": "<id>"}`, the id being its
 /// folder under `.local/tongue-captures`.
 pub const ENROLLMENT_FILE: &str = ".local/face-enrollment.json";
+
+/// The face setup in use's recording id, as [`ENROLLMENT_FILE`] names it.
+pub fn face_setup_in_use(root: &Path) -> Option<String> {
+    let bytes = fs::read(root.join(ENROLLMENT_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value["recording"].as_str().map(str::to_owned)
+}
 
 #[derive(Clone, Default)]
 pub struct CaptureManager(Arc<Mutex<Inner>>);
@@ -900,6 +975,7 @@ impl CaptureManager {
                 .flatten(),
             checks: (mode == "enrollment").then(FaceChecks::default),
             failed_steps: HashSet::new(),
+            last_saved: None,
         });
         inner.message = "Recording started. Follow each prompt.".into();
         log::info!("Tongue capture started: mode={mode}");
@@ -1081,7 +1157,17 @@ impl CaptureManager {
         if !holding {
             return;
         }
-        let (targets, dot) = prompt.label(offset - prompt.settle);
+        let held = offset - prompt.settle;
+        if let Some(rate) = prompt.rate {
+            if session
+                .last_saved
+                .is_some_and(|(saved, at)| saved == step && held - at < 1.0 / rate)
+            {
+                return;
+            }
+        }
+        session.last_saved = Some((step, held));
+        let (targets, dot) = prompt.label(held);
         let sample = Sample {
             index: session.samples,
             sequence,
@@ -1383,7 +1469,9 @@ fn check_holds(session: &mut Session, elapsed: f32) {
             );
             // Poses after it move along, and so do their skips.
             let at = step + 1;
-            session.steps.splice(at..at, [again, relax_step()]);
+            session
+                .steps
+                .splice(at..at, [again, relax_step(ENROLL_REST)]);
             for steps in [&mut session.skipped_steps, &mut session.failed_steps] {
                 *steps = steps
                     .iter()
@@ -1540,6 +1628,7 @@ mod tests {
             enrollment_file: None,
             checks: (mode == "enrollment").then(FaceChecks::default),
             failed_steps: HashSet::new(),
+            last_saved: None,
         });
         manager.set_module_loaded(true);
         manager.update_native(0.);
@@ -1547,7 +1636,7 @@ mod tests {
     }
 
     fn test_manager() -> (CaptureManager, PathBuf) {
-        manager_with("core")
+        manager_with("direction")
     }
 
     fn remove_test_directory(directory: PathBuf) {
@@ -1589,12 +1678,12 @@ mod tests {
         assert_eq!(manager.status().step, Some(1));
         let status = manager.skip_current();
         assert_eq!(status.step, Some(2));
-        assert_eq!(status.pose.as_deref(), Some(CORE_POSES[1].name));
+        assert_eq!(status.pose.as_deref(), Some(DIRECTION_POSES[1].name));
         assert!(!status.skipped, "the next pose isn't skipped");
         let remaining = status.seconds_remaining.unwrap();
         assert!(remaining > STEP_SECONDS - 0.5, "{remaining}");
 
-        let last = STEP_SECONDS * (CORE_POSES.len() as f32 - 1.0) + 1.0;
+        let last = STEP_SECONDS * (DIRECTION_POSES.len() as f32 - 1.0) + 1.0;
         manager.0.lock().unwrap().session.as_mut().unwrap().started =
             Instant::now() - Duration::from_secs_f32(last);
         let status = manager.skip_current();
@@ -1648,7 +1737,7 @@ mod tests {
         let root = test_directory();
         let (directory, ..) = create_capture(
             &root,
-            "core",
+            "face",
             &CameraLayout::all(),
             serde_json::json!({"rounds": 1}),
         )
@@ -1857,14 +1946,17 @@ mod tests {
     fn a_recording_can_be_just_some_poses() {
         let manager = CaptureManager::default();
         assert!(manager
-            .start("core", &["Not a pose".into()], mouth())
+            .start("face", &["Not a pose".into()], mouth())
             .unwrap_err()
             .contains("no pose called Not a pose"));
         assert!(manager
             .start("follow", &["Tongue left".into()], mouth())
             .is_err());
-        let (_, steps) = steps_for("core", 1).unwrap();
-        let chosen = ["Tongue left".to_string(), "Tongue up".to_string()];
+        let (_, steps) = steps_for("face", 1).unwrap();
+        let chosen = [
+            "Puff your left cheek, full".to_string(),
+            "Frown, halfway".to_string(),
+        ];
         let kept: Vec<_> = steps
             .into_iter()
             .filter(|step| chosen.contains(&step.name))
@@ -1877,20 +1969,20 @@ mod tests {
     fn status_announces_the_next_pose_until_the_last() {
         let (manager, directory) = test_manager();
         let status = manager.status();
-        assert_eq!(status.pose.as_deref(), Some(CORE_POSES[0].name));
-        assert_eq!(status.next_pose.as_deref(), Some(CORE_POSES[1].name));
+        assert_eq!(status.pose.as_deref(), Some(DIRECTION_POSES[0].name));
+        assert_eq!(status.next_pose.as_deref(), Some(DIRECTION_POSES[1].name));
         assert_eq!(
             (status.step_seconds, status.settle_seconds),
             (STEP_SECONDS, SETTLE_SECONDS)
         );
         assert!(status.path.is_none());
-        let last = STEP_SECONDS * (CORE_POSES.len() as f32 - 1.0) + 1.0;
+        let last = STEP_SECONDS * (DIRECTION_POSES.len() as f32 - 1.0) + 1.0;
         manager.0.lock().unwrap().session.as_mut().unwrap().started =
             Instant::now() - Duration::from_secs_f32(last);
         let status = manager.status();
         assert_eq!(
             status.pose.as_deref(),
-            Some(CORE_POSES.last().unwrap().name)
+            Some(DIRECTION_POSES.last().unwrap().name)
         );
         assert!(status.next_pose.is_none());
         manager.stop();
@@ -2002,36 +2094,115 @@ mod tests {
         remove_test_directory(directory);
     }
 
+    /// The face recording's held steps: name, targets and face labels.
+    fn face_holds() -> Vec<Step> {
+        face_steps()
+            .into_iter()
+            .filter(|step| step.settle < step.seconds)
+            .collect()
+    }
+
     #[test]
-    fn capture_modes_have_negatives_and_directions() {
-        let hidden = |poses: &[Pose]| poses.iter().filter(|pose| pose.targets[0] == 0.0).count();
-        assert!(hidden(&CORE_POSES) >= 6);
-        for column in [2, 3] {
-            assert!(CORE_POSES.iter().any(|pose| pose.targets[column] < 0.0));
-            assert!(CORE_POSES.iter().any(|pose| pose.targets[column] > 0.0));
+    fn the_face_recording_is_qfts_short_benchmark() {
+        let steps = face_steps();
+        let seconds: f32 = steps.iter().map(|step| step.seconds).sum();
+        assert!((270.0..=330.0).contains(&seconds), "{seconds}");
+        let holds = face_holds();
+        // Each target at three amounts, then the relaxed face, look-alikes
+        // and reading.
+        assert_eq!(holds.len(), FACE_TARGETS.len() * 3 + 1 + 7 + 2);
+        for step in &holds {
+            let face = step.face.as_ref().unwrap();
+            let targets = step.targets.unwrap();
+            // The cheeks are labelled throughout, with what's still unknown
+            // left out rather than guessed.
+            assert!(face.contains_key("cheek_suck_left"), "{}", step.name);
+            assert!(targets[4..10].iter().all(|value| *value == 0.0));
+            assert!(step.rate.is_some());
         }
-        assert!(hidden(&NEGATIVE_POSES) >= 8);
-        assert!(NEGATIVE_POSES.iter().any(|pose| pose.targets[0] == 1.0));
-        // Smiles come with the tongue in and with just its tip out, so a
-        // smile alone can't decide.
-        let smiling_tip = NEGATIVE_POSES
-            .iter()
-            .find(|pose| pose.name == "Tongue tip, smiling")
+        let find = |name: &str| holds.iter().find(|step| step.name == name).unwrap();
+        let worried = find("Look worried, most of the way").face.clone().unwrap();
+        assert_eq!(worried.get("brow_inner_up_left"), Some(&0.8));
+        assert_eq!(worried.get("brow_outer_up_left"), None);
+        let left = find("Raise only your left eyebrow, full")
+            .face
+            .clone()
             .unwrap();
-        assert_eq!(smiling_tip.targets[..4], [1.0, 0.25, 0.0, 0.0]);
+        assert_eq!(left.get("brow_outer_up_left"), Some(&1.0));
+        assert_eq!(left.get("brow_outer_up_right"), None, "not everyone can");
+        assert_eq!(left.get("brow_pinch_right"), Some(&0.0));
+        let tongue = find("Stick your tongue out, pointing up and to the left, halfway");
+        assert_eq!(tongue.targets.unwrap()[..4], [1.0, 0.6, -0.7, 0.7]);
+        let relaxed = find("Relax and look around").face.clone().unwrap();
+        assert!(BROW_RAISES
+            .iter()
+            .chain(&BROW_DOWN)
+            .all(|brow| relaxed[brow] == 0.0));
+    }
+
+    #[test]
+    fn the_apps_top_ups_are_face_recording_poses() {
+        let (_, steps) = steps_for("face", 1).unwrap();
+        for (_, poses) in vrft_quest_pro_protocol::FACE_TOP_UPS {
+            for pose in poses {
+                assert!(steps.iter().any(|step| step.name == *pose), "{pose}");
+            }
+        }
+    }
+
+    #[test]
+    fn puffs_are_one_cheek_at_a_time_and_bulges_are_not_puffs() {
+        let holds = face_holds();
+        let puffs = |left: f32, right: f32| {
+            holds
+                .iter()
+                .filter(|step| {
+                    let targets = step.targets.unwrap();
+                    targets[10] == left && targets[11] == right
+                })
+                .inspect(|step| assert_eq!(step.targets.unwrap()[..10], [0.0; 10], "{}", step.name))
+                .count()
+        };
+        assert_eq!(
+            (puffs(1.0, 0.0), puffs(0.0, 1.0), puffs(1.0, 1.0)),
+            (1, 1, 1)
+        );
+        let bulges: Vec<&Step> = holds
+            .iter()
+            .filter(|step| step.name.starts_with("Push your tongue into"))
+            .collect();
+        assert_eq!(bulges.len(), 2);
+        for step in bulges {
+            assert_eq!(step.targets.unwrap(), NEUTRAL);
+            assert_eq!(step.face.as_ref().unwrap()["cheek_suck_left"], 0.0);
+        }
+    }
+
+    #[test]
+    fn the_face_recording_saves_at_most_its_rate() {
+        let (manager, directory) = manager_with("face");
+        let started = Instant::now() - Duration::from_secs_f32(2.0);
+        manager.0.lock().unwrap().session.as_mut().unwrap().started = started;
+        let mut saved = 0;
+        for frame in 0..24u64 {
+            let at = started + Duration::from_secs_f32(1.5 + frame as f32 / 24.0);
+            manager.record(frame, at, &mouth(), &vec![0; FRAME_BYTES]);
+            saved = manager.status().samples;
+        }
+        manager.stop();
+        assert!((5..=7).contains(&saved), "{saved} frames in a second");
+        remove_test_directory(directory);
     }
 
     #[test]
     fn prompts_are_graded_and_include_diagonals() {
-        let extensions: HashSet<u32> = CORE_POSES
+        let extensions: HashSet<u32> = face_holds()
             .iter()
-            .chain(NEGATIVE_POSES.iter())
-            .filter(|pose| pose.targets[0] == 1.0)
-            .map(|pose| (pose.targets[1] * 100.0) as u32)
+            .filter_map(|step| step.targets)
+            .filter(|targets| targets[0] == 1.0)
+            .map(|targets| (targets[1] * 100.0).round() as u32)
             .collect();
-        assert!([25, 50, 75, 100]
-            .iter()
-            .all(|value| extensions.contains(value)));
+        assert_eq!(extensions, HashSet::from([60, 80, 100]));
         assert!(DIRECTION_POSES
             .iter()
             .any(|pose| pose.targets[2].abs() == 0.5 || pose.targets[3].abs() == 0.5));
@@ -2046,56 +2217,30 @@ mod tests {
 
     #[test]
     fn unsupervisable_shapes_are_never_prompted() {
-        for (_, poses) in MODES {
-            for pose in poses {
+        for mode in ["face", "direction", "enrollment", "follow"] {
+            let (_, steps) = steps_for(mode, 1).unwrap();
+            for step in steps {
+                let targets = step.label(0.0).0;
                 assert!(
-                    pose.targets[6..10].iter().all(|value| *value == 0.0),
+                    targets[4..10].iter().all(|value| *value == 0.0),
                     "{}",
-                    pose.name
+                    step.name
                 );
-                assert!(pose
-                    .targets
-                    .iter()
-                    .all(|value| (-1.0..=1.0).contains(value)));
+                assert!(targets.iter().all(|value| (-1.0..=1.0).contains(value)));
             }
         }
     }
 
     #[test]
-    fn the_basic_run_puffs_each_cheek_alone_with_the_tongue_in() {
-        use vrft_quest_pro_protocol::CHEEK_POSES;
-        let puffs = |left: f32, right: f32| {
-            CORE_POSES
-                .iter()
-                .filter(|pose| pose.targets[10] == left && pose.targets[11] == right)
-                .inspect(|pose| assert_eq!(pose.targets[..10], [0.0; 10], "{}", pose.name))
-                .count()
-        };
-        assert_eq!(
-            (puffs(1.0, 0.0), puffs(0.0, 1.0), puffs(1.0, 1.0)),
-            (1, 1, 1)
-        );
-        for name in CHEEK_POSES {
-            assert!(CORE_POSES.iter().any(|pose| pose.name == name), "{name}");
-        }
-        // Tongue-in-cheek bulges are labelled unpuffed, so they are told apart.
-        assert!(CORE_POSES
+    fn only_the_recordings_training_uses_can_be_made() {
+        let (_, steps) = steps_for("direction", 1).unwrap();
+        assert_eq!(steps.len(), DIRECTION_POSES.len());
+        assert!(steps
             .iter()
-            .chain(&NEGATIVE_POSES)
-            .filter(|pose| pose.name.contains("cheek") && pose.name.starts_with("Tongue"))
-            .all(|pose| pose.targets[10..] == [0.0, 0.0]));
-    }
-
-    #[test]
-    fn each_capture_mode_visits_its_poses_once() {
-        for (name, poses) in MODES {
-            let (_, steps) = steps_for(name, 1).unwrap();
-            assert_eq!(steps.len(), poses.len());
-            assert!(steps
-                .iter()
-                .all(|step| step.seconds == STEP_SECONDS && step.settle == SETTLE_SECONDS));
+            .all(|step| step.seconds == STEP_SECONDS && step.settle == SETTLE_SECONDS));
+        for old in ["core", "negatives", "roll"] {
+            assert!(steps_for(old, 1).is_none(), "{old}");
         }
-        assert!(steps_for("roll", 1).is_none());
     }
 
     #[test]
@@ -2145,6 +2290,7 @@ mod tests {
             path: Some(path),
             anchor: None,
             face: None,
+            rate: None,
         };
         let (targets, dot) = step.label(0.5 + FOLLOW_LAG);
         assert!((targets[2] - 0.5).abs() < 1e-5);

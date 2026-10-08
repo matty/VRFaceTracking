@@ -1,7 +1,7 @@
 //! Packs rendered synthetic recordings into one set stored at the model's
-//! input size, which personal training mixes in: a third of the download
-//! the headset's 400 px views would take, and shrunk exactly as training
-//! shrinks recorded frames. Developer tool:
+//! input size, which training the stereo pair or VRFT's own face model can
+//! mix in: a third of the size the headset's 400 px views would take, and
+//! shrunk exactly as training shrinks recorded frames. Developer tool:
 //!
 //! cargo run -p vrft-tongue --release --example pack_synthetic -- <output dir> <recording>... [--size 224] [--cameras mouth|all]
 //!

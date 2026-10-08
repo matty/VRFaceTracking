@@ -35,22 +35,31 @@ pub fn complete_pair(dir: &Path) -> bool {
     Role::Gate.find(dir).is_some() && Role::Direction.find(dir).is_some()
 }
 
-/// Whether `dir` holds a universal face model.
+/// Whether `dir` holds a QFT+-format face model: its heads and graph.
+fn has_v2_model(dir: &Path) -> bool {
+    use vrft_tongue::universal_v2::{FILE_NAME, GRAPH_FILE};
+    dir.join(FILE_NAME).is_file() && dir.join(GRAPH_FILE).is_file()
+}
+
+/// Whether `dir` holds a universal face model: VRFT's, or a fine-tuned
+/// QFTPlus Model.
 pub fn has_face_model(dir: &Path) -> bool {
-    dir.join(vrft_tongue::universal::FILE_NAME).is_file()
+    dir.join(vrft_tongue::universal::FILE_NAME).is_file() || has_v2_model(dir)
 }
 
 /// Whether `dir` holds a model inference can use: a pair, or a universal
-/// face model, which runs beside the built-in pair.
+/// face model, which runs beside the mouth-camera pair.
 pub fn complete_model(dir: &Path) -> bool {
     complete_pair(dir) || has_face_model(dir)
 }
 
 fn architecture(dir: &Path) -> TrainerArchitecture {
-    if has_face_model(dir) && !complete_pair(dir) {
-        TrainerArchitecture::UniversalFace
-    } else {
+    if complete_pair(dir) {
         TrainerArchitecture::StereoPair
+    } else if has_v2_model(dir) {
+        TrainerArchitecture::UniversalFaceV2
+    } else {
+        TrainerArchitecture::UniversalFace
     }
 }
 type ApiError = (StatusCode, String);
@@ -93,7 +102,6 @@ pub struct TrainingManager {
     root: PathBuf,
     capture: CaptureManager,
     job: Arc<Mutex<Job>>,
-    builtin: BuiltinModel,
     qftplus: BuiltinModel,
     transfers: Transfers,
 }
@@ -104,8 +112,7 @@ impl TrainingManager {
             root,
             capture,
             job: Arc::new(Mutex::new(Job::default())),
-            builtin: BuiltinModel::default(),
-            qftplus: BuiltinModel::qftplus(),
+            qftplus: BuiltinModel::default(),
             transfers: Transfers::default(),
         }
     }
@@ -175,8 +182,6 @@ pub fn routes(manager: TrainingManager) -> Router {
         .route(routes::TRAINING_ACTIVATE, post(activate))
         .route(routes::TRAINING_DELETE_MODEL, post(delete_model))
         .route(routes::TRAINING_RENAME_MODEL, post(rename_model))
-        .route(routes::TRAINING_BUILTIN, post(install_builtin))
-        .route(routes::TRAINING_BUILTIN_CANCEL, post(cancel_builtin))
         .route(routes::TRAINING_QFTPLUS, post(install_qftplus))
         .route(routes::TRAINING_QFTPLUS_CANCEL, post(cancel_qftplus))
         .route(routes::TRAINING_QFTPLUS_REMOVE, post(remove_qftplus))
@@ -304,6 +309,17 @@ async fn sessions(
                 // from before them have no such label.
                 let puffed =
                     |column: usize| usable.iter().filter(|s| target(s, column) > 0.1).count();
+                // Frames with any of `names` active in their face labels.
+                let showing = |names: &[&str]| {
+                    usable
+                        .iter()
+                        .filter(|s| {
+                            names
+                                .iter()
+                                .any(|name| s["face"][*name].as_f64().unwrap_or(0.) > 0.1)
+                        })
+                        .count() as u64
+                };
                 let coverage = Coverage {
                     out: positives as u64,
                     inside: negatives as u64,
@@ -313,10 +329,21 @@ async fn sessions(
                     down: direction(3, -1.) as u64,
                     cheek_left: puffed(10) as u64,
                     cheek_right: puffed(11) as u64,
+                    suck: showing(&["cheek_suck_left", "cheek_suck_right"]),
+                    brows_up: showing(&[
+                        "brow_inner_up_left",
+                        "brow_inner_up_right",
+                        "brow_outer_up_left",
+                        "brow_outer_up_right",
+                    ]),
+                    brows_down: showing(&[
+                        "brow_lowerer_left",
+                        "brow_lowerer_right",
+                        "brow_pinch_left",
+                        "brow_pinch_right",
+                    ]),
                 };
-                let directions = [coverage.left, coverage.right, coverage.up, coverage.down]
-                    .iter()
-                    .all(|count| *count >= 8);
+                let five_cameras = layout == CameraLayout::all();
                 let index = |sample: &Value| sample["index"].as_u64().unwrap_or(0);
                 // Most of a pose's frames with the headset seeing the tongue
                 // one way and the prompt asking for the other.
@@ -356,7 +383,8 @@ async fn sessions(
                     positive_frames: positives as u64,
                     negative_frames: negatives as u64,
                     coverage,
-                    basic_ready: positives >= 20 && negatives >= 20 && directions,
+                    five_cameras,
+                    basic_ready: five_cameras && enough(&coverage),
                     error: None,
                 })
             })();
@@ -369,6 +397,27 @@ async fn sessions(
     }
     result.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(Json(result))
+}
+
+/// A count of usable frames, and how many fine-tuning needs.
+type Need = (fn(&Coverage) -> u64, u64);
+
+/// Frames of each kind fine-tuning needs: tongue in, each cheek puffed, the
+/// cheeks sucked in, and the brows up and down. The face setup has fitted
+/// the tongue's directions already.
+const NEEDS: [Need; 6] = [
+    (|c| c.inside, 20),
+    (|c| c.cheek_left, 8),
+    (|c| c.cheek_right, 8),
+    (|c| c.suck, 8),
+    (|c| c.brows_up, 8),
+    (|c| c.brows_down, 8),
+];
+
+fn enough(coverage: &Coverage) -> bool {
+    NEEDS
+        .iter()
+        .all(|(count, needed)| count(coverage) >= *needed)
 }
 
 async fn review(
@@ -410,12 +459,8 @@ async fn delete_recording(
     fs::remove_dir_all(&path).map_err(bad)?;
     // The face setup in use goes with its recording; the face model then
     // runs without one until the next.
-    let pointer = manager.root.join(crate::capture::ENROLLMENT_FILE);
-    let in_use = read_json(&pointer)
-        .ok()
-        .is_some_and(|value| value["recording"].as_str() == Some(request.id.as_str()));
-    if in_use {
-        fs::remove_file(&pointer).map_err(bad)?;
+    if crate::capture::face_setup_in_use(&manager.root).as_deref() == Some(request.id.as_str()) {
+        fs::remove_file(manager.root.join(crate::capture::ENROLLMENT_FILE)).map_err(bad)?;
     }
     Ok(Json(RecordingDeleted { deleted: true }))
 }
@@ -465,18 +510,27 @@ async fn start(
     if request.recordings.is_empty() {
         return Err(bad("Tick at least one recording to train on"));
     }
+    let captures = manager.root.join(".local/tongue-captures");
     let mut seen = std::collections::HashSet::new();
     let mut recordings = vec![];
     for id in request.recordings.iter().filter(|id| seen.insert(*id)) {
-        recordings.push(safe_child(&manager.root.join(".local/tongue-captures"), id).map_err(bad)?);
+        let path = safe_child(&captures, id).map_err(bad)?;
+        let layout = read_json(&path.join("metadata.json"))
+            .and_then(|metadata| CameraLayout::from_metadata(&metadata))
+            .map_err(bad)?;
+        if layout != CameraLayout::all() {
+            return Err(bad(format!(
+                "Recording {id} holds only the mouth cameras. Untick it: fine-tuning needs all five"
+            )));
+        }
+        recordings.push(path);
     }
-    let base = crate::camera::base_model_dir(&manager.root).map_err(bad)?;
-    // The synthetic examples keep what the user's recordings don't show.
-    // They hold the pair's 224 px mouth views, which the face model can't
-    // read.
-    if request.architecture == TrainerArchitecture::StereoPair {
-        recordings.extend(builtin::examples_dir(&manager.root));
-    }
+    let base = builtin::qftplus_model(&manager.root)
+        .and_then(|model| model.parent().map(Path::to_path_buf))
+        .ok_or_else(|| bad("Download the QFTPlus Model first: training fine-tunes it"))?;
+    let face_setup = crate::capture::face_setup_in_use(&manager.root)
+        .and_then(|id| safe_child(&captures, &id).ok())
+        .ok_or_else(|| bad("Do the face setup first: training reads your recordings against it"))?;
     // Training runs in a child vrft_d, so cancelling can simply end it.
     let trainer = std::env::current_exe().map_err(bad)?;
     let id = format!(
@@ -496,7 +550,8 @@ async fn start(
         device: request.device,
         base_model_dir: base,
         recordings,
-        architecture: request.architecture,
+        architecture: TrainerArchitecture::UniversalFaceV2,
+        face_setup: Some(face_setup),
     };
     save_json(
         &output.join("request.json"),
@@ -566,49 +621,18 @@ async fn status(State(manager): State<TrainingManager>) -> Json<TrainingStatus> 
         id: job.id.clone(),
         progress,
         active_id: active_id(&manager.root),
+        face_setup: crate::capture::face_setup_in_use(&manager.root),
         model_override: std::env::var_os("VRFT_TONGUE_MODEL_DIR").is_some(),
-        builtin: Some(builtin_status(&manager)),
         qftplus: Some(qftplus_status(&manager)),
         transfer: manager.transfers.status(),
     })
 }
 
-fn builtin_status(manager: &TrainingManager) -> BuiltinStatus {
-    let state = manager.builtin.state();
-    BuiltinStatus {
-        installed: builtin::installed(&manager.root),
-        examples_missing: builtin::examples_dir(&manager.root).is_none(),
-        download_megabytes: Some(builtin::download_megabytes(&manager.root)),
-        installing: state.installing,
-        fraction: state.fraction.map(|fraction| fraction as f32),
-        error: state.error,
-        stage: state.stage,
-        received_bytes: state.received,
-        total_bytes: state.total,
-        bytes_per_second: state.bytes_per_second,
-        cancelled: state.cancelled,
-    }
-}
-
-/// Downloads and verifies the built-in model pair and the training
-/// examples in the background.
-async fn install_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
-    if builtin::download_megabytes(&manager.root) > 0 {
-        manager.builtin.start(manager.root.clone());
-    }
-    Json(builtin_status(&manager))
-}
-
-async fn cancel_builtin(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
-    manager.builtin.cancel();
-    Json(builtin_status(&manager))
-}
-
 fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
     let state = manager.qftplus.state();
     BuiltinStatus {
-        installed: builtin::qftplus_model(&manager.root).is_some(),
-        examples_missing: false,
+        installed: builtin::qftplus_megabytes(&manager.root) == 0,
+        pair_installed: builtin::installed(&manager.root),
         download_megabytes: Some(builtin::qftplus_megabytes(&manager.root)),
         installing: state.installing,
         fraction: state.fraction.map(|fraction| fraction as f32),
@@ -621,9 +645,9 @@ fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
     }
 }
 
-/// Downloads QFT+'s universal face model from QFT+'s release in the
-/// background. Only ever on the user's say-so: its weights are for
-/// non-commercial use.
+/// Downloads the QFTPlus Model in the background: the mouth-camera pair,
+/// then QFT+'s universal face model from QFT+'s release. Only ever on the
+/// user's say-so: QFT+'s weights are for non-commercial use.
 async fn install_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
     if builtin::qftplus_megabytes(&manager.root) > 0 {
         manager.qftplus.start(manager.root.clone());
@@ -636,7 +660,8 @@ async fn cancel_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinS
     Json(qftplus_status(&manager))
 }
 
-/// Removes QFT+'s model; the face model in use unloads within a second.
+/// Removes QFT+'s model, leaving the mouth-camera pair; the face model in
+/// use unloads within a second.
 async fn remove_qftplus(
     State(manager): State<TrainingManager>,
 ) -> Result<Json<BuiltinStatus>, ApiError> {
@@ -715,8 +740,8 @@ fn active_id(root: &Path) -> String {
         .unwrap_or_else(|| "demo".into())
 }
 
-/// The folder of the model in use; `base` finds the built-in one, and is
-/// only asked when that's the one in use.
+/// The folder of the model in use; `base` finds the mouth-camera pair the
+/// QFTPlus Model brings, and is only asked when that's the one in use.
 pub fn selected_dir(
     root: &Path,
     base: impl FnOnce() -> Result<PathBuf, String>,
@@ -734,8 +759,8 @@ pub fn selected_dir(
 async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, ApiError> {
     let mut result = vec![SavedModel {
         id: "demo".into(),
-        architecture: TrainerArchitecture::StereoPair,
-        name: Some("Built-in model".into()),
+        architecture: TrainerArchitecture::UniversalFaceV2,
+        name: Some("QFTPlus Model".into()),
         report: None,
     }];
     let root = manager.root.join(".local/tongue-models");
@@ -770,8 +795,8 @@ async fn models(State(manager): State<TrainingManager>) -> Result<Json<Models>, 
 }
 
 /// Deletes a trained model, unless it's the one in use and there's another
-/// to switch to. The last trained model in use, with the built-in one not
-/// downloaded, can go; the built-in one is then in use again.
+/// to switch to. The last trained model in use, with the QFTPlus Model not
+/// downloaded, can go; the QFTPlus Model is then in use again.
 async fn delete_model(
     State(manager): State<TrainingManager>,
     Json(request): Json<RecordingId>,
@@ -779,7 +804,7 @@ async fn delete_model(
     manager.idle()?;
     manager.untouched()?;
     if request.id == "demo" {
-        return Err(bad("The built-in model can't be deleted"));
+        return Err(bad("The QFTPlus Model can't be deleted; remove it instead"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
     if !path.join("report.json").is_file() && !complete_model(&path) {
@@ -792,7 +817,7 @@ async fn delete_model(
             .models
             .iter()
             .any(|model| model.id != "demo" && model.id != request.id);
-        if others || builtin::installed(&manager.root) {
+        if others || builtin::qftplus_megabytes(&manager.root) == 0 {
             return Err(bad("Switch to another model before deleting this one"));
         }
         select_model(&manager.root, "demo").map_err(bad)?;
@@ -812,7 +837,7 @@ async fn rename_model(
         return Err(bad("Give the model a name of up to 100 characters"));
     }
     if request.id == "demo" {
-        return Err(bad("The built-in model can't be renamed"));
+        return Err(bad("The QFTPlus Model can't be renamed"));
     }
     let path = safe_child(&manager.root.join(".local/tongue-models"), &request.id).map_err(bad)?;
     let report_path = path.join("report.json");
@@ -861,6 +886,8 @@ fn select_model(root: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
     #[test]
     fn a_face_model_alone_is_a_model() {
         let root = test_root("face-only");
@@ -942,6 +969,121 @@ mod tests {
         path
     }
 
+    /// A five-camera face recording of 8 frames a pose, without pixels.
+    fn face_capture(root: &Path, id: &str, poses: &[(&str, [f32; 12], Value)]) {
+        let path = root.join(".local/tongue-captures").join(id);
+        fs::create_dir_all(&path).unwrap();
+        let mut metadata = CameraLayout::all().metadata();
+        metadata["mode"] = json!("face");
+        save_json(&path.join("metadata.json"), &metadata).unwrap();
+        let mut lines = String::new();
+        let mut index = 0;
+        for (step, (pose, targets, face)) in poses.iter().enumerate() {
+            for _ in 0..8 {
+                lines += &json!({"index": index, "step": step, "pose": pose,
+                    "targets": targets, "face": face})
+                .to_string();
+                lines.push('\n');
+                index += 1;
+            }
+        }
+        fs::write(path.join("samples.jsonl"), lines).unwrap();
+        File::create(path.join("frames.gray8"))
+            .unwrap()
+            .set_len(index * vrft_quest_pro_protocol::STRIP_BYTES as u64)
+            .unwrap();
+    }
+
+    fn face_poses() -> Vec<(&'static str, [f32; 12], Value)> {
+        let mut puff_left = [0.; 12];
+        puff_left[10] = 1.;
+        let mut puff_right = [0.; 12];
+        puff_right[11] = 1.;
+        let calm = [0.; 12];
+        vec![
+            ("Relax", calm, json!({"cheek_suck_left": 0.0})),
+            ("Relax", calm, json!({"cheek_suck_left": 0.0})),
+            ("Puff left", puff_left, json!({})),
+            ("Puff right", puff_right, json!({})),
+            (
+                "Suck",
+                calm,
+                json!({"cheek_suck_left": 1.0, "cheek_suck_right": 1.0}),
+            ),
+            ("Brows up", calm, json!({"brow_outer_up_left": 0.6})),
+            ("Frown", calm, json!({"brow_pinch_right": 1.0})),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_five_camera_face_recording_is_enough_to_fine_tune() {
+        let root = test_root("face");
+        face_capture(&root, "face", &face_poses());
+        face_capture(&root, "no-brows", &face_poses()[..5]);
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        let Json(list) = sessions(State(manager)).await.unwrap();
+        let face = &list[0];
+        assert!(face.five_cameras && face.basic_ready);
+        assert_eq!(face.mode, Some(CaptureMode::Face));
+        let coverage = face.coverage;
+        assert_eq!(
+            (coverage.inside, coverage.cheek_left, coverage.suck),
+            (56, 8, 8)
+        );
+        assert_eq!((coverage.brows_up, coverage.brows_down), (8, 8));
+        assert!(!list[1].basic_ready, "the brows are missing");
+        remove_test_root(root);
+    }
+
+    #[tokio::test]
+    async fn training_needs_five_cameras_the_qftplus_model_and_a_face_setup() {
+        let root = test_root("start");
+        face_capture(&root, "face", &face_poses());
+        capture(&root, "mouth", &[("Neutral", [0.; 10])]);
+        let manager = TrainingManager::new(root.clone(), CaptureManager::default());
+        let start_with = |id: &str| {
+            start(
+                State(manager.clone()),
+                Json(TrainRequest {
+                    name: "Mine".into(),
+                    recordings: vec![id.into()],
+                    epochs: 12,
+                    ..TrainRequest::default()
+                }),
+            )
+        };
+        let error = |result: Result<Json<TrainingStarted>, ApiError>| result.err().unwrap().1;
+        assert!(error(start_with("mouth").await).contains("only the mouth cameras"));
+        assert!(error(start_with("face").await).contains("Download the QFTPlus Model"));
+        let qftplus = root.join("models/qftplus");
+        fs::create_dir_all(&qftplus).unwrap();
+        for name in [
+            vrft_tongue::universal_v2::GRAPH_FILE,
+            vrft_tongue::universal_v2::FILE_NAME,
+        ] {
+            fs::write(qftplus.join(name), b"test").unwrap();
+        }
+        assert!(error(start_with("face").await).contains("face setup first"));
+        assert!(
+            !root.join(".local/tongue-models").exists(),
+            "nothing started"
+        );
+        remove_test_root(root);
+    }
+
+    #[test]
+    fn a_fine_tuned_qftplus_model_needs_its_graph() {
+        let root = test_root("v2");
+        let dir = root.join(".local/tongue-models/mine");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(vrft_tongue::universal_v2::FILE_NAME), b"heads").unwrap();
+        assert!(!complete_model(&dir));
+        fs::write(dir.join(vrft_tongue::universal_v2::GRAPH_FILE), b"graph").unwrap();
+        assert!(complete_model(&dir));
+        assert_eq!(architecture(&dir), TrainerArchitecture::UniversalFaceV2);
+        remove_test_root(root);
+    }
+
     fn out(horizontal: f32, vertical: f32) -> [f32; 10] {
         [1., 1., horizontal, vertical, 0., 0., 0., 0., 0., 0.]
     }
@@ -982,13 +1124,15 @@ mod tests {
                 right: 8,
                 up: 8,
                 down: 8,
-                cheek_left: 0,
-                cheek_right: 0,
+                ..Coverage::default()
             }
         );
-        assert!(basic.basic_ready);
+        assert!(!basic.five_cameras);
+        assert!(
+            !basic.basic_ready,
+            "the mouth cameras alone can't fine-tune"
+        );
         assert_eq!(list[1].coverage.right, 0);
-        assert!(!list[1].basic_ready);
 
         fs::create_dir_all(root.join(".local/tongue-captures/not-a-recording")).unwrap();
         let delete = |id: &str| {
@@ -1088,11 +1232,19 @@ mod tests {
         select_model(&root, "personal").unwrap();
         let delete =
             |id: &str| delete_model(State(manager.clone()), Json(RecordingId { id: id.into() }));
-        // With the built-in model there to switch to, the model in use stays.
-        let builtin = root.join("models/quest-pro");
-        fs::create_dir_all(&builtin).unwrap();
+        // With the QFTPlus Model there to switch to, the model in use stays.
+        let base = root.join("models/quest-pro");
+        fs::create_dir_all(&base).unwrap();
         for role in [Role::Gate, Role::Direction] {
-            fs::write(role.safetensors(&builtin), b"test").unwrap();
+            fs::write(role.safetensors(&base), b"test").unwrap();
+        }
+        let qftplus = root.join("models/qftplus");
+        fs::create_dir_all(&qftplus).unwrap();
+        for name in [
+            "universal-face-v2.area.onnx",
+            vrft_tongue::universal_v2::FILE_NAME,
+        ] {
+            fs::write(qftplus.join(name), b"test").unwrap();
         }
         assert!(delete("personal").await.is_err(), "the model in use stays");
         assert!(delete("demo").await.is_err());
@@ -1103,7 +1255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_last_model_in_use_can_go_when_the_builtin_one_is_not_downloaded() {
+    async fn the_last_model_in_use_can_go_when_the_qftplus_model_is_not_downloaded() {
         let root = test_root("last");
         for id in ["first", "second"] {
             let pair = root.join(".local/tongue-models").join(id);

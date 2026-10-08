@@ -17,9 +17,10 @@
 //!    `q`, the tongue head `t` and the brow embedding `w`.
 //! 2. The mouth head (43 VRCFT outputs) reads `q` against the face setup's
 //!    anchors; the brow head reads `w` against the neutral face.
-//! 3. The tongue's direction is the face setup's ridge fit on `q`, else
-//!    `tanh` of the tongue head. Its visibility and extension are Meta's own
-//!    TongueOut through the event layer, as in QFT+.
+//! 3. The tongue's direction is the ridge fit a personal model carries
+//!    ([`train`]), else the face setup's, on `q`, else `tanh` of the tongue
+//!    head. Its visibility and extension are Meta's own TongueOut through the
+//!    event layer, as in QFT+.
 //! 4. Cheek puffs split between the sides by how far `q` moved toward each
 //!    one-sided puff. Inner and outer brow raises are Meta's own, split by the
 //!    brow head's share.
@@ -27,6 +28,7 @@
 
 pub mod events;
 pub mod npz;
+pub mod train;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -41,8 +43,17 @@ use events::{Event, FaceEvents, BROW, PUFF, SUCK, TONGUE};
 use npz::Array;
 
 pub const SCHEMA: &str = "universal-face-v2";
-/// The heads' file, as QFT+ names it; the graph is `universal-face-v2.area.onnx`.
+/// The heads' file, as QFT+ names it.
 pub const FILE_NAME: &str = "universal-face-v2.npz";
+/// The graph, beside the heads.
+pub const GRAPH_FILE: &str = "universal-face-v2.area.onnx";
+/// A personal model's tongue map, which QFT+'s loader leaves alone.
+const TONGUE_ARRAYS: [&str; 4] = [
+    "tongue_mean",
+    "tongue_scale",
+    "tongue_weights",
+    "tongue_gains",
+];
 pub const SLOTS: [&str; 6] = [
     "neutral",
     "jaw_open",
@@ -104,6 +115,7 @@ struct Meta {
 }
 
 /// A dense layer, `[out, in]` row-major.
+#[derive(Clone)]
 struct Layer {
     weight: Vec<f32>,
     bias: Vec<f32>,
@@ -171,6 +183,7 @@ pub struct Native {
 /// one-sided puffs separate, the matrix that unmixes the sides.
 type PuffAxis = (Vec<f32>, Vec<f32>, Option<[[f64; 2]; 2]>);
 
+#[derive(Clone)]
 struct TongueMapV2 {
     mean: Vec<f32>,
     scale: Vec<f32>,
@@ -195,6 +208,8 @@ pub struct UniversalV2 {
     brow_present: f32,
     puff_axis: Option<PuffAxis>,
     tongue_map: Option<TongueMapV2>,
+    /// A personal model's own tongue map, used over the face setup's.
+    fitted_tongue: Option<TongueMapV2>,
     events: FaceEvents,
     share: BTreeMap<&'static str, f64>,
     share_at: Option<i64>,
@@ -256,6 +271,7 @@ impl UniversalV2 {
         let brow = [layer(&arrays, "brow_", 1)?, layer(&arrays, "brow_", 2)?];
         let (_, head_missing) = take(&arrays, "head_missing")?;
         let (_, brow_missing) = take(&arrays, "brow_missing")?;
+        let fitted_tongue = stored_tongue(&arrays)?;
         let mut model = Self {
             session,
             names: meta.names,
@@ -271,6 +287,7 @@ impl UniversalV2 {
             brow_present: 0.0,
             puff_axis: None,
             tongue_map: None,
+            fitted_tongue,
             events: FaceEvents::new(vec![], HashMap::new(), HashMap::new(), 0.0),
             share: BTreeMap::new(),
             share_at: None,
@@ -407,7 +424,7 @@ impl UniversalV2 {
                 }
             }
         }
-        self.tongue_map = tongue_map(&holds);
+        self.tongue_map = self.fitted_tongue.clone().or_else(|| tongue_map(&holds));
         self.anchors = anchors;
         self.present = present;
         self.brow_neutral = brow_neutral;
@@ -622,6 +639,24 @@ impl UniversalV2 {
             tongue_vertical: vertical,
         })
     }
+}
+
+/// A personal model's tongue map, when it has one.
+fn stored_tongue(arrays: &HashMap<String, Array>) -> Result<Option<TongueMapV2>> {
+    if !TONGUE_ARRAYS.iter().any(|name| arrays.contains_key(*name)) {
+        return Ok(None);
+    }
+    let [mean, scale, weights, gains] = TONGUE_ARRAYS.map(|name| take(arrays, name));
+    let (mean, scale, weights, gains) = (mean?.1, scale?.1, weights?.1, gains?.1);
+    if mean.len() != scale.len() || weights.len() != mean.len() * 2 || gains.len() != 4 {
+        bail!("the model's tongue map is the wrong size");
+    }
+    Ok(Some(TongueMapV2 {
+        mean,
+        scale,
+        weights,
+        gains: std::array::from_fn(|k| gains[k] as f64),
+    }))
 }
 
 fn mean(rows: &[Vec<f32>]) -> Vec<f32> {

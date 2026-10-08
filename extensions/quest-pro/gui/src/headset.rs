@@ -114,6 +114,8 @@ enum Area {
     Stream,
     /// Per-eye gaze, which restarts the stream but has its own card.
     EyeGaze,
+    /// The five-camera stream, which does too.
+    FiveCameras,
     Log,
 }
 
@@ -195,6 +197,8 @@ pub struct HeadsetPage {
     /// Per-eye gaze as last set here, shown while the headset app isn't
     /// streaming and so doesn't report it.
     eye_gaze_set: Option<bool>,
+    /// The five-camera stream, likewise.
+    five_cameras_set: Option<bool>,
     /// When Start stream was last pressed, until VRFT receives the stream.
     stream_started: Option<Instant>,
     /// The headset app's log shows at the bottom of the page.
@@ -270,6 +274,7 @@ impl HeadsetPage {
             watching: false,
             refresh_requested: false,
             eye_gaze_set: None,
+            five_cameras_set: None,
             stream_started: None,
             show_log: false,
             connection_details: false,
@@ -639,7 +644,10 @@ impl HeadsetPage {
                     self.replace = installing;
                 }
                 // The headset app logs what went wrong on its side.
-                let notice = if matches!(area, Area::Stream | Area::App | Area::EyeGaze) {
+                let notice = if matches!(
+                    area,
+                    Area::Stream | Area::App | Area::EyeGaze | Area::FiveCameras
+                ) {
                     // The notice points at the log, so the log shows.
                     self.show_log = true;
                     let brief = error.to_string();
@@ -917,6 +925,33 @@ impl HeadsetPage {
                     (false, true) => t!("headset.eye_gaze_off_restarted"),
                     (true, false) => t!("headset.eye_gaze_on_next"),
                     (false, false) => t!("headset.eye_gaze_off_next"),
+                }))
+            },
+            cx,
+        );
+    }
+
+    /// Saves the headset app's five-camera setting, which applies when its
+    /// stream starts, so a running stream restarts.
+    fn set_five_cameras(&mut self, on: bool, cx: &mut Context<Self>) {
+        let Some(serial) = self.ready_serial() else {
+            return;
+        };
+        self.five_cameras_set = Some(on);
+        self.run(
+            Busy::Restarting,
+            Area::FiveCameras,
+            move |adb| {
+                let streaming = adb.streaming(&serial)?;
+                if streaming {
+                    adb.stop_stream(&serial)?;
+                }
+                adb.open_app(&serial, &[("five_cameras", on), ("start_probe", streaming)])?;
+                Ok(Done::message(match (on, streaming) {
+                    (true, true) => t!("headset.five_cameras_on_restarted"),
+                    (false, true) => t!("headset.five_cameras_off_restarted"),
+                    (true, false) => t!("headset.five_cameras_on_next"),
+                    (false, false) => t!("headset.five_cameras_off_next"),
                 }))
             },
             cx,
@@ -1850,6 +1885,63 @@ impl HeadsetPage {
         )
     }
 
+    /// The five-camera stream: its switch and what it's for. Only once the
+    /// headset app is installed.
+    fn five_cameras_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let ready = self.ready_serial().is_some();
+        let busy = self.busy.is_some();
+        if !self
+            .details
+            .as_ref()
+            .filter(|_| ready)
+            .is_some_and(|details| details.app.is_some())
+        {
+            return None;
+        }
+        // Reported only while VRFT receives the stream; off by default.
+        let enabled = self
+            .daemon
+            .read(cx)
+            .status()
+            .filter(|status| status.source.is_some())
+            .and_then(|status| status.headset.as_ref())
+            .and_then(|headset| headset.five_cameras);
+        let checked = enabled.or(self.five_cameras_set).unwrap_or(false);
+        let switch = Switch::new("headset-five-cameras")
+            .accessibility_label(t!("headset.all_five_cameras"))
+            .checked(checked)
+            .disabled(!ready || busy)
+            .on_change(
+                cx.listener(|page, checked: &bool, _, cx| page.set_five_cameras(*checked, cx)),
+            );
+        Some(
+            card(cx)
+                .px(px(18.))
+                .py_4()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(card_title(t!("headset.all_five_cameras")))
+                        .child(div().flex_1())
+                        .child(switch),
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .text_size(px(12.5))
+                        .line_height(px(18.))
+                        .text_color(palette::text_3())
+                        .child(t!("headset.five_cameras_description"))
+                        .child(t!("headset.five_cameras_note")),
+                )
+                .children(self.message_in(Area::FiveCameras))
+                .into_any_element(),
+        )
+    }
+
     /// Whether the chosen USB headset can also be reached over Wi-Fi, at an
     /// address adb isn't already connected to.
     fn offer_wifi(&self) -> bool {
@@ -2312,6 +2404,7 @@ impl Render for HeadsetPage {
         let mut side: Vec<AnyElement> = Vec::new();
         if found {
             side.push(self.app_card(current, cx));
+            side.extend(self.five_cameras_card(cx));
             side.extend(self.eye_gaze_card(cx));
         }
         side.push(self.connection_card(current, cx));

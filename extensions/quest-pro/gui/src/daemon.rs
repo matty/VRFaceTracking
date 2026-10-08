@@ -155,25 +155,14 @@ impl QuestProClient {
             .map(drop)
     }
 
-    /// Starts downloading the built-in tongue model pair.
-    pub fn install_builtin(&self) -> Result<()> {
-        self.post::<BuiltinStatus>(routes::TRAINING_BUILTIN, None::<&()>)
-            .map(drop)
-    }
-
-    /// Stops downloading the built-in model.
-    pub fn cancel_builtin(&self) -> Result<()> {
-        self.post::<BuiltinStatus>(routes::TRAINING_BUILTIN_CANCEL, None::<&()>)
-            .map(drop)
-    }
-
-    /// Starts downloading QFT+'s universal face model.
+    /// Starts downloading the QFTPlus Model: the mouth-camera pair, then
+    /// QFT+'s universal face model.
     pub fn install_qftplus(&self) -> Result<()> {
         self.post::<BuiltinStatus>(routes::TRAINING_QFTPLUS, None::<&()>)
             .map(drop)
     }
 
-    /// Stops downloading QFT+'s model.
+    /// Stops downloading the QFTPlus Model.
     pub fn cancel_qftplus(&self) -> Result<()> {
         self.post::<BuiltinStatus>(routes::TRAINING_QFTPLUS_CANCEL, None::<&()>)
             .map(drop)
@@ -203,7 +192,7 @@ impl QuestProClient {
             .map(|status| status.serial)
     }
 
-    /// The built-in tongue model and every personal one trained on this PC.
+    /// The QFTPlus Model and every personal one trained on this PC.
     pub fn models(&self) -> Result<Models> {
         self.get(routes::TRAINING_MODELS)
     }
@@ -224,7 +213,7 @@ impl QuestProClient {
         self.post(routes::TRAINING_RENAME_MODEL, Some(&request))
     }
 
-    /// Puts a saved model into use; `demo` is the built-in one.
+    /// Puts a saved model into use; `demo` is the QFTPlus Model.
     pub fn activate_model(&self, id: &str) -> Result<()> {
         let request = RecordingId { id: id.into() };
         self.post::<ModelActivated>(routes::TRAINING_ACTIVATE, Some(&request))

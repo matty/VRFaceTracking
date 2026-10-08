@@ -1,8 +1,8 @@
-//! Reads NumPy `.npz` files: a zip of `.npy` arrays, here little-endian
-//! float32 or float64, or a unicode string.
+//! Reads and writes NumPy `.npz` files: a zip of `.npy` arrays, here
+//! little-endian float32 or float64, or a unicode string.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -110,4 +110,117 @@ pub fn read(path: &Path) -> Result<HashMap<String, Array>> {
         );
     }
     Ok(arrays)
+}
+
+/// One array as a `.npy` file, version 1.0, as NumPy writes it.
+pub fn npy(array: &Array) -> Vec<u8> {
+    let (descr, shape, data) = match array {
+        Array::Float { shape, values } => (
+            "<f4".to_string(),
+            shape.clone(),
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        ),
+        Array::Text(text) => (
+            format!("<U{}", text.chars().count().max(1)),
+            vec![],
+            text.chars()
+                .map(u32::from)
+                .chain(text.is_empty().then_some(0))
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        ),
+    };
+    let shape = match shape.as_slice() {
+        [] => "()".to_string(),
+        [only] => format!("({only},)"),
+        dims => format!(
+            "({})",
+            dims.iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let mut header = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape}, }}");
+    // The data starts on a 64-byte boundary, after a newline.
+    let padding = (64 - (10 + header.len() + 1) % 64) % 64;
+    header.push_str(&" ".repeat(padding));
+    header.push('\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    out.extend_from_slice(&(header.len() as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&data);
+    out
+}
+
+/// Writes `arrays`, in order, as an uncompressed `.npz`, as `np.savez`
+/// does, through a temporary file.
+pub fn write(path: &Path, arrays: &[(String, Array)]) -> Result<()> {
+    let temporary = path.with_extension("npz.tmp");
+    let mut archive = zip::ZipWriter::new(std::fs::File::create(&temporary)?);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
+    for (name, array) in arrays {
+        archive.start_file(format!("{name}.npy"), options)?;
+        archive.write_all(&npy(array))?;
+    }
+    archive.finish()?.sync_all()?;
+    std::fs::rename(&temporary, path).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrays_read_back_as_written() {
+        let path = std::env::temp_dir().join(format!("vrft-npz-{}.npz", std::process::id()));
+        let arrays = vec![
+            (
+                "meta".to_string(),
+                Array::Text("{\"schema\": \"ü\"}".into()),
+            ),
+            (
+                "w".to_string(),
+                Array::Float {
+                    shape: vec![2, 3],
+                    values: vec![1.0, -2.5, 3.25, 0.0, 1e-7, 6.0],
+                },
+            ),
+            (
+                "b".to_string(),
+                Array::Float {
+                    shape: vec![3],
+                    values: vec![0.5, 0.25, -1.0],
+                },
+            ),
+        ];
+        write(&path, &arrays).unwrap();
+        let read = read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        for (name, array) in &arrays {
+            match (array, &read[name]) {
+                (Array::Text(a), Array::Text(b)) => assert_eq!(a, b),
+                (
+                    Array::Float { shape, values },
+                    Array::Float {
+                        shape: read_shape,
+                        values: read_values,
+                    },
+                ) => assert_eq!((shape, values), (read_shape, read_values)),
+                _ => panic!("{name} changed type"),
+            }
+        }
+        let data = 6 * 4;
+        assert_eq!(
+            (npy(&arrays[1].1).len() - data) % 64,
+            0,
+            "data starts aligned"
+        );
+    }
 }

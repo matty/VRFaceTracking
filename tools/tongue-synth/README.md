@@ -98,24 +98,22 @@ random camera differences either way. To copy your headset's calibration
 adb exec-out su -c "cat /persist/calibration/ft_calib.scio.json" > .local/headset-calibration/ft_calib.scio.json
 ```
 
-## Releasing training examples
+## Packing training examples
 
-Personal training mixes in a synthetic set that the app downloads from a
-VRFaceTracking GitHub release (see `EXAMPLES_RELEASE` in
-`extensions/quest-pro/daemon/src/builtin.rs`). To make a new one:
+Training the stereo pair or VRFT's own universal face model, a developer
+tool now (`examples/train.rs`), can mix in a synthetic set. The app no longer
+downloads one: personal training fine-tunes the QFTPlus Model instead. To
+make a set:
 
 1. Render it, for example 2,000 frames: `./tools/tongue-synth/render.ps1 -Count 2000 -Jobs 3 -Fast -Out <folder>`.
 2. Pack the recordings at the model's input size, shrunk exactly as training
    shrinks real frames:
    `cargo run -p vrft-tongue --release --example pack_synthetic -- .local/tongue-synthetic-release/tongue-synthetic-v<N> <folder>/*`
-3. Zip the folder (`7z a -tzip -mx=9 tongue-synthetic-v<N>.zip tongue-synthetic-v<N>`)
-   and publish it as the only asset of a `tongue-synthetic-v<N>` prerelease: a
-   full release would become the repository's latest while VRFT has none.
-4. Update `EXAMPLES_RELEASE` (URL, name, SHA-256, size) and `EXAMPLES_DIR`.
+3. Add the packed folder to a training request's `recordings`.
 
-Judge a new set by personal training on part of a real recording plus the
-set, scored on the recording's held-out poses, rather than by training on
-the set alone: that is what users get.
+Judge a new set by training on part of a real recording plus the set,
+scored on the recording's held-out poses, rather than by training on the set
+alone.
 
 `preview.py` tiles frames of any recording, real or synthetic, into one PNG
 to compare them by eye:

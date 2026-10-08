@@ -1072,11 +1072,18 @@ async fn capture_start(
             "The mouth cameras aren't live yet. Wait for them before recording".into(),
         ));
     }
-    // The face model reads the brows and eyes against it too.
-    if request.mode == CaptureMode::Enrollment && layout != CameraLayout::all() {
+    // The face model reads the brows and eyes too, and trains on all five.
+    if layout != CameraLayout::all() {
+        let what = if request.mode == CaptureMode::Enrollment {
+            "The face setup"
+        } else {
+            "Recording"
+        };
         return Err((
             StatusCode::CONFLICT,
-            "The face setup needs all five cameras. Turn on All five cameras in the headset app first".into(),
+            format!(
+                "{what} needs all five cameras. Turn on All five cameras in the headset app first"
+            ),
         ));
     }
     preview
@@ -1509,7 +1516,7 @@ pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
         ]
         .into_iter()
         .find(|path| Role::Gate.find(path).is_some())
-        .ok_or("the built-in tongue model is not installed. Download it on the Training page")?
+        .ok_or("the QFTPlus Model isn't downloaded. Download it on the Training page")?
     };
     Ok(model_dir)
 }
@@ -1517,12 +1524,12 @@ pub(crate) fn base_model_dir(cwd: &std::path::Path) -> Result<PathBuf, String> {
 /// The folder of the model pair in use.
 fn model_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    // A trained model in use runs without the built-in one.
+    // A trained model in use runs without the QFTPlus Model's pair.
     let dir = crate::training::selected_dir(&cwd, || base_model_dir(&cwd))?;
     if crate::training::complete_pair(&dir) {
         return Ok(dir);
     }
-    // A universal face model alone: the built-in pair reads the mouth
+    // A universal face model alone: the QFTPlus Model's pair reads the mouth
     // cameras whenever the five cameras don't stream.
     if crate::training::has_face_model(&dir) {
         return base_model_dir(&cwd);
@@ -1547,8 +1554,8 @@ struct FaceChoice {
 
 impl FaceChoice {
     fn current(cwd: &Path) -> Self {
-        // The model in use's folder; for the built-in model, that's where
-        // a built-in face model would sit beside the pair.
+        // The model in use's folder; for the QFTPlus Model, the pair's
+        // folder, where another face model could sit beside it.
         let model = match std::env::var_os("VRFT_FACE_MODEL") {
             Some(path) => Some(PathBuf::from(path)),
             None => crate::training::selected_dir(cwd, || base_model_dir(cwd))
@@ -1564,10 +1571,7 @@ impl FaceChoice {
                 })
                 .or_else(|| crate::builtin::qftplus_model(cwd)),
         };
-        let enrollment = std::fs::read(cwd.join(crate::capture::ENROLLMENT_FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|value| value["recording"].as_str().map(str::to_owned));
+        let enrollment = crate::capture::face_setup_in_use(cwd);
         let enrollment_changed = enrollment.as_ref().and_then(|id| {
             let dir = cwd.join(".local/tongue-captures").join(id);
             ["review.json", "excluded_steps.json"]

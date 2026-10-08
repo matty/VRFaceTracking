@@ -265,12 +265,14 @@ fn unused(parent: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// The recordings a model's `report.json` says it was trained on, by id.
+/// The recordings a model's `report.json` says it was trained on, its face
+/// setup among them, by id.
 fn trained_on(report: &Value) -> Vec<String> {
     let mut ids: Vec<String> = report["recordings"]
         .as_array()
         .into_iter()
         .flatten()
+        .chain(report.get("face_setup"))
         .filter_map(Value::as_str)
         .filter_map(|path| {
             // Written on Windows or not, the id is the last part.
@@ -636,7 +638,7 @@ fn check(base: &Path, manifest: &Manifest, progress: &mut Progress) -> Result<()
 
     let model = base.join(MODEL_DIR);
     if !crate::training::complete_model(&model) {
-        return Err("The export's model is missing half of its pair".into());
+        return Err("The export's model is missing some of its files".into());
     }
     let report =
         fs::read(model.join("report.json")).map_err(|_| "The export's model has no report.json")?;

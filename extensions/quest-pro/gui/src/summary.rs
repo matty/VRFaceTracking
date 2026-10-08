@@ -176,6 +176,23 @@ pub fn recording_cameras(status: Option<&Status>) -> Reading {
     .fix(fix)
 }
 
+/// Whether the headset sends all five cameras, which the face setup and
+/// recordings need.
+pub fn five_cameras(status: Option<&Status>) -> Reading {
+    let Some(status) = status.filter(|status| camera_live(status)) else {
+        return Reading::new(Tone::Waiting, t!("summary.five_cameras_waiting"), "");
+    };
+    if status.five_cameras {
+        return Reading::new(Tone::Good, t!("summary.five_cameras_on"), "");
+    }
+    Reading::new(
+        Tone::Waiting,
+        t!("summary.five_cameras_off"),
+        t!("summary.five_cameras_off_detail"),
+    )
+    .fix(Fix::Open(pages::HEADSET))
+}
+
 pub fn eyes(status: Option<&Status>) -> Reading {
     let Some(status) = status else {
         return Reading::unavailable();

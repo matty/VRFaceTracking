@@ -272,6 +272,7 @@ impl Job<'_> {
             held_out_frames: 0,
             kept: vec![],
             tongue_out: None,
+            face_setup: None,
         };
         write_json(
             &self.output.join("report.json"),

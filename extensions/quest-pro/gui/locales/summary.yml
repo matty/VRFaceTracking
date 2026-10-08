@@ -52,6 +52,14 @@ summary:
     en: "The headset's own tongue and cheek tracking is sent"
   vrft_not_running:
     en: "Tracking isn't running"
+  five_cameras_waiting:
+    en: "Waiting for the cameras"
+  five_cameras_on:
+    en: "On"
+  five_cameras_off:
+    en: "Off"
+  five_cameras_off_detail:
+    en: "Turn on All five cameras on the Headset page, or in the headset app."
   no_frames:
     en: "No frames"
   no_frames_detail:

@@ -129,7 +129,7 @@ pub(crate) fn select(samples: &[Sample]) -> Vec<&Sample> {
 /// Which of one recording's `selected` samples (in frame order) are held
 /// back: the last fifth of each held pose large enough to split, and every
 /// fifth block of its follow-the-dot frames taken as one sequence.
-fn held_back(selected: &[&Sample]) -> Vec<bool> {
+pub(crate) fn held_back(selected: &[&Sample]) -> Vec<bool> {
     let mut held = vec![false; selected.len()];
     let mut poses: Vec<(u64, Vec<usize>)> = vec![];
     let mut follow = vec![];

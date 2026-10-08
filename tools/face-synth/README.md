@@ -212,7 +212,7 @@ cargo run -p vrft-tongue --release --example pack_synthetic -- <out> <recordings
 cargo run -p vrft-tongue --release --example pack_synthetic -- <out> <recordings>... --size 224
 ```
 
-`--size` must be the input size of the model that trains on the pack (`image_size` in its checkpoint's metadata): 224 for the built-in pair, 128 for the universal model. A pair whose two models read different sizes can train on the unpacked renders, at the headset's 400 px.
+`--size` must be the input size of the model that trains on the pack (`image_size` in its checkpoint's metadata): 224 for the mouth-camera pair, 128 for the universal model. A pair whose two models read different sizes can train on the unpacked renders, at the headset's 400 px.
 
 ## Validation
 

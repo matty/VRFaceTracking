@@ -237,19 +237,14 @@ pub mod routes {
     /// POST a [`RenameModel`](super::RenameModel); answers
     /// [`SavedModel`](super::SavedModel).
     pub const TRAINING_RENAME_MODEL: &str = "/training/models/rename";
-    /// POST: starts installing the built-in model; answers
-    /// [`BuiltinStatus`](super::BuiltinStatus).
-    pub const TRAINING_BUILTIN: &str = "/training/builtin";
-    /// POST: stops installing the built-in model; answers
-    /// [`BuiltinStatus`](super::BuiltinStatus).
-    pub const TRAINING_BUILTIN_CANCEL: &str = "/training/builtin/cancel";
-    /// POST: starts downloading QFT+'s face model; answers
+    /// POST: starts downloading the QFTPlus Model: the mouth-camera pair,
+    /// then QFT+'s face model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS: &str = "/training/qftplus";
-    /// POST: stops downloading QFT+'s face model; answers
+    /// POST: stops downloading the QFTPlus Model; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS_CANCEL: &str = "/training/qftplus/cancel";
-    /// POST: removes QFT+'s face model; answers
+    /// POST: removes QFT+'s face model, leaving the pair; answers
     /// [`BuiltinStatus`](super::BuiltinStatus).
     pub const TRAINING_QFTPLUS_REMOVE: &str = "/training/qftplus/remove";
     /// POST an [`ExportModel`](super::ExportModel): starts copying a trained
@@ -612,49 +607,90 @@ pub struct EyeOffsets {
     pub right_deg: [f64; 2],
 }
 
-/// The basic recording's poses that teach the cheek puffs, which can be
-/// recorded on their own to add them to recordings made before them.
-pub const CHEEK_POSES: [&str; 3] = [
-    "Left cheek puffed",
-    "Right cheek puffed",
-    "Both cheeks puffed",
+/// The face recording's poses that give more of each kind of frame
+/// training needs ([`Coverage`]'s field), so just those can be recorded.
+pub const FACE_TOP_UPS: [(&str, &[&str]); 6] = [
+    ("in", &["Relax and look around"]),
+    (
+        "cheek_left",
+        &[
+            "Puff your left cheek, halfway",
+            "Puff your left cheek, most of the way",
+            "Puff your left cheek, full",
+        ],
+    ),
+    (
+        "cheek_right",
+        &[
+            "Puff your right cheek, halfway",
+            "Puff your right cheek, most of the way",
+            "Puff your right cheek, full",
+        ],
+    ),
+    (
+        "suck",
+        &[
+            "Suck in your cheeks, halfway",
+            "Suck in your cheeks, most of the way",
+            "Suck in your cheeks, full",
+        ],
+    ),
+    (
+        "brows_up",
+        &[
+            "Raise both eyebrows, halfway",
+            "Raise both eyebrows, most of the way",
+            "Raise both eyebrows, full",
+        ],
+    ),
+    (
+        "brows_down",
+        &["Frown, halfway", "Frown, most of the way", "Frown, full"],
+    ),
 ];
 
-/// A guided tongue recording.
+/// A guided recording.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
-    /// Basic held poses.
+    /// QFT+'s labelled prompts, at three amounts each, and look-alikes: what
+    /// personal training fine-tunes the QFTPlus Model on.
     #[default]
-    Core,
-    /// More directions.
+    Face,
+    /// More of the tongue's directions.
     Direction,
-    /// Tongue in, with the mouth doing other things.
-    Negatives,
-    /// Follow a moving dot.
+    /// Follow a moving dot with the tongue.
     Follow,
     /// The one-minute face setup: the poses the universal face model reads
     /// each frame against.
     Enrollment,
+    /// Basic held poses, from before the face recording. Older recordings
+    /// only.
+    Core,
+    /// The tongue in, with the mouth doing other things. Older recordings
+    /// only.
+    Negatives,
 }
 
 impl CaptureMode {
-    pub const ALL: [CaptureMode; 5] = [
-        Self::Core,
+    pub const ALL: [CaptureMode; 6] = [
+        Self::Face,
         Self::Direction,
-        Self::Negatives,
         Self::Follow,
         Self::Enrollment,
+        Self::Core,
+        Self::Negatives,
     ];
 
     /// The name in URLs, recordings' metadata and ids.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Core => "core",
+            Self::Face => "face",
             Self::Direction => "direction",
-            Self::Negatives => "negatives",
             Self::Follow => "follow",
             Self::Enrollment => "enrollment",
+            Self::Core => "core",
+            Self::Negatives => "negatives",
         }
     }
 
@@ -792,7 +828,7 @@ impl PauseReason {
     }
 }
 
-/// One tongue recording on this PC.
+/// One recording on this PC.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Recording {
@@ -804,6 +840,8 @@ pub struct Recording {
     pub positive_frames: u64,
     pub negative_frames: u64,
     pub coverage: Coverage,
+    /// Its frames hold all five cameras, which training needs.
+    pub five_cameras: bool,
     /// Enough of everything for training on its own.
     pub basic_ready: bool,
     /// Why the recording can't be read; nothing else is filled in then.
@@ -829,7 +867,8 @@ pub struct RecordedPose {
 }
 
 /// Usable frames in a recording: tongue out and in, out in each basic
-/// direction, and each cheek puffed.
+/// direction, each cheek puffed, the cheeks sucked in, and the brows up and
+/// down.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Coverage {
@@ -840,9 +879,13 @@ pub struct Coverage {
     pub right: u64,
     pub up: u64,
     pub down: u64,
-    /// Frames with each cheek puffed, which training needs 8 of to learn it.
     pub cheek_left: u64,
     pub cheek_right: u64,
+    pub suck: u64,
+    /// Either brow raised, inner or outer.
+    pub brows_up: u64,
+    /// Either brow lowered or pinched.
+    pub brows_down: u64,
 }
 
 /// Leaves the given poses of a recording out of training.
@@ -911,23 +954,27 @@ pub enum TrainerArchitecture {
     #[default]
     #[serde(rename = "spatial-stereo-resnet-v2")]
     StereoPair,
-    /// The universal face model, from all five cameras, conditioned on the
-    /// wearer's face setup.
+    /// VRFT's own universal face model, from all five cameras, conditioned
+    /// on the wearer's face setup.
     #[serde(rename = "universal-face-v1")]
     UniversalFace,
+    /// A model in QFT+'s format, such as the QFTPlus Model, with its heads
+    /// fine-tuned on the wearer's recordings.
+    #[serde(rename = "universal-face-v2")]
+    UniversalFaceV2,
 }
 
-/// Trains a personal model from recordings.
+/// Fine-tunes the QFTPlus Model on recordings, read against the face setup
+/// in use.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrainRequest {
     pub name: String,
-    /// Recording ids.
+    /// Recording ids, each with all five cameras.
     pub recordings: Vec<String>,
     pub device: TrainingDevice,
     /// 1 to 60.
     pub epochs: u32,
-    pub architecture: TrainerArchitecture,
 }
 
 /// What the daemon asks the trainer (`vrft_d train-tongue`) for, in the new
@@ -938,13 +985,18 @@ pub struct TrainerRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub device: TrainingDevice,
-    /// The model pair training starts from. The universal face model takes
-    /// its encoder from the direction model.
+    /// The model training starts from: the pair, whose direction model
+    /// gives `universal-face-v1` its encoder, or the folder of the
+    /// `universal-face-v2` model whose heads are fine-tuned.
     pub base_model_dir: PathBuf,
     /// The recordings' folders.
     pub recordings: Vec<PathBuf>,
     #[serde(default)]
     pub architecture: TrainerArchitecture,
+    /// The face setup recording a `universal-face-v2` model reads frames
+    /// against while it trains.
+    #[serde(default)]
+    pub face_setup: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -967,15 +1019,17 @@ pub struct TrainingStatus {
     /// The last job started since VRFT started.
     pub id: Option<String>,
     pub progress: Option<TrainingProgress>,
-    /// The model in use; `demo` is the built-in one.
+    /// The model in use; `demo` is the QFTPlus Model.
     pub active_id: String,
+    /// The face setup in use: its recording's id.
+    pub face_setup: Option<String>,
     /// `VRFT_TONGUE_MODEL_DIR` pins the model, so selection is off.
     pub model_override: bool,
-    /// The built-in model pair; absent from daemons that can't install it.
-    pub builtin: Option<BuiltinStatus>,
-    /// QFT+'s universal face model, which runs on five-camera frames once
-    /// downloaded unless a trained face model is in use; absent from daemons
-    /// that can't install it. `examples_missing` is always false.
+    /// The QFTPlus Model, the base model and what training fine-tunes:
+    /// QFT+'s universal face model, which runs on five-camera frames unless a
+    /// trained face model is in use, and the mouth-camera pair, which reads
+    /// the mouth cameras alone. Installed once both are in place. Absent from
+    /// daemons that can't install it.
     pub qftplus: Option<BuiltinStatus>,
     /// The last model export or import since VRFT started; absent from
     /// daemons that can't do either.
@@ -1057,6 +1111,9 @@ pub struct TrainingReport {
     /// Whether TongueOut follows the extension output, when frames were
     /// held back to check it.
     pub tongue_out: Option<ReportTongueOut>,
+    /// The face setup recording's folder a `universal-face-v2` model was
+    /// fine-tuned with.
+    pub face_setup: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1074,7 +1131,8 @@ pub struct ReportCalibration {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReportKept {
-    /// `gate` or `direction`.
+    /// `gate` or `direction`; for a fine-tuned QFTPlus Model, `face` (the
+    /// heads) or `tongue` (the tongue map: pass 1 is the new one).
     pub focus: String,
     /// The pass kept; 0 is the model training started from.
     pub epoch: u32,
@@ -1108,15 +1166,14 @@ pub struct ReportLevel {
     pub frames: u64,
 }
 
-/// The built-in model pair, and the synthetic training examples personal
-/// training mixes in, which download with it.
+/// The QFTPlus Model's download: the mouth-camera pair, then QFT+'s model.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BuiltinStatus {
-    /// The pair is in place.
+    /// Both are in place.
     pub installed: bool,
-    /// The training examples aren't in place yet.
-    pub examples_missing: bool,
+    /// The pair is, so a download is on QFT+'s model.
+    pub pair_installed: bool,
     /// Megabytes an install would still download.
     pub download_megabytes: Option<u32>,
     pub installing: bool,
@@ -1197,7 +1254,7 @@ pub struct TransferStatus {
     pub recordings_already_here: u32,
 }
 
-/// The built-in model and every personal one trained on this PC.
+/// The QFTPlus Model and every personal one trained on this PC.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Models {
@@ -1208,7 +1265,7 @@ pub struct Models {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedModel {
-    /// `demo` for the built-in model, else `<unix ms>-<pid>`.
+    /// `demo` for the QFTPlus Model, else `<unix ms>-<pid>`.
     pub id: String,
     /// What it is: the stereo pair, or the universal face model.
     pub architecture: TrainerArchitecture,
