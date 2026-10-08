@@ -19,7 +19,7 @@ headset:
   busy_starting:
     en: "Starting the stream…"
   busy_stopping:
-    en: "Stopping the stream and putting Meta's eye model back…"
+    en: "Stopping the stream…"
   busy_restarting:
     en: "Restarting the stream…"
   busy_reading_log:
@@ -73,7 +73,7 @@ headset:
   eye_gaze_on_next:
     en: "Per-eye gaze on from the next stream."
   eye_gaze_off_next:
-    en: "Per-eye gaze off from the next stream."
+    en: "Per-eye gaze off. The headset puts Meta's eye model back now, which restarts its tracking for a few seconds."
   five_cameras_on_restarted:
     en: "All five cameras on; stream restarted. Go back to your streaming app on the headset."
   five_cameras_off_restarted:
@@ -253,9 +253,9 @@ headset:
   experimental:
     en: "EXPERIMENTAL"
   eye_gaze_description:
-    en: "Lets your avatar's eyes meet at what you look at. Swaps Meta's eye model while the stream runs."
+    en: "Lets your avatar's eyes meet at what you look at. Swaps Meta's eye model, which restarts the headset's tracking for a few seconds once after each reboot."
   eye_gaze_note:
-    en: "Changing it restarts the stream. Meta's model returns when the stream stops. Allow root if Magisk asks."
+    en: "Changing it restarts the stream. Meta's model returns when you turn this off. Allow root if Magisk asks."
   connect:
     en: "Connect"
   download_tool_first:
