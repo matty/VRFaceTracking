@@ -147,4 +147,4 @@ camera:
   cheek_right:
     en: "Right"
   cheeks_unlearned:
-    en: "Your tongue model hasn't learned cheek puffs yet. Record the cheek poses and train again."
+    en: "The model reading the mouth cameras hasn't learned cheek puffs, so the headset's are sent. With All five cameras on, the QFTPlus Model reads them."

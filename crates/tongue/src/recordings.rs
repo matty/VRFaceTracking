@@ -1,8 +1,8 @@
-//! Guided tongue recordings, as the daemon saves them under
+//! Guided recordings, as the daemon saves them under
 //! `.local/tongue-captures/<recording>/`. Recordings from before the cheek
 //! puff heads carry tongue labels alone, so their cheeks count as unlabelled.
-//! Synthetic sets use the same format, and the one the app downloads is
-//! stored already shrunk to the model's input size.
+//! Synthetic sets use the same format, stored already shrunk to the model's
+//! input size (`examples/pack_synthetic.rs`).
 //!
 //! A frame holds the views of the cameras `metadata.json` lists in `cameras`,
 //! side by side: the mouth pair (2 and 3) in recordings from before the

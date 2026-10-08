@@ -1,6 +1,6 @@
 //! Quest Pro support for the daemon: the headset's mouth and eye cameras,
-//! independent eye gaze, pupil size, and camera-based tongue and cheek puff
-//! tracking with personal model training. It adds to whichever tracking
+//! independent eye gaze, pupil size, and camera-based face, tongue and cheek
+//! tracking, with personal fine-tuning of the QFTPlus Model. It adds to whichever tracking
 //! module is active rather than replacing it.
 mod builtin;
 mod camera;
@@ -47,9 +47,9 @@ impl DaemonExtension for QuestPro {
 }
 
 /// `vrft_d train-tongue --request <file> --output <new folder> [--epochs N]
-/// [--learning-rate R] [--layers all|head|output]`: one personal tongue
-/// training run. The daemon starts this as a child
-/// process and follows its `progress.json`.
+/// [--learning-rate R] [--layers all|head|output]`: one personal training
+/// run, such as fine-tuning the QFTPlus Model. The daemon starts this as a
+/// child process and follows its `progress.json`.
 fn train_tongue(arguments: &[String]) -> anyhow::Result<()> {
     let value = |flag: &str| {
         arguments

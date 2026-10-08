@@ -5,12 +5,8 @@
 //! them unprompted. With it comes the mouth-camera pair, which reads the
 //! mouth cameras whenever the headset sends only those: the v8 demo
 //! checkpoints from the Qpro-Enhanced-FT v0.1.10 release (MIT license).
-//!
-//! Also installs what personal training needs: that pair, which training
-//! starts from, and the synthetic training examples it mixes in, from
-//! VRFaceTracking's own release. Every download is verified by SHA-256,
-//! files already present are never overwritten, and each release zip is
-//! removed once its files are out of it.
+//! Every download is verified by SHA-256, files already present are never
+//! overwritten, and each release is removed once its files are out of it.
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -40,19 +36,6 @@ const MODEL_RELEASE: Release = Release {
     megabytes: 140,
     what: "the mouth-camera model",
 };
-/// Rendered training examples (tools/tongue-synth), stored at the model's
-/// input size. Personal training mixes them in, so a model keeps knowing the
-/// faces and tongue positions a user's own recording doesn't show.
-const EXAMPLES_RELEASE: Release = Release {
-    url: "https://github.com/matty/VRFaceTracking/releases/download/tongue-synthetic-v4/tongue-synthetic-v4.zip",
-    name: "tongue-synthetic-v4.zip",
-    sha256: "4620d22c3bed55945330ac907e794396c4b073a53fa3e85863947dfa29e123f5",
-    megabytes: 123,
-    what: "the training examples",
-};
-/// Where the examples unpack, beside the mouth-camera pair, and their files.
-const EXAMPLES_DIR: &str = "tongue-synthetic-v4";
-const EXAMPLES_FILES: [&str; 3] = ["metadata.json", "samples.jsonl", "frames.gray8"];
 const MODELS: [(&str, &str); 2] = [
     (
         "qpro-stereo-tongue-v8-gate.pt",
@@ -79,7 +62,7 @@ const QFTPLUS_ENTRY: &str = "lib/app/models";
 /// Its files: the graph, then the heads that name it.
 const QFTPLUS_FILES: [(&str, &str); 2] = [
     (
-        "universal-face-v2.area.onnx",
+        vrft_tongue::universal_v2::GRAPH_FILE,
         "991fd0bad7afe52865feed0ba9c463254b21663826f704ba04512daa776ea935",
     ),
     (
@@ -89,18 +72,6 @@ const QFTPLUS_FILES: [(&str, &str); 2] = [
 ];
 /// What an install stops with when it was cancelled rather than failed.
 const CANCELLED: &str = "cancelled";
-
-/// What a [`BuiltinModel`] installs.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Package {
-    /// What personal training needs: the mouth-camera pair, then the
-    /// training examples.
-    #[default]
-    Pair,
-    /// The QFTPlus Model: the mouth-camera pair, then QFT+'s universal face
-    /// model.
-    QftPlus,
-}
 
 #[derive(Clone, Default)]
 pub struct InstallState {
@@ -118,11 +89,11 @@ pub struct InstallState {
     pub cancelled: bool,
 }
 
+/// The QFTPlus Model's download.
 #[derive(Clone, Default)]
 pub struct BuiltinModel {
     state: Arc<Mutex<InstallState>>,
     cancel: Arc<AtomicBool>,
-    package: Package,
 }
 
 fn models_dir(root: &Path) -> PathBuf {
@@ -180,30 +151,6 @@ pub fn installed(root: &Path) -> bool {
     Role::Gate.find(&dir).is_some() && Role::Direction.find(&dir).is_some()
 }
 
-/// The synthetic training examples, once they're in place.
-pub fn examples_dir(root: &Path) -> Option<PathBuf> {
-    let dir = models_dir(root).join(EXAMPLES_DIR);
-    EXAMPLES_FILES
-        .iter()
-        .all(|file| dir.join(file).is_file())
-        .then_some(dir)
-}
-
-/// Megabytes installing what training needs would still download.
-pub fn download_megabytes(root: &Path) -> u32 {
-    let pair = if installed(root) {
-        0
-    } else {
-        MODEL_RELEASE.megabytes
-    };
-    let examples = if examples_dir(root).is_some() {
-        0
-    } else {
-        EXAMPLES_RELEASE.megabytes
-    };
-    pair + examples
-}
-
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
@@ -212,14 +159,6 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 impl BuiltinModel {
-    /// Installs the QFTPlus Model rather than what training needs.
-    pub fn qftplus() -> Self {
-        Self {
-            package: Package::QftPlus,
-            ..Self::default()
-        }
-    }
-
     pub fn state(&self) -> InstallState {
         self.state.lock().unwrap().clone()
     }
@@ -248,12 +187,8 @@ impl BuiltinModel {
                 ..InstallState::default()
             };
         };
-        let name = match self.package {
-            Package::Pair => "quest-pro-model-download",
-            Package::QftPlus => "qftplus-model-download",
-        };
         std::thread::Builder::new()
-            .name(name.into())
+            .name("qftplus-model-download".into())
             .spawn(download)
             .expect("couldn't start the model download thread");
     }
@@ -286,19 +221,11 @@ impl BuiltinModel {
         state.bytes_per_second = bytes_per_second;
     }
 
+    /// The pair first: the Training page tells the two downloads apart by
+    /// whether the pair is in place yet.
     fn install(&self, root: &Path) -> Result<(), String> {
-        match self.package {
-            Package::Pair => {
-                self.install_pair(root)?;
-                self.install_examples(root)
-            }
-            // The pair first: the Training page tells the two downloads
-            // apart by whether the pair is in place yet.
-            Package::QftPlus => {
-                self.install_pair(root)?;
-                self.install_qftplus(root)
-            }
-        }
+        self.install_pair(root)?;
+        self.install_qftplus(root)
     }
 
     /// Takes QFT+'s model out of its release package, checking each file.
@@ -393,43 +320,6 @@ impl BuiltinModel {
         }
         drop(zip);
         // Only the pair is needed, so the release doesn't keep 140 MB on disk.
-        let _ = fs::remove_file(&archive);
-        Ok(())
-    }
-
-    /// Unpacks the training examples beside the pair, through a temporary
-    /// folder so training never reads a half-unpacked set.
-    fn install_examples(&self, root: &Path) -> Result<(), String> {
-        if examples_dir(root).is_some() {
-            return Ok(());
-        }
-        let archive = self.download(root, &EXAMPLES_RELEASE)?;
-        self.check_cancelled()?;
-        self.set_stage(BuiltinStage::Unpacking);
-        let dir = models_dir(root).join(EXAMPLES_DIR);
-        let pending = models_dir(root).join(format!("{EXAMPLES_DIR}.download"));
-        let _ = fs::remove_dir_all(&pending);
-        fs::create_dir_all(&pending).map_err(|e| e.to_string())?;
-        let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        for index in 0..zip.len() {
-            let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
-            // The files sit in one folder; take each by its own name.
-            let name = entry.name().rsplit(['/', '\\']).next().unwrap_or("");
-            if !entry.is_file() || !EXAMPLES_FILES.contains(&name) {
-                continue;
-            }
-            let mut out = File::create(pending.join(name)).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-        }
-        drop(zip);
-        if let Some(file) = EXAMPLES_FILES.iter().find(|f| !pending.join(f).is_file()) {
-            let _ = fs::remove_dir_all(&pending);
-            return Err(format!("{file} is missing from the training examples"));
-        }
-        // What an interrupted install from before may have left.
-        let _ = fs::remove_dir_all(&dir);
-        fs::rename(&pending, &dir).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(&archive);
         Ok(())
     }
@@ -607,7 +497,7 @@ mod tests {
         let root = scratch("qftplus");
         fs::create_dir_all(root.join(".local")).unwrap();
         fs::hard_link(&cached, root.join(".local").join(QFTPLUS_RELEASE.name)).unwrap();
-        let qftplus = BuiltinModel::qftplus();
+        let qftplus = BuiltinModel::default();
         qftplus.install_qftplus(&root).unwrap();
         assert!(qftplus_model(&root).is_some());
         assert!(!installed(&root), "the pair comes from its own release");
@@ -620,43 +510,6 @@ mod tests {
             .unwrap_err()
             .contains("never overwrites"));
         assert_eq!(fs::read(&graph).unwrap(), b"other");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    /// Unpacks the training examples from the release zip that
-    /// `pack_synthetic` and 7-Zip made in `.local/tongue-synthetic-release/`,
-    /// without downloading; skipped when that zip isn't there.
-    #[test]
-    fn installs_the_training_examples_whole() {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let packed = repo
-            .join(".local/tongue-synthetic-release")
-            .join(EXAMPLES_RELEASE.name);
-        if !packed.is_file() {
-            eprintln!("skipped: no packed training examples");
-            return;
-        }
-        let root = repo.join(".local/tongue-tests-rust").join(format!(
-            "examples-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(root.join(".local")).unwrap();
-        fs::hard_link(&packed, root.join(".local").join(EXAMPLES_RELEASE.name)).unwrap();
-        assert_eq!(
-            download_megabytes(&root),
-            MODEL_RELEASE.megabytes + EXAMPLES_RELEASE.megabytes
-        );
-        BuiltinModel::default().install_examples(&root).unwrap();
-        let dir = examples_dir(&root).expect("examples in place");
-        assert_eq!(download_megabytes(&root), MODEL_RELEASE.megabytes);
-        let recording = vrft_tongue::recordings::Recording::open(&dir).unwrap();
-        assert!(recording.synthetic && !recording.samples.is_empty());
-        assert!(!models_dir(&root)
-            .join(format!("{EXAMPLES_DIR}.download"))
-            .exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

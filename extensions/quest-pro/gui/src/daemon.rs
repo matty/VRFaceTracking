@@ -155,19 +155,6 @@ impl QuestProClient {
             .map(drop)
     }
 
-    /// Starts downloading what training needs: the mouth-camera pair and the
-    /// training examples.
-    pub fn install_builtin(&self) -> Result<()> {
-        self.post::<BuiltinStatus>(routes::TRAINING_BUILTIN, None::<&()>)
-            .map(drop)
-    }
-
-    /// Stops downloading what training needs.
-    pub fn cancel_builtin(&self) -> Result<()> {
-        self.post::<BuiltinStatus>(routes::TRAINING_BUILTIN_CANCEL, None::<&()>)
-            .map(drop)
-    }
-
     /// Starts downloading the QFTPlus Model: the mouth-camera pair, then
     /// QFT+'s universal face model.
     pub fn install_qftplus(&self) -> Result<()> {

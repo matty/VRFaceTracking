@@ -1,7 +1,10 @@
-//! Personal training on the recordings the user ticks, a port of
-//! Qpro-Enhanced-FT's fine-tuning (MIT license) as VRFT's Python trainer ran
-//! it. Every run starts from the base pair and fine-tunes the gate, then the
-//! direction model, for a fixed number of passes.
+//! Personal training on the recordings the user ticks. The app fine-tunes
+//! the QFTPlus Model's heads (`universal_v2::train`). The rest serves
+//! development (`examples/train.rs`): VRFT's own universal face model
+//! (`universal::train`), and the stereo pair, a port of Qpro-Enhanced-FT's
+//! fine-tuning (MIT license) as VRFT's Python trainer ran it, which starts
+//! from the base pair and fine-tunes the gate, then the direction model, for
+//! a fixed number of passes.
 //!
 //! As in Qpro-Enhanced-FT, some recorded frames are held back (see
 //! [`Frames::load`]): the starting model and each pass are scored on them,
@@ -131,7 +134,8 @@ pub struct Options {
     pub epochs: usize,
     pub batch_size: usize,
     /// When unset, each architecture's own: [`PAIR_LEARNING_RATE`] for the
-    /// stereo pair, `universal::train::LEARNING_RATE` for the face model.
+    /// stereo pair, `universal::train::LEARNING_RATE` for VRFT's face model
+    /// and `universal_v2::train::LEARNING_RATE` for QFT+'s heads.
     pub learning_rate: Option<f64>,
     pub trainable: Trainable,
     /// The universal face model starts from this face checkpoint instead of
@@ -207,7 +211,7 @@ struct Tracker<'a> {
 /// Seconds left at `done`, from the pace since the run was `from` done,
 /// `elapsed` seconds ago. `None` until a few seconds and some progress say
 /// what the pace is.
-fn estimate(elapsed: f64, from: f64, done: f64) -> Option<f64> {
+pub(crate) fn estimate(elapsed: f64, from: f64, done: f64) -> Option<f64> {
     let progress = done - from;
     (elapsed >= 10.0 && progress > 0.0).then(|| (elapsed * (1.0 - done) / progress).round())
 }
@@ -265,9 +269,14 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
     let existing = [Role::Gate, Role::Direction]
         .iter()
         .any(|role| role.find(&output).is_some())
-        || ["report.json", "progress.json"]
-            .iter()
-            .any(|file| output.join(file).exists());
+        || [
+            "report.json",
+            "progress.json",
+            crate::universal::FILE_NAME,
+            crate::universal_v2::FILE_NAME,
+        ]
+        .iter()
+        .any(|file| output.join(file).exists());
     if existing {
         bail!("Use a new output directory; existing model runs are never overwritten");
     }
@@ -300,6 +309,16 @@ pub fn run(request: &Path, output: &Path, options: &Options) -> Result<()> {
             .iter()
             .map(|path| Recording::open(path))
             .collect::<Result<Vec<_>>>()?;
+        if request.architecture == TrainerArchitecture::UniversalFaceV2 {
+            return crate::universal_v2::train::run(
+                &request,
+                &recordings,
+                &output,
+                options,
+                &progress,
+                accelerator,
+            );
+        }
         if request.architecture == TrainerArchitecture::UniversalFace {
             return crate::universal::train::run(
                 &request,
@@ -430,6 +449,7 @@ impl Job<'_> {
             held_out_frames: gate.held_out as u64,
             kept: [gate.kept, direction.kept].into_iter().flatten().collect(),
             tongue_out: direction.tongue_out,
+            face_setup: None,
         };
         write_json(
             &self.output.join("report.json"),

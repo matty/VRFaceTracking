@@ -74,6 +74,14 @@ headset:
     en: "Per-eye gaze on from the next stream."
   eye_gaze_off_next:
     en: "Per-eye gaze off from the next stream."
+  five_cameras_on_restarted:
+    en: "All five cameras on; stream restarted. Go back to your streaming app on the headset."
+  five_cameras_off_restarted:
+    en: "All five cameras off; stream restarted. Go back to your streaming app on the headset."
+  five_cameras_on_next:
+    en: "All five cameras on from the next stream."
+  five_cameras_off_next:
+    en: "All five cameras off from the next stream."
   looking_for_tool:
     en: "Looking for the connection tool…"
   download_tool_to_set_up:
@@ -234,6 +242,12 @@ headset:
     en: "Firmware"
   releases:
     en: "Releases"
+  all_five_cameras:
+    en: "All five cameras"
+  five_cameras_description:
+    en: "Sends the brow camera and both eye cameras with the mouth cameras. The QFTPlus Model reads all five, and the face setup and training recordings need them."
+  five_cameras_note:
+    en: "Changing it restarts the stream."
   per_eye_gaze:
     en: "Per-eye gaze"
   experimental:

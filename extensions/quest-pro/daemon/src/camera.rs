@@ -1072,11 +1072,18 @@ async fn capture_start(
             "The mouth cameras aren't live yet. Wait for them before recording".into(),
         ));
     }
-    // The face model reads the brows and eyes against it too.
-    if request.mode == CaptureMode::Enrollment && layout != CameraLayout::all() {
+    // The face model reads the brows and eyes too, and trains on all five.
+    if layout != CameraLayout::all() {
+        let what = if request.mode == CaptureMode::Enrollment {
+            "The face setup"
+        } else {
+            "Recording"
+        };
         return Err((
             StatusCode::CONFLICT,
-            "The face setup needs all five cameras. Turn on All five cameras in the headset app first".into(),
+            format!(
+                "{what} needs all five cameras. Turn on All five cameras in the headset app first"
+            ),
         ));
     }
     preview
@@ -1564,10 +1571,7 @@ impl FaceChoice {
                 })
                 .or_else(|| crate::builtin::qftplus_model(cwd)),
         };
-        let enrollment = std::fs::read(cwd.join(crate::capture::ENROLLMENT_FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|value| value["recording"].as_str().map(str::to_owned));
+        let enrollment = crate::capture::face_setup_in_use(cwd);
         let enrollment_changed = enrollment.as_ref().and_then(|id| {
             let dir = cwd.join(".local/tongue-captures").join(id);
             ["review.json", "excluded_steps.json"]

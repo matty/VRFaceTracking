@@ -1,13 +1,13 @@
-//! Training page: guides the wearer through recording tongue poses,
-//! training a personal tongue model on them here on this PC, and testing
-//! it, each on its own tab. The daemon does the work through its `/capture` and `/training` API;
-//! this drives and shows it, as the preview page's Tongue tab does in a
-//! browser.
+//! Training page: guides the wearer from the QFTPlus Model through the face
+//! setup and a recording to fine-tuning that model on this PC, and testing
+//! it, each on its own tab. The daemon does the work through its `/capture`
+//! and `/training` API; this drives and shows it, as the preview page's
+//! Tongue tab does in a browser.
 use crate::daemon::{
     BuiltinStage, BuiltinStatus, CaptureCommand, CaptureMode, CaptureStatus, Coverage,
     FaceSetupReport, Models, QuestProClient, Recording, SavedModel, TrainRequest,
     TrainerArchitecture, TrainingDevice, TrainingProgress, TrainingStage, TrainingStatus,
-    TransferKind, TransferStatus, CHEEK_POSES,
+    TransferKind, TransferStatus, FACE_TOP_UPS,
 };
 use crate::live::{CameraFeed, QuestProState};
 use crate::speech::Speaker;
@@ -87,12 +87,13 @@ const UNTICKED_FILE: &str = ".local/tongue-unticked.json";
 /// Text in the app's language, looked up when it's shown.
 type Text = fn() -> Cow<'static, str>;
 
-/// The recordings the daemon can guide: its mode, name, and what it's for.
-const MODES: [(CaptureMode, Text, Text); 5] = [
+/// The recordings the daemon can guide, and those it guided before: the
+/// mode, its name, and what it's for.
+const MODES: [(CaptureMode, Text, Text); 6] = [
     (
-        CaptureMode::Core,
-        || t!("tongue.mode_core"),
-        || t!("tongue.mode_core_about"),
+        CaptureMode::Face,
+        || t!("tongue.mode_face"),
+        || t!("tongue.mode_face_about"),
     ),
     (
         CaptureMode::Follow,
@@ -105,14 +106,19 @@ const MODES: [(CaptureMode, Text, Text); 5] = [
         || t!("tongue.mode_direction_about"),
     ),
     (
-        CaptureMode::Negatives,
-        || t!("tongue.mode_negatives"),
-        || t!("tongue.mode_negatives_about"),
-    ),
-    (
         CaptureMode::Enrollment,
         || t!("tongue.mode_enrollment"),
         || t!("tongue.mode_enrollment_about"),
+    ),
+    (
+        CaptureMode::Core,
+        || t!("tongue.mode_core"),
+        || t!("tongue.mode_older"),
+    ),
+    (
+        CaptureMode::Negatives,
+        || t!("tongue.mode_negatives"),
+        || t!("tongue.mode_older"),
     ),
 ];
 
@@ -124,18 +130,12 @@ fn mode_name(mode: Option<CaptureMode>) -> Cow<'static, str> {
 }
 
 /// The optional recordings, each with an icon and when it helps.
-const EXTRAS: [(CaptureMode, IconName, Text); 4] = [
+const EXTRAS: [(CaptureMode, IconName, Text); 2] = [
     (CaptureMode::Follow, IconName::Route, || {
         t!("tongue.extra_follow")
     }),
     (CaptureMode::Direction, IconName::Move, || {
         t!("tongue.extra_direction")
-    }),
-    (CaptureMode::Negatives, IconName::MessageCircle, || {
-        t!("tongue.extra_negatives")
-    }),
-    (CaptureMode::Enrollment, IconName::ScanFace, || {
-        t!("tongue.extra_enrollment")
     }),
 ];
 
@@ -149,16 +149,26 @@ const TIPS: [Text; 3] = [
 /// The steps the page guides through, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
+    Model,
+    FaceSetup,
     Record,
     Train,
     Try,
 }
 
 impl Step {
-    const ALL: [Step; 3] = [Step::Record, Step::Train, Step::Try];
+    const ALL: [Step; 5] = [
+        Step::Model,
+        Step::FaceSetup,
+        Step::Record,
+        Step::Train,
+        Step::Try,
+    ];
 
     fn tab(self) -> Cow<'static, str> {
         match self {
+            Step::Model => t!("tongue.tab_model"),
+            Step::FaceSetup => t!("tongue.tab_face_setup"),
             Step::Record => t!("tongue.tab_record"),
             Step::Train => t!("tongue.tab_train"),
             Step::Try => t!("tongue.tab_test"),
@@ -166,18 +176,19 @@ impl Step {
     }
 }
 
-/// A count of usable frames, how many the trainer needs, and what it counts.
+/// A count of usable frames, how many training needs, and what it counts,
+/// as [`FACE_TOP_UPS`] names it.
 type Need = (fn(&Coverage) -> u64, u64, &'static str);
 
-/// What the trainer needs across the ticked recordings, in usable frames,
-/// named by where the tongue is.
+/// What fine-tuning needs across the ticked recordings, in usable frames.
+/// The face setup fits the tongue's directions.
 const NEEDS: [Need; 6] = [
-    (|c| c.out, 20, "Out"),
-    (|c| c.inside, 20, "In"),
-    (|c| c.left, 8, "Left"),
-    (|c| c.right, 8, "Right"),
-    (|c| c.up, 8, "Up"),
-    (|c| c.down, 8, "Down"),
+    (|c| c.inside, 20, "in"),
+    (|c| c.cheek_left, 8, "cheek_left"),
+    (|c| c.cheek_right, 8, "cheek_right"),
+    (|c| c.suck, 8, "suck"),
+    (|c| c.brows_up, 8, "brows_up"),
+    (|c| c.brows_down, 8, "brows_down"),
 ];
 
 /// Each need, with how many usable frames the ticked recordings have of it
@@ -195,45 +206,25 @@ fn coverage(recordings: &[&Recording]) -> Vec<(&'static str, u64, u64)> {
         .collect()
 }
 
-/// The basic pose that gives more of a need `missing` names.
-fn missing_pose(need: &str) -> Option<&'static str> {
-    Some(match need {
-        "Out" => "Tongue straight out",
-        "In" => "Neutral",
-        "Left" => "Tongue left",
-        "Right" => "Tongue right",
-        "Up" => "Tongue up",
-        "Down" => "Tongue down",
-        _ => return None,
-    })
+/// The face recording's poses that give more of a need.
+fn top_up(need: &str) -> &'static [&'static str] {
+    FACE_TOP_UPS
+        .iter()
+        .find(|(name, _)| *name == need)
+        .map_or(&[], |(_, poses)| poses)
 }
 
 /// What to call a need on screen.
 fn need_label(need: &str) -> Cow<'static, str> {
     match need {
-        "Out" => t!("tongue.need_out"),
-        "In" => t!("tongue.need_in"),
-        "Left" => t!("tongue.need_left"),
-        "Right" => t!("tongue.need_right"),
-        "Up" => t!("tongue.need_up"),
-        "Down" => t!("tongue.need_down"),
+        "in" => t!("tongue.need_in"),
+        "cheek_left" => t!("tongue.need_cheek_left"),
+        "cheek_right" => t!("tongue.need_cheek_right"),
+        "suck" => t!("tongue.need_suck"),
+        "brows_up" => t!("tongue.need_brows_up"),
+        "brows_down" => t!("tongue.need_brows_down"),
         need => Cow::Owned(need.to_string()),
     }
-}
-
-/// Puffed frames of each cheek the trainer needs to learn it. Training goes
-/// ahead without them, leaving the cheeks to the headset.
-const CHEEK_FRAMES: u64 = 8;
-
-/// Whether the ticked recordings have enough of each cheek puffed.
-fn cheeks_covered(recordings: &[&Recording]) -> bool {
-    let total = |count: fn(&Coverage) -> u64| -> u64 {
-        recordings
-            .iter()
-            .map(|recording| count(&recording.coverage))
-            .sum()
-    };
-    total(|c| c.cheek_left) >= CHEEK_FRAMES && total(|c| c.cheek_right) >= CHEEK_FRAMES
 }
 
 /// What the ticked recordings don't have enough of to train.
@@ -280,8 +271,6 @@ enum Pending {
     Activate(String),
     RenameModel(String),
     DeleteModel(String),
-    InstallBuiltin,
-    CancelBuiltin,
     InstallQftPlus,
     CancelQftPlus,
     RemoveQftPlus,
@@ -340,8 +329,6 @@ pub struct TongueTraining {
     chosen_step: Option<Step>,
     show_advanced: bool,
     device: Device,
-    /// The stereo pair, or the universal face model.
-    architecture: TrainerArchitecture,
     name: Entity<InputState>,
     epochs: Entity<InputState>,
     /// The trained model being renamed, and its new name.
@@ -456,7 +443,6 @@ impl TongueTraining {
             chosen_step: None,
             show_advanced: false,
             device: Device::Automatic,
-            architecture: TrainerArchitecture::StereoPair,
             name,
             epochs,
             renaming: None,
@@ -512,19 +498,6 @@ impl TongueTraining {
         self.training.as_ref().is_some_and(|training| training.busy)
     }
 
-    fn builtin_installing(&self) -> bool {
-        self.training
-            .as_ref()
-            .and_then(|training| training.builtin.as_ref())
-            .is_some_and(|builtin| builtin.installing)
-    }
-
-    fn builtin(&self) -> Option<&BuiltinStatus> {
-        self.training
-            .as_ref()
-            .and_then(|training| training.builtin.as_ref())
-    }
-
     /// QFT+'s face model; absent from daemons that can't install it.
     fn qftplus(&self) -> Option<&BuiltinStatus> {
         self.training
@@ -552,7 +525,6 @@ impl TongueTraining {
         let wanted = self.watching
             || self.capture_active()
             || self.training_busy()
-            || self.builtin_installing()
             || self.qftplus().is_some_and(|qftplus| qftplus.installing)
             || self.transferring();
         if !wanted || !self.online(cx) {
@@ -795,24 +767,17 @@ impl TongueTraining {
         );
     }
 
-    /// Records just the basic poses that give what training still lacks.
+    /// Records just the face recording's poses that give what training
+    /// still lacks.
     fn record_missing(&mut self, lacking: &[&str], window: &mut Window, cx: &mut Context<Self>) {
         let poses = lacking
             .iter()
-            .filter_map(|need| missing_pose(need))
-            .map(String::from)
+            .flat_map(|need| top_up(need))
+            .map(|pose| pose.to_string())
             .collect();
         window.focus(&self.focus, cx);
         self.go(Step::Record, cx);
-        self.record_poses(CaptureMode::Core, poses, cx);
-    }
-
-    /// Records just the basic poses that teach the cheek puffs.
-    fn record_cheeks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus, cx);
-        self.go(Step::Record, cx);
-        let poses = CHEEK_POSES.map(String::from).to_vec();
-        self.record_poses(CaptureMode::Core, poses, cx);
+        self.record_poses(CaptureMode::Face, poses, cx);
     }
 
     /// Stop asks first, since it can't be undone: a second press stops.
@@ -1056,46 +1021,6 @@ impl TongueTraining {
         );
     }
 
-    fn install_builtin(&mut self, cx: &mut Context<Self>) {
-        self.model_message = None;
-        self.request(
-            Pending::InstallBuiltin,
-            |client| client.install_builtin(),
-            |section, result, _| match result {
-                Ok(()) => {
-                    if let Some(builtin) = section
-                        .training
-                        .as_mut()
-                        .and_then(|training| training.builtin.as_mut())
-                    {
-                        builtin.installing = true;
-                        builtin.error = None;
-                        builtin.cancelled = false;
-                        builtin.stage = Some(BuiltinStage::Connecting);
-                    }
-                }
-                Err(error) => {
-                    section.model_message =
-                        Some(Notice::error(&t!("tongue.couldnt_start_download"), &error))
-                }
-            },
-            cx,
-        );
-    }
-
-    fn cancel_builtin(&mut self, cx: &mut Context<Self>) {
-        self.request(
-            Pending::CancelBuiltin,
-            |client| client.cancel_builtin(),
-            |section, result, _| {
-                if let Err(error) = result {
-                    section.model_message = Some(Notice::error("", &error));
-                }
-            },
-            cx,
-        );
-    }
-
     fn install_qftplus(&mut self, cx: &mut Context<Self>) {
         self.model_message = None;
         self.request(
@@ -1168,13 +1093,7 @@ impl TongueTraining {
     fn qftplus_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
         let qftplus = self.qftplus()?;
         if qftplus.installing {
-            return Some(download_progress(
-                qftplus,
-                Package::QftPlus,
-                self.pair_installed(),
-                self.pending.is_some(),
-                cx,
-            ));
+            return Some(download_progress(qftplus, self.pending.is_some(), cx));
         }
         if qftplus.installed {
             return None;
@@ -1196,8 +1115,7 @@ impl TongueTraining {
             })
             .tooltip(t!("tongue.download_tooltip"))
             .loading(self.pending == Some(Pending::InstallQftPlus))
-            // Training's download fetches the same pair.
-            .disabled(self.pending.is_some() || self.builtin_installing())
+            .disabled(self.pending.is_some())
             .on_click(cx.listener(|section, _, _, cx| section.install_qftplus(cx)));
         Some(
             h_flex()
@@ -1258,107 +1176,6 @@ impl TongueTraining {
                         ),
                 )
                 .child(button)
-                .into_any_element(),
-        )
-    }
-
-    /// Offers to download what training needs while it isn't in place, and
-    /// shows the download while it runs; as the view's main action when
-    /// nothing else can go on without it.
-    fn training_files_panel(&self, primary: bool, cx: &Context<Self>) -> Option<AnyElement> {
-        let builtin = self.builtin()?;
-        if builtin.installed && !builtin.examples_missing {
-            return None;
-        }
-        if builtin.installing {
-            return Some(download_progress(
-                builtin,
-                Package::TrainingFiles,
-                builtin.installed,
-                self.pending.is_some(),
-                cx,
-            ));
-        }
-        let failed = builtin.error.is_some();
-        let size = builtin.download_megabytes.unwrap_or(263);
-        let state = match &builtin.error {
-            Some(error) => t!("tongue.download_failed", error = error),
-            None if builtin.cancelled => t!("tongue.download_cancelled", size = size),
-            None => t!("tongue.not_downloaded_size", size = size),
-        };
-        // With the pair in place, only the examples are left to download.
-        let what = if builtin.installed {
-            t!("tongue.training_examples")
-        } else {
-            t!("tongue.training_files")
-        };
-        // One row: what it is and how it stands, with its button beside it,
-        // wrapping under it when the card is narrow.
-        Some(
-            h_flex()
-                .w_full()
-                .flex_wrap()
-                .items_center()
-                .gap_3()
-                .px_3p5()
-                .py_3()
-                .rounded(px(10.))
-                .border_1()
-                .border_color(if failed {
-                    palette::signal_line()
-                } else {
-                    palette::line_strong()
-                })
-                .bg(if failed {
-                    palette::signal_bg()
-                } else {
-                    palette::inset()
-                })
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(if failed {
-                            palette::signal()
-                        } else {
-                            palette::text_3()
-                        })
-                        .child(Icon::new(IconName::Download).size(px(16.))),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w(px(160.))
-                        .gap_0p5()
-                        .child(div().text_sm().font_medium().child(what))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(if failed {
-                                    palette::signal_text()
-                                } else {
-                                    palette::text_3()
-                                })
-                                .child(state),
-                        ),
-                )
-                .child(
-                    Button::new("install-builtin")
-                        .when(primary, |button| button.primary())
-                        .small()
-                        .label(if failed {
-                            t!("tongue.try_again")
-                        } else {
-                            t!("tongue.download")
-                        })
-                        .tooltip(t!("tongue.download_tooltip"))
-                        .loading(self.pending == Some(Pending::InstallBuiltin))
-                        // The QFTPlus Model's download fetches the same pair.
-                        .disabled(
-                            self.pending.is_some()
-                                || self.qftplus().is_some_and(|qftplus| qftplus.installing),
-                        )
-                        .on_click(cx.listener(|section, _, _, cx| section.install_builtin(cx))),
-                )
                 .into_any_element(),
         )
     }
@@ -1484,10 +1301,16 @@ impl TongueTraining {
         )
     }
 
+    /// The recordings training reads: ticked, readable and of all five
+    /// cameras.
     fn ticked(&self) -> Vec<&Recording> {
         self.recordings
             .iter()
-            .filter(|recording| recording.error.is_none() && !self.unticked.contains(&recording.id))
+            .filter(|recording| {
+                recording.error.is_none()
+                    && recording.five_cameras
+                    && !self.unticked.contains(&recording.id)
+            })
             .collect()
     }
 
@@ -1527,7 +1350,6 @@ impl TongueTraining {
             recordings: self.ticked().iter().map(|r| r.id.clone()).collect(),
             device: self.device.wire(),
             epochs,
-            architecture: self.architecture,
         };
         self.train_message = None;
         self.failed_job = None;
@@ -1760,29 +1582,28 @@ impl TongueTraining {
             .find(|model| model.id == active)
     }
 
-    /// Whether what training needs, the mouth-camera pair it starts from
-    /// and the training examples it mixes in, still needs downloading.
-    fn training_files_missing(&self) -> bool {
-        self.builtin()
-            .is_some_and(|builtin| !builtin.installed || builtin.examples_missing)
-    }
-
-    /// Whether the mouth-camera pair is in place, which the QFTPlus Model's
-    /// download fetches before QFT+'s own model.
-    fn pair_installed(&self) -> bool {
-        self.builtin().is_none_or(|builtin| builtin.installed)
-    }
-
-    /// Whether the QFTPlus Model, which is used unless a trained model is,
-    /// still needs downloading.
+    /// Whether the QFTPlus Model, which is used unless a trained model is
+    /// and which training fine-tunes, still needs downloading.
     fn qftplus_missing(&self) -> bool {
         self.qftplus().is_some_and(|qftplus| !qftplus.installed)
+    }
+
+    /// The face setup in use, by its recording's id.
+    fn face_setup(&self) -> Option<&str> {
+        self.training.as_ref()?.face_setup.as_deref()
+    }
+
+    /// Whether a QFTPlus Model has been fine-tuned here.
+    fn fine_tuned(&self) -> bool {
+        self.trained_models()
+            .iter()
+            .any(|model| model.architecture == TrainerArchitecture::UniversalFaceV2)
     }
 
     fn recorded(&self) -> bool {
         self.recordings
             .iter()
-            .any(|recording| recording.error.is_none())
+            .any(|recording| recording.error.is_none() && recording.five_cameras)
     }
 
     /// Whether the ticked recordings cover everything training needs.
@@ -1791,18 +1612,16 @@ impl TongueTraining {
         !ticked.is_empty() && missing(&ticked).is_empty()
     }
 
-    /// The step that comes next: record until there's enough to train, train
-    /// until there's a model, then try it.
+    /// The step that comes next: the first not done, and testing once
+    /// they all are.
     fn guided_step(&self) -> Step {
         if self.training_busy() {
-            Step::Train
-        } else if !self.trained_models().is_empty() {
-            Step::Try
-        } else if self.enough() {
-            Step::Train
-        } else {
-            Step::Record
+            return Step::Train;
         }
+        Step::ALL
+            .into_iter()
+            .find(|&step| step != Step::Try && !self.step_done(step))
+            .unwrap_or(Step::Try)
     }
 
     fn go(&mut self, step: Step, cx: &mut Context<Self>) {
@@ -1810,12 +1629,15 @@ impl TongueTraining {
         cx.notify();
     }
 
-    /// Whether a step is done: enough recorded, a model trained, and one
-    /// of those in use.
+    /// Whether a step is done: the QFTPlus Model downloaded, a face setup
+    /// in use, enough recorded, the model fine-tuned, and a personal model
+    /// in use.
     fn step_done(&self, step: Step) -> bool {
         match step {
+            Step::Model => !self.qftplus_missing(),
+            Step::FaceSetup => self.face_setup().is_some(),
             Step::Record => self.enough(),
-            Step::Train => !self.training_busy() && !self.trained_models().is_empty(),
+            Step::Train => !self.training_busy() && self.fine_tuned(),
             Step::Try => self.active_model().is_some(),
         }
     }
@@ -1835,8 +1657,8 @@ impl TongueTraining {
             })
     }
 
-    /// Record, Train and Test as a row of numbered steps: the one shown is
-    /// outlined and bright, and each is ticked once it's done.
+    /// The steps as a row of numbered tabs: the one shown is outlined and
+    /// bright, and each is ticked once it's done.
     fn tabs(&self, shown: Step, cx: &Context<Self>) -> impl IntoElement {
         h_flex().id("training-tabs").w_full().gap_2().children(
             Step::ALL.into_iter().enumerate().map(|(index, step)| {
@@ -2203,13 +2025,17 @@ impl TongueTraining {
             .into_any_element()
     }
 
-    /// What recording needs, and how each stands.
-    fn readiness(&self, cx: &App) -> [(Cow<'static, str>, summary::Reading); 1] {
+    /// What recording needs, and how each stands: the cameras streaming,
+    /// all five of them.
+    fn readiness(&self, cx: &App) -> [(Cow<'static, str>, summary::Reading); 2] {
         let status = self.daemon.read(cx).status();
-        [(
-            t!("tongue.mouth_cameras"),
-            summary::recording_cameras(status),
-        )]
+        [
+            (
+                t!("tongue.mouth_cameras"),
+                summary::recording_cameras(status),
+            ),
+            (t!("tongue.five_cameras"), summary::five_cameras(status)),
+        ]
     }
 
     /// Whether a recording can start now.
@@ -2223,10 +2049,7 @@ impl TongueTraining {
 
     /// One ruled row per thing recording needs: a dot, what it is, and how
     /// it stands, with a way to fix it when it isn't ready.
-    fn readiness_list(
-        &self,
-        readiness: [(Cow<'static, str>, summary::Reading); 1],
-    ) -> impl IntoElement {
+    fn readiness_list(&self, readiness: [(Cow<'static, str>, summary::Reading); 2]) -> Div {
         let rows = readiness
             .into_iter()
             .enumerate()
@@ -2272,32 +2095,171 @@ impl TongueTraining {
         v_flex().children(rows)
     }
 
+    /// "Before you start": the readiness list under its caption.
+    fn before_you_start(&self, cx: &App) -> Div {
+        v_flex()
+            .gap_2()
+            .child(cap(t!("tongue.before_you_start")))
+            .child(self.readiness_list(self.readiness(cx)))
+    }
+
+    /// How the last recording ended, when it isn't running: the face
+    /// setup's poses that didn't come through, after a face setup.
+    fn outcome(&self, face_setup: bool) -> Option<Div> {
+        let capture = self
+            .capture
+            .as_ref()
+            .filter(|capture| !capture.message.is_empty())?;
+        let report = last_face_setup(capture);
+        if report.is_some() != face_setup {
+            return None;
+        }
+        let complete = capture.message.starts_with("Recording complete");
+        // A face setup is good once it's in use.
+        let good = report.map_or(complete, |report| report.in_use);
+        Some(
+            v_flex()
+                .gap_2()
+                .child(Notice::new(
+                    if good { Tone::Good } else { Tone::Waiting },
+                    capture.message.clone(),
+                ))
+                .children(report.and_then(face_setup_misses)),
+        )
+    }
+
+    /// A button on to the next step.
+    fn continue_to(&self, step: Step, label: Cow<'static, str>, cx: &Context<Self>) -> Button {
+        Button::new(SharedString::from(format!("to-{step:?}")))
+            .primary()
+            .prominent()
+            .icon(IconName::ArrowRight)
+            .label(label)
+            .on_click(cx.listener(move |section, _, _, cx| section.go(step, cx)))
+    }
+
+    /// The read-aloud controls along a card's foot.
+    fn voice_foot(&self, id: &'static str, cx: &Context<Self>) -> Div {
+        v_flex()
+            .mx(px(-22.))
+            .px(px(22.))
+            .pt_4()
+            .border_t_1()
+            .border_color(palette::line_soft())
+            .child(self.voice_controls(id, cx))
+    }
+
+    /// The QFTPlus Model: what it is, and its download.
+    fn model_step(&self, wide: bool, cx: &Context<Self>) -> AnyElement {
+        let installed = !self.qftplus_missing();
+        let points = [
+            t!("tongue.model_point_cameras"),
+            t!("tongue.model_point_training"),
+            t!("tongue.model_point_licence"),
+        ]
+        .into_iter()
+        .map(|point| {
+            h_flex()
+                .gap_2p5()
+                .items_start()
+                .py(px(9.))
+                .border_t_1()
+                .border_color(palette::line_soft())
+                .text_size(px(13.))
+                .text_color(palette::text_2())
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(19.))
+                        .flex()
+                        .items_center()
+                        .text_color(palette::text_3())
+                        .child(Icon::new(IconName::Info).size(px(14.))),
+                )
+                .child(div().flex_1().min_w_0().child(point))
+        });
+        let model = step_card(cx)
+            .child(heading(t!("tongue.qftplus_model"), t!("tongue.model_lead")))
+            .child(v_flex().children(points))
+            .children(self.qftplus_panel(true, cx))
+            .when(!installed, |card| card.children(self.model_message.clone()))
+            .when(installed, |card| {
+                card.child(Notice::new(Tone::Good, t!("tongue.model_ready")))
+                    .child(h_flex().child(self.continue_to(
+                        Step::FaceSetup,
+                        t!("tongue.continue_to_face_setup"),
+                        cx,
+                    )))
+            });
+        // The models to choose between, once the download they'd offer
+        // again is done.
+        if installed {
+            columns(wide, TRY_SIDE_WIDTH, model, self.models_panel(cx)).into_any_element()
+        } else {
+            model.into_any_element()
+        }
+    }
+
+    /// The face setup: what it is, whether one is in use, and recording one.
+    fn face_setup_step(&self, wide: bool, main_width: f32, cx: &Context<Self>) -> AnyElement {
+        let can_record = self.can_record(cx);
+        let in_use = self.face_setup().is_some();
+        let start = Button::new("record-enrollment")
+            .prominent()
+            .icon(IconName::ScanFace)
+            .label(if in_use {
+                t!("tongue.face_setup_again")
+            } else {
+                t!("tongue.face_setup_start")
+            })
+            .when(!in_use, |button| button.primary())
+            .loading(self.pending == Some(Pending::StartRecording(CaptureMode::Enrollment)))
+            .disabled(!can_record)
+            .on_click(cx.listener(|section, _, window, cx| {
+                window.focus(&section.focus, cx);
+                section.start_recording(CaptureMode::Enrollment, cx)
+            }));
+        let setup = step_card(cx)
+            .child(heading(
+                t!("tongue.face_setup_heading"),
+                t!("tongue.face_setup_lead"),
+            ))
+            .children(
+                self.face_setup_state(cx)
+                    .map(|(tone, text)| Notice::new(tone, text)),
+            )
+            .child(self.before_you_start(cx))
+            .when(self.training_busy(), |panel| {
+                panel.child(Notice::new(Tone::Waiting, t!("tongue.training_running")))
+            })
+            .children(self.outcome(true))
+            .children(self.record_error.clone())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .when(in_use, |row| {
+                        row.child(self.continue_to(
+                            Step::Record,
+                            t!("tongue.continue_to_recording"),
+                            cx,
+                        ))
+                    })
+                    .child(start),
+            )
+            .child(self.voice_foot("read-aloud-setup", cx));
+        let main = self
+            .review_card(main_width, cx)
+            .unwrap_or_else(|| setup.into_any_element());
+        columns(wide, SIDE_WIDTH, main, self.recordings_card(cx)).into_any_element()
+    }
+
     /// Recording: what it involves, whether everything's ready, and tips,
     /// beside the recordings made so far and the optional extra ones.
     fn record_step(&self, wide: bool, main_width: f32, cx: &Context<Self>) -> AnyElement {
-        let readiness = self.readiness(cx);
         let can_record = self.can_record(cx);
         let enough = self.enough();
         let recorded = self.recorded();
-        let outcome = self
-            .capture
-            .as_ref()
-            .filter(|capture| !capture.message.is_empty())
-            .map(|capture| {
-                let complete = capture.message.starts_with("Recording complete");
-                // A face setup is good once it's in use.
-                let good = match last_face_setup(capture) {
-                    Some(report) => report.in_use,
-                    None => complete,
-                };
-                v_flex()
-                    .gap_2()
-                    .child(Notice::new(
-                        if good { Tone::Good } else { Tone::Waiting },
-                        capture.message.clone(),
-                    ))
-                    .children(last_face_setup(capture).and_then(face_setup_misses))
-            });
         let tips = v_flex().children(TIPS.iter().map(|tip| {
             h_flex()
                 .gap_2p5()
@@ -2320,53 +2282,32 @@ impl TongueTraining {
         }));
         // Once there's enough to train, training is the way forward and
         // recording again is the alternative.
-        let start = Button::new("record-core")
+        let start = Button::new("record-face")
             .prominent()
             .icon(IconName::Play)
             .label(if recorded {
-                t!("tongue.record_basic_again")
+                t!("tongue.record_face_again")
             } else {
                 t!("tongue.start_recording")
             })
             .when(!enough, |button| button.primary())
-            .loading(self.pending == Some(Pending::StartRecording(CaptureMode::Core)))
+            .loading(self.pending == Some(Pending::StartRecording(CaptureMode::Face)))
             .disabled(!can_record)
             .on_click(cx.listener(|section, _, window, cx| {
                 window.focus(&section.focus, cx);
-                section.start_recording(CaptureMode::Core, cx)
+                section.start_recording(CaptureMode::Face, cx)
             }));
         let record = step_card(cx)
             .child(heading(
                 t!("tongue.record_heading"),
                 t!("tongue.record_lead"),
             ))
-            // Training starts from the mouth-camera pair and mixes in the
-            // examples; downloading them now means they're ready by the time
-            // the recording is.
-            .when_some(
-                self.training_files_missing()
-                    .then(|| self.training_files_panel(false, cx))
-                    .flatten(),
-                |panel, builtin| {
-                    panel.child(
-                        v_flex()
-                            .gap_2()
-                            .child(builtin)
-                            .child(hint(t!("tongue.download_while_recording"), cx)),
-                    )
-                },
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(cap(t!("tongue.before_you_start")))
-                    .child(self.readiness_list(readiness)),
-            )
+            .child(self.before_you_start(cx))
             .child(v_flex().gap_2().child(cap(t!("tongue.tips"))).child(tips))
             .when(self.training_busy(), |panel| {
                 panel.child(Notice::new(Tone::Waiting, t!("tongue.training_running")))
             })
-            .children(outcome)
+            .children(self.outcome(false))
             .children(self.record_error.clone())
             .when(enough, |panel| {
                 panel.child(Notice::new(Tone::Good, t!("tongue.recordings_enough")))
@@ -2376,28 +2317,15 @@ impl TongueTraining {
                     .gap_2()
                     .flex_wrap()
                     .when(enough, |row| {
-                        row.child(
-                            Button::new("to-train")
-                                .primary()
-                                .prominent()
-                                .icon(IconName::Sparkles)
-                                .label(t!("tongue.continue_to_training"))
-                                .on_click(
-                                    cx.listener(|section, _, _, cx| section.go(Step::Train, cx)),
-                                ),
-                        )
+                        row.child(self.continue_to(
+                            Step::Train,
+                            t!("tongue.continue_to_training"),
+                            cx,
+                        ))
                     })
                     .child(start),
             )
-            .child(
-                v_flex()
-                    .mx(px(-22.))
-                    .px(px(22.))
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(palette::line_soft())
-                    .child(self.voice_controls("read-aloud", cx)),
-            );
+            .child(self.voice_foot("read-aloud", cx));
         let main = self
             .review_card(main_width, cx)
             .unwrap_or_else(|| record.into_any_element());
@@ -2455,45 +2383,34 @@ impl TongueTraining {
             .into_any_element()
     }
 
-    /// How the face setup stands: the one in use, and what it fitted; none
-    /// yet; or that it needs the five cameras on.
+    /// How the face setup stands: the one in use, and what it fitted; or
+    /// none yet.
     fn face_setup_state(&self, cx: &App) -> Option<(Tone, Cow<'static, str>)> {
-        let status = self.daemon.read(cx).status()?;
-        if !status.five_cameras {
-            return Some((Tone::Waiting, t!("tongue.face_setup_needs_five")));
-        }
-        let face = status.face_model.as_ref()?;
-        if face.enrollment_error.is_some() {
+        let face = self.daemon.read(cx).status()?.face_model.as_ref();
+        if face.is_some_and(|face| face.enrollment_error.is_some()) {
             return Some((Tone::Problem, t!("tongue.face_setup_unreadable")));
         }
-        Some(match &face.enrollment {
+        Some(match self.face_setup() {
             Some(id) => {
                 let made = created_at(id)
                     .map(|ms| when(ms, Local::now(), true))
                     .unwrap_or_default();
-                let fitted = if face.tongue_map {
-                    t!("tongue.face_setup_tongue_fitted")
-                } else {
-                    t!("tongue.face_setup_tongue_not_fitted")
+                let fitted = match face {
+                    Some(face) if face.tongue_map => t!("tongue.face_setup_tongue_fitted"),
+                    Some(_) => t!("tongue.face_setup_tongue_not_fitted"),
+                    None => Cow::Borrowed(""),
                 };
                 (
                     Tone::Good,
                     t!("tongue.face_setup_in_use", when = made, tongue = fitted),
                 )
             }
-            None if face.loaded => (Tone::Waiting, t!("tongue.face_setup_none")),
-            None => return None,
+            None => (Tone::Waiting, t!("tongue.face_setup_none")),
         })
     }
 
     /// The optional recordings, each for one kind of movement.
     fn extras_card(&self, can_record: bool, cx: &Context<Self>) -> AnyElement {
-        // The face setup reads every camera.
-        let five_cameras = self
-            .daemon
-            .read(cx)
-            .status()
-            .is_some_and(|status| status.five_cameras);
         let rows = EXTRAS
             .into_iter()
             .enumerate()
@@ -2502,9 +2419,6 @@ impl TongueTraining {
                     || (t!("tongue.recording"), Cow::Borrowed("")),
                     |(_, name, about)| (name(), about()),
                 );
-                let face_setup = mode == CaptureMode::Enrollment;
-                let state = face_setup.then(|| self.face_setup_state(cx)).flatten();
-                let blocked = face_setup && !five_cameras;
                 h_flex()
                     .gap_3()
                     .px_4()
@@ -2529,24 +2443,14 @@ impl TongueTraining {
                                 Tooltip::new(SharedString::from(why())).build(window, cx)
                             })
                             .child(div().text_size(px(13.)).child(name))
-                            .child(div().text_xs().text_color(palette::text_3()).child(about))
-                            .children(state.map(|(tone, text)| {
-                                div()
-                                    .text_xs()
-                                    .text_color(if tone == Tone::Problem {
-                                        palette::signal_text()
-                                    } else {
-                                        palette::text_2()
-                                    })
-                                    .child(text)
-                            })),
+                            .child(div().text_xs().text_color(palette::text_3()).child(about)),
                     )
                     .child(
                         Button::new(SharedString::from(format!("record-{}", mode.name())))
                             .small()
                             .label(t!("tongue.record"))
                             .loading(self.pending == Some(Pending::StartRecording(mode)))
-                            .disabled(!can_record || blocked)
+                            .disabled(!can_record)
                             .on_click(cx.listener(move |section, _, window, cx| {
                                 window.focus(&section.focus, cx);
                                 section.start_recording(mode, cx)
@@ -2926,18 +2830,29 @@ impl TongueTraining {
             .into_any_element()
     }
 
-    /// Training: what it does, whether the recordings cover enough, its
+    /// Fine-tuning: what it does, whether the recordings cover enough, its
     /// progress, and the options most people leave alone folded away, beside
     /// the recordings it trains on.
     fn train_step(&self, wide: bool, main_width: f32, cx: &Context<Self>) -> AnyElement {
         let busy = self.training_busy();
         let ticked = self.ticked();
         let lacking = missing(&ticked);
-        // A short recording of just what's missing, rather than every basic pose.
+        // A short recording of just what's missing, rather than all of it.
         let record_missing =
             (!busy && self.recorded() && !ticked.is_empty() && !lacking.is_empty()).then(|| {
                 let lacking = lacking.clone();
-                let seconds = lacking.len() * 8;
+                // Each top-up pose takes 4 seconds with its rest; the
+                // relaxed face, 15.
+                let seconds: usize = lacking
+                    .iter()
+                    .map(|need| {
+                        if *need == "in" {
+                            15
+                        } else {
+                            top_up(need).len() * 4
+                        }
+                    })
+                    .sum();
                 Button::new("record-missing")
                     .primary()
                     .prominent()
@@ -2949,19 +2864,30 @@ impl TongueTraining {
                     }))
             });
         let recorded = self.recorded();
-        let files_missing = self.training_files_missing();
+        // Training fine-tunes the QFTPlus Model, reading recordings against
+        // the face setup, so both come first.
+        let first = if self.qftplus_missing() {
+            Some((
+                Step::Model,
+                t!("tongue.needs_qftplus"),
+                t!("tongue.go_to_model"),
+            ))
+        } else if self.face_setup().is_none() {
+            Some((
+                Step::FaceSetup,
+                t!("tongue.needs_face_setup"),
+                t!("tongue.go_to_face_setup"),
+            ))
+        } else {
+            None
+        };
         let can_train = !busy
             && !self.capture_active()
             && self.pending.is_none()
-            && !files_missing
+            && first.is_none()
             && !ticked.is_empty()
             && lacking.is_empty();
         let ready = recorded && !ticked.is_empty() && lacking.is_empty();
-        // Training starts from the mouth-camera pair, so that comes first;
-        // its download is the next step once it's all that's missing.
-        let base = files_missing
-            .then(|| self.training_files_panel(ready, cx))
-            .flatten();
         let covered = (recorded && !ticked.is_empty() && !busy).then(|| {
             let cells = coverage(&ticked).into_iter().map(|(name, have, needed)| {
                 v_flex()
@@ -2988,34 +2914,9 @@ impl TongueTraining {
                     // Full and white once there's enough.
                     .child(Meter::new(have as f32 / needed as f32, palette::text()))
             });
-            // Cheek puffs are optional, so they get a line rather than a cell.
-            let cheeks = (!cheeks_covered(&ticked)).then(|| {
-                h_flex()
-                    .flex_wrap()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::text_3())
-                            .child(t!("tongue.no_cheek_puffs")),
-                    )
-                    .child(
-                        Button::new("record-cheeks")
-                            .small()
-                            .label(t!(
-                                "tongue.record_cheek_poses",
-                                seconds = CHEEK_POSES.len() * 8
-                            ))
-                            .disabled(self.capture_active() || self.pending.is_some())
-                            .on_click(cx.listener(|section, _, window, cx| {
-                                section.record_cheeks(window, cx)
-                            })),
-                    )
-            });
             v_flex()
                 .gap(px(10.))
-                .child(cap(t!("tongue.positions_covered")))
+                .child(cap(t!("tongue.frames_covered")))
                 .child(
                     div()
                         .grid()
@@ -3023,7 +2924,6 @@ impl TongueTraining {
                         .gap_2()
                         .children(cells),
                 )
-                .children(cheeks)
         });
         let try_it = self.just_trained.then(|| {
             Button::new("try-model")
@@ -3034,7 +2934,30 @@ impl TongueTraining {
         // Where training stands before it starts: ready, with the button that
         // starts it, or what's still missing and the way to get it.
         let standing = (!busy).then(|| {
-            let (lead, actions) = if ready {
+            let (lead, actions) = if let Some((step, text, label)) = first.clone() {
+                let lead = h_flex()
+                    .gap_2()
+                    .items_start()
+                    .text_size(px(13.5))
+                    .font_medium()
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(px(20.))
+                            .flex()
+                            .items_center()
+                            .child(StatusDot::new(Tone::Waiting)),
+                    )
+                    .child(div().flex_1().min_w_0().child(text));
+                let actions = h_flex().child(
+                    Button::new("to-first")
+                        .primary()
+                        .prominent()
+                        .label(label)
+                        .on_click(cx.listener(move |section, _, _, cx| section.go(step, cx))),
+                );
+                (lead, actions)
+            } else if ready {
                 let frames = ticked.iter().map(|recording| recording.frames).sum();
                 let lead = v_flex()
                     .gap(px(3.))
@@ -3054,17 +2977,16 @@ impl TongueTraining {
                         div()
                             .text_xs()
                             .text_color(palette::text_3())
-                            .child(estimate(self.device)),
+                            .child(t!("tongue.estimate")),
                     );
                 let actions = h_flex()
                     .gap_2()
                     .child(
                         Button::new("train")
                             .prominent()
+                            .primary()
                             .icon(IconName::Sparkles)
                             .label(t!("tongue.train"))
-                            // The training files' download comes first.
-                            .when(!files_missing, |button| button.primary())
                             .loading(self.pending == Some(Pending::Train))
                             .disabled(!can_train)
                             .on_click(cx.listener(|section, _, _, cx| section.start_training(cx))),
@@ -3073,11 +2995,11 @@ impl TongueTraining {
                 (lead, actions)
             } else {
                 let text = if !recorded {
-                    t!("tongue.record_basic_first")
+                    t!("tongue.record_face_first")
                 } else if ticked.is_empty() {
                     t!("tongue.all_left_out")
                 } else {
-                    t!("tongue.needs_more_frames", positions = positions(&lacking))
+                    t!("tongue.needs_more_frames", frames = needs_listed(&lacking))
                 };
                 let lead = h_flex()
                     .gap_2()
@@ -3142,10 +3064,6 @@ impl TongueTraining {
                 } else {
                     progress.message
                 };
-                let on_cpu = progress
-                    .device
-                    .as_deref()
-                    .is_some_and(|device| device.to_lowercase().contains("cpu"));
                 let device = progress.device.clone();
                 let cancel = if self.confirm_cancel {
                     h_flex()
@@ -3208,9 +3126,6 @@ impl TongueTraining {
                     .children(
                         device.map(|device| hint(t!("tongue.training_on", device = device), cx)),
                     )
-                    .when(on_cpu && self.device == Device::Automatic, |this| {
-                        this.child(Notice::new(Tone::Waiting, t!("tongue.no_gpu_found")))
-                    })
                     .child(hint(t!("tongue.you_can_leave"), cx))
                     .child(div().pt_1().child(cancel))
             });
@@ -3232,38 +3147,6 @@ impl TongueTraining {
                         cx.notify();
                     }))
             }));
-        let architectures = h_flex()
-            .gap_0p5()
-            .p(px(3.))
-            .rounded(px(9.))
-            .bg(palette::sunken())
-            .border_1()
-            .border_color(palette::line())
-            .children(
-                [
-                    (
-                        TrainerArchitecture::StereoPair,
-                        t!("tongue.architecture_pair"),
-                    ),
-                    (
-                        TrainerArchitecture::UniversalFace,
-                        t!("tongue.architecture_face"),
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(index, (architecture, label))| {
-                    Button::new(("architecture", index))
-                        .small()
-                        .ghost()
-                        .selected(self.architecture == architecture)
-                        .label(label)
-                        .on_click(cx.listener(move |section, _, _, cx| {
-                            section.architecture = architecture;
-                            cx.notify();
-                        }))
-                }),
-            );
         // Folded away along the card's foot, for what most people leave alone.
         let advanced = v_flex()
             .mx(px(-22.))
@@ -3330,12 +3213,6 @@ impl TongueTraining {
                             cx,
                         ))
                         .child(option_row(
-                            t!("tongue.architecture"),
-                            Some(t!("tongue.architecture_about")),
-                            architectures,
-                            cx,
-                        ))
-                        .child(option_row(
                             t!("tongue.training_passes"),
                             Some(t!("tongue.training_passes_about")),
                             div().w(px(80.)).child(Input::new(&self.epochs).small()),
@@ -3351,7 +3228,6 @@ impl TongueTraining {
             .pt(px(20.))
             .overflow_hidden()
             .child(heading(t!("tongue.train_heading"), t!("tongue.train_lead")))
-            .children(base)
             .children(covered)
             .children(standing)
             .children(progress)
@@ -3382,11 +3258,13 @@ impl TongueTraining {
         let ticked = !self.unticked.contains(&recording.id);
         let tag = if !readable {
             t!("tongue.tag_unreadable")
+        } else if !recording.five_cameras {
+            t!("tongue.tag_mouth_only")
         } else if !ticked {
             t!("tongue.tag_left_out")
         } else if recording.basic_ready {
             t!("tongue.tag_complete")
-        } else if recording.mode == Some(CaptureMode::Core) {
+        } else if recording.mode == Some(CaptureMode::Face) {
             t!("tongue.tag_incomplete")
         } else {
             t!("tongue.tag_extra")
@@ -3501,9 +3379,13 @@ impl TongueTraining {
             // Choosing recordings for training, beside each one.
             .child(if readable {
                 Checkbox::new(("use-recording", index))
-                    .tooltip(t!("tongue.use_for_training"))
-                    .checked(ticked)
-                    .disabled(self.training_busy())
+                    .tooltip(if recording.five_cameras {
+                        t!("tongue.use_for_training")
+                    } else {
+                        t!("tongue.mouth_only_tooltip")
+                    })
+                    .checked(ticked && recording.five_cameras)
+                    .disabled(self.training_busy() || !recording.five_cameras)
                     .on_click(cx.listener(move |section, checked: &bool, _, cx| {
                         section.tick(id.clone(), *checked, cx)
                     }))
@@ -3524,7 +3406,7 @@ impl TongueTraining {
                         div()
                             .text_size(px(13.))
                             .truncate()
-                            .text_color(if ticked && readable {
+                            .text_color(if ticked && readable && recording.five_cameras {
                                 palette::text()
                             } else {
                                 palette::text_2()
@@ -3714,6 +3596,8 @@ impl Render for TongueTraining {
         }
         let step = self.chosen_step.unwrap_or_else(|| self.guided_step());
         let content = match step {
+            Step::Model => self.model_step(wide, cx),
+            Step::FaceSetup => self.face_setup_step(wide, main_width, cx),
             Step::Record => self.record_step(wide, main_width, cx),
             Step::Train => self.train_step(wide, main_width, cx),
             Step::Try => self.try_step(wide, cx),
@@ -4027,14 +3911,6 @@ fn time_left(capture: &CaptureStatus) -> Option<String> {
     } else {
         t!("tongue.minutes_left", minutes = (seconds / 60.).round()).into()
     })
-}
-
-/// How long training takes on the chosen device.
-fn estimate(device: Device) -> Cow<'static, str> {
-    match device {
-        Device::Cpu => t!("tongue.estimate_cpu"),
-        Device::Automatic | Device::Gpu => t!("tongue.estimate_gpu"),
-    }
 }
 
 /// Labels beside controls: between the text and its secondary grey.
@@ -4469,10 +4345,10 @@ fn model_detail(model: &SavedModel, now: DateTime<Local>) -> String {
     }
 }
 
-/// Tongue positions in a sentence: "tongue down", or "tongue up, tongue
-/// left and tongue down".
-fn positions(names: &[&str]) -> String {
-    let named: Vec<Cow<'static, str>> = names.iter().map(|name| position(name)).collect();
+/// Needs in a sentence: "a relaxed face", or "cheeks sucked in, brows
+/// raised and brows lowered".
+fn needs_listed(needs: &[&str]) -> String {
+    let named: Vec<Cow<'static, str>> = needs.iter().map(|need| need_phrase(need)).collect();
     match named.split_last() {
         None => String::new(),
         Some((last, [])) => last.to_string(),
@@ -4485,15 +4361,15 @@ fn positions(names: &[&str]) -> String {
     }
 }
 
-/// A need as a tongue position mid-sentence: "tongue down".
-fn position(need: &str) -> Cow<'static, str> {
+/// A need mid-sentence: "cheeks sucked in".
+fn need_phrase(need: &str) -> Cow<'static, str> {
     match need {
-        "Out" => t!("tongue.position_out"),
-        "In" => t!("tongue.position_in"),
-        "Left" => t!("tongue.position_left"),
-        "Right" => t!("tongue.position_right"),
-        "Up" => t!("tongue.position_up"),
-        "Down" => t!("tongue.position_down"),
+        "in" => t!("tongue.phrase_in"),
+        "cheek_left" => t!("tongue.phrase_cheek_left"),
+        "cheek_right" => t!("tongue.phrase_cheek_right"),
+        "suck" => t!("tongue.phrase_suck"),
+        "brows_up" => t!("tongue.phrase_brows_up"),
+        "brows_down" => t!("tongue.phrase_brows_down"),
         need => Cow::Owned(need.to_lowercase()),
     }
 }
@@ -4587,36 +4463,21 @@ fn training_time_left(progress: &TrainingProgress) -> String {
     }
 }
 
-/// What a download brings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Package {
-    /// What training needs: the mouth-camera pair, then the training
-    /// examples.
-    TrainingFiles,
-    /// The QFTPlus Model: the mouth-camera pair, then QFT+'s face model.
-    QftPlus,
-}
-
-/// A model's download as it runs: what it's doing, a meter, how much has
-/// come and how fast, and a way to stop it. Both packages fetch the
-/// mouth-camera pair first, so `pair_installed` tells which part is coming.
+/// The QFTPlus Model's download as it runs: what it's doing, a meter, how
+/// much has come and how fast, and a way to stop it. It fetches the
+/// mouth-camera pair first.
 fn download_progress(
     builtin: &BuiltinStatus,
-    package: Package,
-    pair_installed: bool,
     busy: bool,
     cx: &Context<TongueTraining>,
 ) -> AnyElement {
     let stage = builtin.stage.unwrap_or_default();
-    let qftplus = pair_installed && package == Package::QftPlus;
-    let examples = pair_installed && package == Package::TrainingFiles;
+    let qftplus = builtin.pair_installed;
     let title = match stage {
         BuiltinStage::Downloading if qftplus => t!("tongue.downloading_qftplus"),
-        BuiltinStage::Downloading if examples => t!("tongue.downloading_examples"),
         BuiltinStage::Downloading => t!("tongue.downloading_pair"),
         BuiltinStage::Verifying => t!("tongue.checking_download"),
         BuiltinStage::Unpacking if qftplus => t!("tongue.unpacking_qftplus"),
-        BuiltinStage::Unpacking if examples => t!("tongue.unpacking_examples"),
         BuiltinStage::Unpacking => t!("tongue.unpacking_pair"),
         _ => t!("tongue.connecting_download"),
     };
@@ -4645,20 +4506,12 @@ fn download_progress(
                 // Unpacking is over in moments and can't stop part-way.
                 .when(stage != BuiltinStage::Unpacking, |row| {
                     row.child(
-                        Button::new(match package {
-                            Package::TrainingFiles => "cancel-builtin",
-                            Package::QftPlus => "cancel-qftplus",
-                        })
-                        .ghost()
-                        .xsmall()
-                        .label(t!("tongue.cancel"))
-                        .disabled(busy)
-                        .on_click(cx.listener(
-                            move |section, _, _, cx| match package {
-                                Package::TrainingFiles => section.cancel_builtin(cx),
-                                Package::QftPlus => section.cancel_qftplus(cx),
-                            },
-                        )),
+                        Button::new("cancel-qftplus")
+                            .ghost()
+                            .xsmall()
+                            .label(t!("tongue.cancel"))
+                            .disabled(busy)
+                            .on_click(cx.listener(|section, _, _, cx| section.cancel_qftplus(cx))),
                     )
                 }),
         )
@@ -4802,6 +4655,7 @@ fn training_failure(error: &str) -> String {
     } else if [
         "wgpu",
         "gpu",
+        "directml",
         "adapter",
         "device lost",
         "out of memory",
@@ -4814,8 +4668,10 @@ fn training_failure(error: &str) -> String {
         t!("tongue.failure_gpu")
     } else if lower.contains("at least one recording") {
         t!("tongue.failure_no_recordings")
-    } else if lower.contains("base model") {
-        t!("tongue.failure_training_files")
+    } else if lower.contains("model to fine-tune") {
+        t!("tongue.failure_qftplus")
+    } else if lower.contains("face setup") {
+        t!("tongue.failure_face_setup")
     } else {
         return t!("tongue.failure", error = error).into();
     };
@@ -4834,45 +4690,36 @@ mod tests {
     }
 
     #[test]
-    fn cheek_puffs_are_covered_across_the_ticked_recordings() {
-        let left = recording(Coverage {
-            cheek_left: 16,
-            ..Coverage::default()
-        });
-        let right = recording(Coverage {
+    fn training_needs_every_kind_of_frame_across_the_ticked_recordings() {
+        let face = recording(Coverage {
+            inside: 40,
+            cheek_left: 8,
             cheek_right: 8,
+            suck: 8,
+            brows_up: 12,
+            brows_down: 4,
             ..Coverage::default()
         });
-        assert!(!cheeks_covered(&[&left]));
-        assert!(cheeks_covered(&[&left, &right]));
-        // Cheek puffs are never what stands in the way of training.
-        assert!(!missing(&[&left]).iter().any(|need| need.contains("heek")));
+        assert_eq!(missing(&[&face]), vec!["brows_down"]);
+        assert_eq!(coverage(&[&face])[5], ("brows_down", 4, 8));
+        let extra = recording(Coverage {
+            brows_down: 4,
+            ..Coverage::default()
+        });
+        assert!(missing(&[&face, &extra]).is_empty());
+        assert_eq!(missing(&[]).len(), 6);
+        assert_eq!(needs_listed(&["suck"]), "cheeks sucked in");
+        assert_eq!(
+            needs_listed(&["in", "brows_up", "brows_down"]),
+            "a relaxed face, brows raised and brows lowered"
+        );
     }
 
     #[test]
-    fn training_needs_every_direction_across_the_ticked_recordings() {
-        let basic = recording(Coverage {
-            out: 40,
-            inside: 24,
-            left: 8,
-            right: 8,
-            up: 8,
-            down: 4,
-            ..Coverage::default()
-        });
-        assert_eq!(missing(&[&basic]), vec!["Down"]);
-        assert_eq!(coverage(&[&basic])[5], ("Down", 4, 8));
-        let extra = recording(Coverage {
-            down: 4,
-            ..Coverage::default()
-        });
-        assert!(missing(&[&basic, &extra]).is_empty());
-        assert_eq!(missing(&[]).len(), 6);
-        assert_eq!(positions(&["Down"]), "tongue down");
-        assert_eq!(
-            positions(&["Out", "Left", "Down"]),
-            "tongue out, tongue left and tongue down"
-        );
+    fn every_need_has_poses_to_top_it_up() {
+        for (_, _, need) in NEEDS {
+            assert!(!top_up(need).is_empty(), "{need}");
+        }
     }
 
     #[test]
@@ -4982,6 +4829,9 @@ mod tests {
     fn training_failures_are_explained() {
         assert!(training_failure("Training loss is not finite").contains("unstable"));
         assert!(training_failure("wgpu: Device lost").contains("CPU"));
+        assert!(
+            training_failure("This model needs a face setup to fine-tune").contains("face setup")
+        );
         assert_eq!(training_failure("disk full"), "Training failed: disk full");
     }
 }

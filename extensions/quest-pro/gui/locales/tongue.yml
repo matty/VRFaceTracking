@@ -3,7 +3,7 @@ tongue:
   page_title:
     en: "Training"
   page_description:
-    en: "Record your tongue, train on this PC, then switch to a model that knows you."
+    en: "Fine-tune the QFTPlus Model on your own face, here on this PC, then switch to it."
   not_running:
     en: "Tracking isn't running"
   loading:
@@ -12,8 +12,6 @@ tongue:
     en: "Recording"
   mode_core:
     en: "Basic poses"
-  mode_core_about:
-    en: "17 poses · about 2½ min"
   mode_follow:
     en: "Follow the dot"
   mode_follow_about:
@@ -24,22 +22,14 @@ tongue:
     en: "Halfway and diagonal · about 2 min"
   mode_negatives:
     en: "Expression poses"
-  mode_negatives_about:
-    en: "Tongue in, other expressions · about 2 min"
   mode_enrollment:
     en: "Face setup"
   mode_enrollment_about:
     en: "Your own neutral, puffs and tongue directions · about 1 min"
   extra_follow:
-    en: "Best for direction tracking, and each run takes a new route. Watch this window from the headset."
+    en: "More of your tongue's directions, the ones in between too, for fitting how it reads each way. Watch this window from the headset."
   extra_direction:
-    en: "Try this if left and right, or up and down, jump between the extremes."
-  extra_negatives:
-    en: "Try this if your tongue shows when it shouldn't, such as while talking or smiling."
-  extra_enrollment:
-    en: "With the headset's five cameras on: the face model reads every frame against these poses. Each pose is checked as you go, and one that doesn't come through is asked for once more. A new face setup is used once it gets past its last pose with a clean relaxed face."
-  face_setup_needs_five:
-    en: "Needs All five cameras: turn it on in the headset app."
+    en: "Halfway and diagonal directions, for fitting how your tongue reads each way."
   face_setup_unreadable:
     en: "The face setup in use couldn't be read, so the face model runs without one. Record it again."
   face_setup_in_use:
@@ -49,7 +39,7 @@ tongue:
   face_setup_tongue_not_fitted:
     en: "Tongue directions not fitted: that needs all five tongue poses."
   face_setup_none:
-    en: "None yet. The face model works without one, but fits you better with one."
+    en: "None yet. The QFTPlus Model runs without one, but fits you better with one, and training needs one."
   face_setup_missed:
     en: "Poses that didn't come through"
   face_setup_miss:
@@ -57,41 +47,19 @@ tongue:
   face_setup_skipped:
     en: "skipped."
   tip_aim:
-    en: "Aim for what the prompt asks, such as “tip only” or “half out”, rather than the extreme. The positions in between matter."
+    en: "Aim for the amount each prompt asks, such as halfway, rather than the extreme. The amounts in between matter."
   tip_cameras:
-    en: "Keep your tongue where both mouth cameras can see it."
+    en: "Wear the headset as you do when you play, so every camera sees what it will then."
   tip_skip:
     en: "Skip a pose you can't do or that went wrong. Stop keeps what's recorded so far."
   tab_record:
     en: "Record"
   tab_train:
-    en: "Train"
+    en: "Fine-tune"
   tab_test:
     en: "Test"
-  need_out:
-    en: "Out"
   need_in:
-    en: "In"
-  need_left:
-    en: "Left"
-  need_right:
-    en: "Right"
-  need_up:
-    en: "Up"
-  need_down:
-    en: "Down"
-  position_out:
-    en: "tongue out"
-  position_in:
-    en: "tongue in"
-  position_left:
-    en: "tongue left"
-  position_right:
-    en: "tongue right"
-  position_up:
-    en: "tongue up"
-  position_down:
-    en: "tongue down"
+    en: "Relaxed"
   list_and:
     en: "%{rest} and %{last}"
   list_separator:
@@ -119,7 +87,7 @@ tongue:
   say_stop_recording:
     en: "Stop recording? Press Escape again to stop."
   say_test_voice:
-    en: "Prompts will sound like this. Tongue straight out. Now."
+    en: "Prompts will sound like this. Puff your left cheek, halfway. Now."
   trained_switched_on:
     en: "Trained and switched on"
   trained_not_switched_on:
@@ -154,16 +122,12 @@ tongue:
     en: "Couldn't start the download"
   downloading_pair:
     en: "Downloading the mouth-camera model"
-  downloading_examples:
-    en: "Downloading the training examples"
   connecting_download:
     en: "Starting the download…"
   checking_download:
     en: "Checking the download…"
   unpacking_pair:
     en: "Unpacking the mouth-camera model…"
-  unpacking_examples:
-    en: "Unpacking the training examples…"
   download_amount:
     en: "%{received} of %{total} MB"
   download_received:
@@ -179,7 +143,7 @@ tongue:
   qftplus_model:
     en: "QFTPlus Model"
   qftplus_lead:
-    en: "The base model. Reads all five cameras for the tongue, cheeks and brows, and the mouth cameras alone when the headset sends only those."
+    en: "The base model, which training fine-tunes. Reads all five cameras for the tongue, cheeks and brows, and the mouth cameras alone when the headset sends only those."
   downloading_qftplus:
     en: "Downloading QFT+'s model"
   unpacking_qftplus:
@@ -250,10 +214,6 @@ tongue:
     en: "Couldn't save"
   training:
     en: "Training"
-  training_files:
-    en: "Training files"
-  training_examples:
-    en: "Training examples"
   in_use:
     en: "In use"
   override_picks_model:
@@ -290,16 +250,12 @@ tongue:
     en: "Stick your tongue out and move it around. The dot shows what your avatar receives."
   mouth_cameras:
     en: "Mouth cameras"
-  record_basic_again:
-    en: "Record basic poses again"
   start_recording:
     en: "Start recording"
   record_heading:
-    en: "Record your tongue poses"
+    en: "Record your face"
   record_lead:
-    en: "Put the headset on and follow the prompts: 17 poses, about two and a half minutes. One full recording is enough to train."
-  download_while_recording:
-    en: "Training starts from the mouth-camera model and mixes in rendered examples. Download them now and they finish while you record."
+    en: "Put the headset on and follow QFT+'s own prompts: puffs, sucked-in cheeks, your tongue and your brows, each at three amounts, then look-alikes and some reading. About five minutes. One full recording is enough to train."
   before_you_start:
     en: "Before you start"
   tips:
@@ -358,24 +314,16 @@ tongue:
     en: "Stop this recording? What's recorded so far is kept, but you can't resume it."
   record_just_those:
     en: "Record just those (about %{seconds} s)"
-  positions_covered:
-    en: "Tongue positions covered"
-  no_cheek_puffs:
-    en: "Cheek puffs won't be learned from these recordings."
-  record_cheek_poses:
-    en: "Record the cheek poses (about %{seconds} s)"
   test_it:
     en: "Test it"
   ready:
     en: "Ready: %{recordings}, %{frames}"
   train:
     en: "Train"
-  record_basic_first:
-    en: "Record the basic poses first."
   all_left_out:
     en: "Every recording is left out. Tick some under Your recordings."
   needs_more_frames:
-    en: "Needs more frames of %{positions}."
+    en: "Needs more frames of %{frames}."
   record_more:
     en: "Record more"
   go_to_recording:
@@ -390,8 +338,6 @@ tongue:
     en: "Keep training"
   training_on:
     en: "Training on the %{device}"
-  no_gpu_found:
-    en: "No working graphics card was found, so this runs on the CPU and takes several times longer."
   you_can_leave:
     en: "You can leave this page; your current model stays in use until this finishes."
   advanced_options:
@@ -401,23 +347,15 @@ tongue:
   device:
     en: "Device"
   device_about:
-    en: "Automatic uses the GPU when one works, and the CPU otherwise. Choosing GPU won't fall back to the CPU."
-  architecture:
-    en: "Model"
-  architecture_about:
-    en: "The tongue pair reads the mouth cameras. The universal face model reads all five cameras, for the brows, cheeks and tongue, and runs while the headset sends them."
-  architecture_pair:
-    en: "Tongue pair"
-  architecture_face:
-    en: "Universal face"
+    en: "Automatic reads your recordings through the model on the GPU when one works, and the CPU otherwise. Choosing GPU won't fall back to the CPU."
   training_passes:
     en: "Training passes"
   training_passes_about:
-    en: "12 unless set, up to 60. More passes fit your recordings more closely, but take longer."
+    en: "12 unless set, up to 60. More passes fit your recordings more closely; the best pass on frames held back from training is kept."
   train_heading:
-    en: "Train your model"
+    en: "Fine-tune the QFTPlus Model"
   train_lead:
-    en: "Fine-tunes the mouth-camera model on your recordings, here on this PC. Your current model stays in use until it's done."
+    en: "Reads your recordings through QFT+'s model against your face setup, then fine-tunes its cheek and brow heads and your tongue directions on them, here on this PC. Your current model stays in use until it's done."
   tag_unreadable:
     en: "unreadable"
   tag_left_out:
@@ -466,10 +404,6 @@ tongue:
     en: "Under a minute left"
   minutes_left:
     en: "About %{minutes} min left"
-  estimate_cpu:
-    en: "On the CPU, which takes several times longer than a graphics card"
-  estimate_gpu:
-    en: "About ten minutes on a recent graphics card; the CPU takes several times longer"
   get_ready:
     en: "Get ready · %{seconds} s"
   get_ready_left:
@@ -528,7 +462,85 @@ tongue:
     en: "The graphics card stopped the training. Try again on the CPU."
   failure_no_recordings:
     en: "Tick at least one recording to train on."
-  failure_training_files:
-    en: "The training files, which training starts from, aren't ready. Download them and try again."
   failure:
     en: "Training failed: %{error}"
+  mode_face:
+    en: "Face recording"
+  mode_face_about:
+    en: "QFT+'s prompts at three amounts · about 5 min"
+  mode_older:
+    en: "From an older version"
+  tab_model:
+    en: "QFTPlus Model"
+  tab_face_setup:
+    en: "Face setup"
+  need_cheek_left:
+    en: "Left cheek"
+  need_cheek_right:
+    en: "Right cheek"
+  need_suck:
+    en: "Sucked in"
+  need_brows_up:
+    en: "Brows up"
+  need_brows_down:
+    en: "Brows down"
+  phrase_in:
+    en: "a relaxed face"
+  phrase_cheek_left:
+    en: "the left cheek puffed"
+  phrase_cheek_right:
+    en: "the right cheek puffed"
+  phrase_suck:
+    en: "cheeks sucked in"
+  phrase_brows_up:
+    en: "brows raised"
+  phrase_brows_down:
+    en: "brows lowered"
+  five_cameras:
+    en: "All five cameras"
+  model_lead:
+    en: "QFT+'s face model, run as QFT+ runs it. It's the model in use until you choose one of your own, and the one training fine-tunes."
+  model_point_cameras:
+    en: "Reads all five cameras for the cheeks, brows and tongue. When the headset sends only the mouth cameras, the mouth-camera model that comes with it takes over."
+  model_point_training:
+    en: "Training keeps QFT+'s network and fine-tunes the small heads on top of it, and your tongue directions, on your own recordings."
+  model_point_licence:
+    en: "Its weights are for non-commercial use only (CC BY-NC 4.0). VRFaceTracking downloads them from QFT+'s release only when you ask, and never shares them."
+  model_ready:
+    en: "Downloaded. It's in use unless you choose a model of your own."
+  continue_to_face_setup:
+    en: "Continue to the face setup"
+  face_setup_heading:
+    en: "Do your face setup"
+  face_setup_lead:
+    en: "About a minute of QFT+'s own poses: a relaxed face, a wide mouth, a kiss, puffs, your tongue in five directions and sucked-in cheeks. The model reads every frame against them, and training reads your recordings against them. Each pose is checked as you go, and one that doesn't come through is asked for once more."
+  face_setup_start:
+    en: "Start the face setup"
+  face_setup_again:
+    en: "Do the face setup again"
+  continue_to_recording:
+    en: "Continue to recording"
+  record_face_again:
+    en: "Record again"
+  record_face_first:
+    en: "Record your face first."
+  frames_covered:
+    en: "Frames covered"
+  needs_qftplus:
+    en: "Training fine-tunes the QFTPlus Model, so download it first."
+  go_to_model:
+    en: "Get the QFTPlus Model"
+  needs_face_setup:
+    en: "Training reads your recordings against your face setup, so do that first."
+  go_to_face_setup:
+    en: "Do the face setup"
+  estimate:
+    en: "A minute or two for each recording"
+  tag_mouth_only:
+    en: "mouth cameras only"
+  mouth_only_tooltip:
+    en: "Recorded with the mouth cameras alone, which training can't read"
+  failure_qftplus:
+    en: "The QFTPlus Model couldn't be read. Download it again, then train again."
+  failure_face_setup:
+    en: "Training needs your face setup. Do it again, then train again."

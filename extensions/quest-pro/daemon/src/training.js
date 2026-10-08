@@ -1,16 +1,20 @@
-// Step 2 of the preview: choose recordings, train, and pick the model in use.
+// Steps 1, 2 and 4 of the preview: the QFTPlus Model, the face setup in use,
+// choosing recordings, fine-tuning, and picking the model in use.
 // Uses byId, store, getJson, post, notice, icon, speak and the capture state from the page.
-const RECORDING_KINDS = {core: 'Basic poses', direction: 'Direction poses', negatives: 'Expression poses',
-  follow: 'Follow the dot'};
-// What the trainer needs across the ticked recordings, as visible frames.
-const NEEDS = [['out', 20, 'tongue out'], ['in', 20, 'tongue in'], ['left', 8, 'tongue left'],
-  ['right', 8, 'tongue right'], ['up', 8, 'tongue up'], ['down', 8, 'tongue down']];
+const RECORDING_KINDS = {face: 'Face recording', enrollment: 'Face setup', direction: 'Direction poses',
+  follow: 'Follow the dot', core: 'Basic poses', negatives: 'Expression poses'};
+// What fine-tuning needs across the ticked recordings, in frames.
+const NEEDS = [['in', 20, 'a relaxed face'], ['cheek_left', 8, 'the left cheek puffed'],
+  ['cheek_right', 8, 'the right cheek puffed'], ['suck', 8, 'cheeks sucked in'],
+  ['brows_up', 8, 'brows raised'], ['brows_down', 8, 'brows lowered']];
 let recordings = [];
 const unticked = new Set(store.get('untickedRecordings', []));
 let savedModels = [];
 let activeModelId = 'demo';
 let modelOverride = false;
 let shownJob = null;
+let qftplusReady = false;
+let faceSetup = null;
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -39,8 +43,9 @@ function duration(seconds) {
 const plural = (count, word) => `${count.toLocaleString()} ${word}${count === 1 ? '' : 's'}`;
 const listed = items => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 
+// Training reads only recordings of all five cameras.
 function tickedRecordings() {
-  return recordings.filter(r => !r.error && !unticked.has(r.id));
+  return recordings.filter(r => !r.error && r.five_cameras && !unticked.has(r.id));
 }
 function missingPoses(list) {
   return NEEDS.filter(([key, needed]) => list.reduce((sum, r) => sum + (r.coverage?.[key] || 0), 0) < needed)
@@ -114,8 +119,9 @@ function renderRecordings() {
     const box = element('div', undefined, 'recording');
     const row = element('div', undefined, 'recording-row');
     const label = element('label', undefined, 'recording-pick');
+    const usable = !recording.error && recording.five_cameras;
     const tick = element('input'); tick.type = 'checkbox';
-    tick.checked = !recording.error && !unticked.has(recording.id); tick.disabled = !!recording.error;
+    tick.checked = usable && !unticked.has(recording.id); tick.disabled = !usable;
     tick.setAttribute('aria-label', 'Train on this recording');
     tick.onchange = () => {
       if (tick.checked) unticked.delete(recording.id); else unticked.add(recording.id);
@@ -126,8 +132,8 @@ function renderRecordings() {
     text.append(element('span', `${when(createdAt(recording.id))} · ${RECORDING_KINDS[recording.mode] || 'Recording'}`, 'recording-title'),
       element('span', recording.error ? recording.error : `${plural(recording.frames, 'frame')}`, 'recording-meta'));
     label.append(tick, text);
-    const [tagText, tone] = recording.error ? ['Unreadable', 'bad'] : recording.basic_ready ? ['Complete', 'ok'] :
-      recording.mode === 'core' ? ['Incomplete', 'warn'] : ['Extra', ''];
+    const [tagText, tone] = recording.error ? ['Unreadable', 'bad'] : !recording.five_cameras ? ['Mouth cameras only', ''] :
+      recording.basic_ready ? ['Complete', 'ok'] : recording.mode === 'face' ? ['Incomplete', 'warn'] : ['Extra', ''];
     const actions = element('div', undefined, 'recording-actions');
     if (!recording.error) {
       const check = element('button', 'Review', 'ghost small'); check.type = 'button';
@@ -166,12 +172,14 @@ function updateTrainButton() {
   const list = tickedRecordings();
   const missing = missingPoses(list);
   const recording = !!currentCapture?.active;
-  byId('start-training').disabled = trainingBusy || recording || !list.length || missing.length > 0;
+  byId('start-training').disabled = trainingBusy || recording || !qftplusReady || !faceSetup || !list.length || missing.length > 0;
   if (trainingBusy) notice('train-summary', '');
   else if (recording) notice('train-summary', 'Finish recording first. The new recording will appear here.');
-  else if (!recordings.some(r => !r.error)) notice('train-summary', 'Make a recording in step 1 first.');
+  else if (!qftplusReady) notice('train-summary', 'Training fine-tunes the QFTPlus Model: download it in step 1 first.', 'warn');
+  else if (!faceSetup) notice('train-summary', 'Training reads your recordings against your face setup: do it in step 2 first.', 'warn');
+  else if (!recordings.some(r => !r.error && r.five_cameras)) notice('train-summary', 'Record your face in step 3 first.');
   else if (!list.length) notice('train-summary', 'Tick at least one recording to train on.', 'warn');
-  else if (missing.length) notice('train-summary', `The ticked recordings don't have enough ${listed(missing)}. Record a full set of basic poses, or tick a recording that has them.`, 'warn');
+  else if (missing.length) notice('train-summary', `The ticked recordings don't have enough of ${listed(missing)}. Record your face again, or tick a recording that has them.`, 'warn');
   else {
     const frames = list.reduce((sum, r) => sum + r.frames, 0);
     notice('train-summary', `Ready to train on ${plural(list.length, 'recording')} (${plural(frames, 'frame')}).`, 'ok');
@@ -221,37 +229,48 @@ function showFinished(report, switchedOn) {
   const box = byId('training-result');
   box.replaceChildren();
   box.className = 'notice ok'; box.hidden = false;
-  box.append(element('strong', switchedOn ? 'Done. Your new model is switched on.' :
+  box.append(element('strong', switchedOn ? 'Done. Your fine-tuned model is switched on.' :
     modelOverride ? 'Done. VRFT_TONGUE_MODEL_DIR is set, so the new model was saved but not switched on.' : 'Done. Your new model is saved.'));
   if (report) {
     box.append(element('p', `Trained on ${plural(report.recordings.length, 'recording')} in ${duration(report.seconds)}. ` +
-      'Stick your tongue out and move it around: the dot under the camera view should follow.'));
+      'Puff your cheeks, raise your brows and move your tongue around: the dot under the camera view should follow it.'));
   }
-  box.append(element('p', 'Not tracking well? Refit the headset, record another set of basic poses and train again. You can switch back to an earlier model, or the QFTPlus Model, under Model in use.'));
+  box.append(element('p', 'Not tracking well? Refit the headset, do the face setup and record again, then fine-tune again. You can switch back to an earlier model, or the QFTPlus Model, under Model in use.'));
 }
 
-// Offers what training needs for download until it is all installed: the
-// mouth-camera model training starts from, and the rendered examples.
-function showBuiltin(builtin) {
-  const ready = !builtin || (builtin.installed && !builtin.examples_missing);
-  byId('builtin').hidden = ready;
-  if (ready) return;
-  const button = byId('install-builtin');
-  button.disabled = builtin.installing;
-  button.textContent = builtin.error ? 'Try again' : 'Download training files';
-  if (builtin.installing) {
-    notice('builtin-message', `Downloading the training files… ${Math.round((builtin.fraction || 0) * 100)}%`);
-  } else if (builtin.error) {
-    notice('builtin-message', `The download failed: ${builtin.error}`, 'bad');
-  } else {
-    notice('builtin-message', `Training needs the mouth-camera model it starts from and the rendered examples it mixes in. VRFaceTracking downloads them once, about ${builtin.download_megabytes || 263} MB, and checks them before use.`);
-  }
+// Step 1: offers the QFTPlus Model for download until it's in place.
+function showQftplus(qftplus) {
+  qftplusReady = !!qftplus && qftplus.installed;
+  const install = byId('install-qftplus');
+  install.hidden = !qftplus || qftplus.installed || qftplus.installing;
+  install.textContent = qftplus?.error ? 'Try again' : 'Download';
+  byId('cancel-qftplus').hidden = !qftplus?.installing;
+  if (!qftplus) notice('qftplus-message', 'This VRFaceTracking can\'t download it.', 'bad');
+  else if (qftplus.installed) notice('qftplus-message', 'Downloaded. It\'s in use unless you choose a model of your own.', 'ok');
+  else if (qftplus.installing) {
+    const what = qftplus.pair_installed ? 'QFT+\'s model' : 'the mouth-camera model';
+    notice('qftplus-message', `Downloading ${what}… ${Math.round((qftplus.fraction || 0) * 100)}%`);
+  } else if (qftplus.error) notice('qftplus-message', `The download failed: ${qftplus.error}`, 'bad');
+  else notice('qftplus-message', `Not downloaded · about ${qftplus.download_megabytes || 334} MB, checked before it's used.`);
 }
-byId('install-builtin').onclick = async () => {
-  byId('install-builtin').disabled = true;
-  try { showBuiltin(await post('/ext/quest-pro/training/builtin')); }
-  catch (error) { notice('builtin-message', `Couldn't start the download: ${error.message}`, 'bad'); }
+byId('install-qftplus').onclick = async () => {
+  byId('install-qftplus').disabled = true;
+  try { showQftplus(await post('/ext/quest-pro/training/qftplus')); }
+  catch (error) { notice('qftplus-message', `Couldn't start the download: ${error.message}`, 'bad'); }
+  finally { byId('install-qftplus').disabled = false; }
 };
+byId('cancel-qftplus').onclick = async () => {
+  try { showQftplus(await post('/ext/quest-pro/training/qftplus/cancel')); }
+  catch (error) { notice('qftplus-message', error.message, 'bad'); }
+};
+
+// Step 2: the face setup in use.
+function showFaceSetup(id) {
+  faceSetup = id;
+  byId('start-enrollment').textContent = id ? 'Do the face setup again' : 'Start the face setup';
+  notice('face-setup-state', id ? `In use: yours from ${when(createdAt(id), true)}.` :
+    'None yet. The QFTPlus Model runs without one, but fits you better with one, and training needs one.', id ? 'ok' : 'warn');
+}
 
 async function refreshTraining() {
   try {
@@ -260,7 +279,8 @@ async function refreshTraining() {
     activeModelId = state.active_id;
     modelOverride = state.model_override;
     showTrainingControls(state.busy);
-    showBuiltin(state.builtin);
+    showQftplus(state.qftplus);
+    showFaceSetup(state.face_setup);
     if (state.busy) showTrainingProgress(state.progress || {message: 'Starting…', fraction: 0});
     else if (state.id && state.progress && shownJob !== state.id) {
       shownJob = state.id;
