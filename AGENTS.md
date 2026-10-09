@@ -87,8 +87,9 @@ CI does not run these, so run them yourself when you touch the area:
   - `adb install -r`
   - logcat (`-s VRFTCamera`)
   - `am start -n io.github.matty.vrft.questprocamera/.MainActivity` with the extras `eye_enabled`, `camera_fps`, `eye_preview_fps`, `start_probe` and `stop_probe`
+  - `am start-foreground-service` (`-a io.github.matty.vrft.questprocamera.START`) and `am startservice` (`-a io.github.matty.vrft.questprocamera.STOP`) on `io.github.matty.vrft.questprocamera/.CameraStreamService`, with the same settings extras on START
 
-  With `eye_enabled`, `start_probe` makes the app patch Meta's eye model through its own root grant, and `stop_probe` restores the stock model.
+  With `eye_enabled`, `start_probe` (or START) makes the app patch Meta's eye model through its own root grant, and `stop_probe` (or STOP) restores the stock model.
 - **Ask before any `su` command.** Eye-pipeline root commands must use `su --mount-master`. Plain `su` mounts into the wrong namespace.
 - Add firmware or engine-profile support only with a hardware test and an explicit build fingerprint.
 - In Git Bash, prefix adb commands that take device paths with `MSYS_NO_PATHCONV=1`.
