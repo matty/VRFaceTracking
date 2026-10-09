@@ -144,6 +144,9 @@ public final class CameraStreamService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        // The desktop app starts the stream here directly, so the panel
+        // never comes in front of the streaming app; its settings ride along.
+        if (intent != null) Settings.applyExtras(this, intent);
         if (running) return START_NOT_STICKY;
         running = true;
         active = true;
