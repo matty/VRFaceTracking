@@ -20,6 +20,11 @@ use vrft_gui_core::processes;
 pub const PACKAGE: &str = "io.github.matty.vrft.questprocamera";
 /// The headset app's screen, which also takes commands over adb.
 const ACTIVITY: &str = "io.github.matty.vrft.questprocamera/.MainActivity";
+/// The headset app's stream, which takes Start and Stop over adb without
+/// bringing its screen to the front.
+const SERVICE: &str = "io.github.matty.vrft.questprocamera/.CameraStreamService";
+const START_ACTION: &str = "io.github.matty.vrft.questprocamera.START";
+const STOP_ACTION: &str = "io.github.matty.vrft.questprocamera.STOP";
 /// The port Quest's adb listens on after `adb tcpip`.
 pub const WIRELESS_PORT: u16 = 5555;
 
@@ -245,6 +250,25 @@ impl Adb {
         Ok(())
     }
 
+    /// Starts the headset app's stream with `extras` saved as its settings
+    /// first, leaving whatever is in front, such as Virtual Desktop, there.
+    pub fn start_stream(&self, serial: &str, extras: &[(&str, bool)]) -> Result<()> {
+        let mut command = format!("am start-foreground-service -n {SERVICE} -a {START_ACTION}");
+        for (key, value) in extras {
+            command.push_str(&format!(" --ez {key} {value}"));
+        }
+        match self.service_command(serial, &command)? {
+            ServiceReply::Done => Ok(()),
+            // An app from before its stream took commands from adb.
+            ServiceReply::Private => {
+                let mut extras = extras.to_vec();
+                extras.push(("start_probe", true));
+                self.open_app(serial, &extras)
+            }
+            ServiceReply::Background(error) => bail!(error),
+        }
+    }
+
     /// Whether the headset app's camera stream service is running.
     pub fn streaming(&self, serial: &str) -> Result<bool> {
         Ok(parse_count(&self.shell(serial, &streaming_script())?) > 0)
@@ -255,7 +279,12 @@ impl Adb {
     /// eye model back). Replacing the app before then would kill it half way
     /// through.
     pub fn stop_stream(&self, serial: &str) -> Result<()> {
-        self.open_app(serial, &[("stop_probe", true)])?;
+        // A plain service start, since a foreground one must go foreground.
+        // Android turns it away only when no stream runs, so nothing is lost.
+        let command = format!("am startservice -n {SERVICE} -a {STOP_ACTION}");
+        if self.service_command(serial, &command)? == ServiceReply::Private {
+            self.open_app(serial, &[("stop_probe", true)])?;
+        }
         let began = Instant::now();
         loop {
             thread::sleep(Duration::from_millis(500));
@@ -305,6 +334,12 @@ impl Adb {
         )?;
         output.check()?;
         Ok(last_log_lines(&output.text))
+    }
+
+    /// Runs an `am` command that starts the headset app's service. `am`
+    /// fails for a refused start, so its words are what tell them apart.
+    fn service_command(&self, serial: &str, command: &str) -> Result<ServiceReply> {
+        parse_service_reply(&self.shell(serial, &format!("{command} 2>&1 || true"))?)
     }
 
     fn shell(&self, serial: &str, command: &str) -> Result<String> {
@@ -791,6 +826,35 @@ fn parse_count(text: &str) -> u32 {
     text.trim().parse().unwrap_or(0)
 }
 
+/// What `am` said to a start of the headset app's service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServiceReply {
+    Done,
+    /// The service is private to the app, as before it took commands.
+    Private,
+    /// Android won't start a service in an app that runs nothing, with why.
+    Background(String),
+}
+
+fn parse_service_reply(text: &str) -> Result<ServiceReply> {
+    let Some(error) = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Error:"))
+        .map(str::trim)
+    else {
+        return Ok(ServiceReply::Done);
+    };
+    if error.starts_with("Requires permission") {
+        Ok(ServiceReply::Private)
+    } else if error.starts_with("Not found") {
+        bail!(t!("adb.app_not_installed"))
+    } else if error.contains("app is in background") {
+        Ok(ServiceReply::Background(error.to_string()))
+    } else {
+        bail!(error.to_string())
+    }
+}
+
 fn parse_connect(target: &str, text: &str) -> Result<String> {
     // Connected, but waiting for the wearer to allow it.
     if text.contains("failed to authenticate") {
@@ -1082,6 +1146,25 @@ mod tests {
             ]
         );
         assert!(parse_mdns_services("List of discovered mdns services\n").is_empty());
+    }
+
+    #[test]
+    fn reads_what_am_says_to_a_service_start() {
+        let started = "Starting service: Intent { act=io.github.matty.vrft.questprocamera.START \
+                       cmp=io.github.matty.vrft.questprocamera/.CameraStreamService (has extras) }\n";
+        assert_eq!(parse_service_reply(started).unwrap(), ServiceReply::Done);
+        let private = "Starting service: Intent { ... }\n\
+                       Error: Requires permission not exported from uid 10123\n";
+        assert_eq!(parse_service_reply(private).unwrap(), ServiceReply::Private);
+        let background = "Starting service: Intent { ... }\n\
+                          Error: app is in background uid UidRecord{1234 u0a123 CEM  idle}\n";
+        assert!(matches!(
+            parse_service_reply(background).unwrap(),
+            ServiceReply::Background(_)
+        ));
+        let missing = "Starting service: Intent { ... }\nError: Not found; no service started.\n";
+        assert!(parse_service_reply(missing).is_err());
+        assert!(parse_service_reply("Error: something else\n").is_err());
     }
 
     #[test]

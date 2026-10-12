@@ -879,7 +879,7 @@ impl HeadsetPage {
             Busy::Starting,
             Area::Stream,
             move |adb| {
-                adb.open_app(&serial, &[("start_probe", true)])?;
+                adb.start_stream(&serial, &[])?;
                 Ok(Done {
                     started_stream: true,
                     ..Done::message(t!("headset.starting_stream"))
@@ -919,7 +919,12 @@ impl HeadsetPage {
                 if streaming {
                     adb.stop_stream(&serial)?;
                 }
-                adb.open_app(&serial, &[("eye_enabled", on), ("start_probe", streaming)])?;
+                if streaming {
+                    adb.start_stream(&serial, &[("eye_enabled", on)])?;
+                } else {
+                    // Only the app's screen saves a setting without starting.
+                    adb.open_app(&serial, &[("eye_enabled", on)])?;
+                }
                 Ok(Done::message(match (on, streaming) {
                     (true, true) => t!("headset.eye_gaze_on_restarted"),
                     (false, true) => t!("headset.eye_gaze_off_restarted"),

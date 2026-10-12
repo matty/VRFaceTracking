@@ -46,12 +46,15 @@ On the PC, launch the Rust daemon from its normal working directory:
 
 Open the desktop app's Quest Pro pages to see cameras 2 and 3 and the latest frame sequence. (The daemon's browser preview is turned off for now: `BROWSER_PAGES` in `extensions/quest-pro/daemon/src/camera.rs`.) Use `.\vrft_d.exe --extensions-only` to test the feed without loading tracking modules or sending OSC. The browser endpoint binds only to `127.0.0.1`. The daemon also keeps the address the headset last connected from (`.local/quest-pro-headset.txt` in its working directory) and tries it at start-up alongside mDNS, every 2 to 10 s until something answers. If mDNS is unavailable on your Wi-Fi, set `$env:VRFT_QUEST_PRO_ADDR = '<headset-ip>:27274'` before starting the daemon. The camera stream has no authentication or encryption, so use a trusted local network.
 
-For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`, `five_cameras`) and can press Start or Stop (`start_probe`, `stop_probe`). While the app is already open, Horizon OS only brings it to the front and drops the extras unless the launch is single-top, so pass `--activity-single-top` (the desktop app does); the extras then arrive in the open panel. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
+For development over ADB, the activity accepts the same settings as its controls (`eye_enabled`, `camera_fps`, `eye_preview_fps`, `five_cameras`) and can press Start or Stop (`start_probe`, `stop_probe`). While the app is already open, Horizon OS only brings it to the front and drops the extras unless the launch is single-top, so pass `--activity-single-top` (the desktop app does); the extras then arrive in the open panel. The stream service takes Start and Stop too, with the same settings as extras on Start, and never brings the panel forward; the desktop app starts and stops streams that way. Stop uses a plain `startservice`, because a foreground start must put up the notification, and Android turns it away with "app is in background" when no stream runs. A Quest screencap comes back empty, so debug builds also take `--ei capture_width 1280`, which draws the panel at that width to `/sdcard/Android/data/io.github.matty.vrft.questprocamera/files/panel.png`:
 
 ```powershell
 $adb = '..\..\..\android-tools\platform-tools\adb.exe'
 & $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez eye_enabled true --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true
 & $adb shell am start --activity-single-top -n io.github.matty.vrft.questprocamera/.MainActivity --ez stop_probe true
+# Or straight to the stream service, leaving the panel (and any streaming app) where it is:
+& $adb shell am start-foreground-service -n io.github.matty.vrft.questprocamera/.CameraStreamService -a io.github.matty.vrft.questprocamera.START --ez eye_enabled true
+& $adb shell am startservice -n io.github.matty.vrft.questprocamera/.CameraStreamService -a io.github.matty.vrft.questprocamera.STOP
 & $adb logcat -d -s VRFTCamera:I AndroidRuntime:E '*:S'
 ```
 

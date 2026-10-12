@@ -1,6 +1,7 @@
 package io.github.matty.vrft.questprocamera;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 
 /**
@@ -109,6 +110,32 @@ public final class Settings {
 
     public static void setFiveCameras(Context context, boolean enabled) {
         prefs(context).edit().putBoolean(KEY_FIVE_CAMERAS, enabled).apply();
+    }
+
+    /**
+     * Saves the settings an ADB command carries as extras, to the panel or
+     * the stream service: {@code --ez eye_enabled}, {@code --ez eye_alt_probe},
+     * {@code --ez five_cameras}, {@code --ei camera_fps} and
+     * {@code --ei eye_preview_fps}. Values go through the same validation as
+     * the on-screen controls.
+     */
+    public static void applyExtras(Context context, Intent intent) {
+        if (intent.hasExtra("eye_enabled")) {
+            setEyeEnabled(context, intent.getBooleanExtra("eye_enabled", false));
+        }
+        if (intent.hasExtra("eye_alt_probe")) {
+            setEyeAltProbe(context, intent.getBooleanExtra("eye_alt_probe", false));
+        }
+        if (intent.hasExtra("five_cameras")) {
+            setFiveCameras(context, intent.getBooleanExtra("five_cameras", false));
+        }
+        if (intent.hasExtra("camera_fps")) {
+            setCameraFps(context, intent.getIntExtra("camera_fps", DEFAULT_CAMERA_FPS));
+        }
+        if (intent.hasExtra("eye_preview_fps")) {
+            setEyePreviewFps(context,
+                    intent.getIntExtra("eye_preview_fps", DEFAULT_EYE_PREVIEW_FPS));
+        }
     }
 
     private static int clampToChoices(int value, int[] choices, int fallback) {

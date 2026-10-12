@@ -502,33 +502,18 @@ public final class MainActivity extends Activity {
      * Development control over ADB, alongside {@code start_probe}, e.g.
      * {@code am start -f 0x24000000 -n .../.MainActivity --ez eye_enabled true
      * --ei camera_fps 24 --ei eye_preview_fps 5 --ez start_probe true}.
-     * Values go through the same validation as the on-screen controls.
+     * The settings are those of {@link Settings#applyExtras}.
      * {@code --ez five_cameras true} turns on the five-camera stream, as its
      * switch does. {@code --ez eye_alt_probe true} has no control: it picks the alternative
      * eye probe (see the README) from the next stream start.
      */
     private void applySettingExtras(Intent intent) {
-        if (intent.hasExtra("eye_enabled")) {
-            boolean enabled = intent.getBooleanExtra("eye_enabled", false);
-            Settings.setEyeEnabled(this, enabled);
-            // A start in the same intent puts it back itself.
-            if (!enabled && !CameraStreamService.isActive()
-                    && !intent.getBooleanExtra("start_probe", false)) {
-                restoreEyeModel();
-            }
-        }
-        if (intent.hasExtra("eye_alt_probe")) {
-            Settings.setEyeAltProbe(this, intent.getBooleanExtra("eye_alt_probe", false));
-        }
-        if (intent.hasExtra("five_cameras")) {
-            Settings.setFiveCameras(this, intent.getBooleanExtra("five_cameras", false));
-        }
-        if (intent.hasExtra("camera_fps")) {
-            Settings.setCameraFps(this, intent.getIntExtra("camera_fps", Settings.DEFAULT_CAMERA_FPS));
-        }
-        if (intent.hasExtra("eye_preview_fps")) {
-            Settings.setEyePreviewFps(this,
-                    intent.getIntExtra("eye_preview_fps", Settings.DEFAULT_EYE_PREVIEW_FPS));
+        Settings.applyExtras(this, intent);
+        // A start in the same intent puts it back itself.
+        if (intent.hasExtra("eye_enabled") && !intent.getBooleanExtra("eye_enabled", false)
+                && !CameraStreamService.isActive()
+                && !intent.getBooleanExtra("start_probe", false)) {
+            restoreEyeModel();
         }
     }
 
