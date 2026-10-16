@@ -286,6 +286,9 @@ public final class CameraStreamService extends Service {
                     + " --injector " + INJECTOR + " --streamer " + STREAMER)
                     .redirectErrorStream(true).start();
             relayProcess = relay;
+            // Nothing is written to the relay's stdin; close it so its pipe fd
+            // isn't leaked. readRelayLog closes stdout when the relay exits.
+            closeQuietly(relay.getOutputStream());
             Thread logs = new Thread(() -> readRelayLog(relay), "relay-log");
             logs.setDaemon(true);
             logs.start();
@@ -538,6 +541,11 @@ public final class CameraStreamService extends Service {
         try { socket.close(); } catch (IOException ignored) { }
     }
 
+    private static void closeQuietly(java.io.Closeable closeable) {
+        if (closeable == null) return;
+        try { closeable.close(); } catch (IOException ignored) { }
+    }
+
     private static boolean readFully(InputStream stream, byte[] data, boolean allowIdle) throws IOException {
         int offset = 0;
         while (offset < data.length) {
@@ -678,6 +686,9 @@ public final class CameraStreamService extends Service {
 
     private static String runRoot(String command, int timeoutSeconds) throws Exception {
         Process process = new ProcessBuilder("su", "-c", command).redirectErrorStream(true).start();
+        // We write nothing to the command's stdin; close it so its pipe fd isn't
+        // leaked (the reader below closes stdout, and stderr is merged into it).
+        closeQuietly(process.getOutputStream());
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Thread reader = new Thread(() -> {
             try (InputStream input = process.getInputStream()) {
