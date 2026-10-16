@@ -219,7 +219,7 @@ pub(crate) fn local_networks() -> Vec<Network> {
     });
     let mut networks = Vec::new();
     for interface in interfaces {
-        let if_addrs::IfAddr::V4(v4) = interface.addr else {
+        let if_addrs::IfAddr::V4(v4) = &interface.addr else {
             continue;
         };
         if !interface.is_oper_up() || !v4.ip.is_private() {
