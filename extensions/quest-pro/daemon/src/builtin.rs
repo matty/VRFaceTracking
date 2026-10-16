@@ -154,8 +154,20 @@ pub fn installed(root: &Path) -> bool {
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
+/// Lower-case hex of a digest.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl BuiltinModel {
@@ -392,7 +404,7 @@ impl BuiltinModel {
         }
         drop(out);
         self.set_stage(BuiltinStage::Verifying);
-        if format!("{:x}", hasher.finalize()) != release.sha256 {
+        if hex(&hasher.finalize()) != release.sha256 {
             return Err("the downloaded release failed its SHA-256 check".into());
         }
         Ok(())

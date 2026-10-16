@@ -39,14 +39,14 @@ anyhow = "1.0"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-glam = "0.31"
+glam = "0.33"
 windows = "0.62"
 axum = "0.8"
 tokio = { version = "1.49", features = ["full"] }
 ureq = { version = "3.1", features = ["json"] }
 # Cargo.lock is not committed, and GPUI's API changes between snapshots, so
 # pin the exact release the desktop app was written against.
-gpui-kit = "=0.6.6"
+gpui-kit = "=0.7.0"
 # The desktop app's translations. gpui-component uses it for its own widget
 # text, so one locale covers both.
 rust-i18n = "4"

@@ -216,7 +216,7 @@ fn copy_hashed(from: &Path, to: &Path, progress: &mut Progress) -> Result<String
         progress.add(read as u64);
     }
     output.flush().map_err(|e| e.to_string())?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
 }
 
 fn hash_file(path: &Path, progress: &mut Progress) -> Result<String, String> {
@@ -231,7 +231,12 @@ fn hash_file(path: &Path, progress: &mut Progress) -> Result<String, String> {
         hasher.update(&buffer[..read]);
         progress.add(read as u64);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
+}
+
+/// Lower-case hex of a digest.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A folder name from the model's name that Windows accepts.
@@ -685,8 +690,15 @@ fn same_recording(dir: &Path, recording: &RecordingEntry) -> bool {
 fn sha256(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).ok()?;
-    Some(format!("{:x}", hasher.finalize()))
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Some(hex(&hasher.finalize()))
 }
 
 /// `parent/id`, or `parent/id-imported`, `-imported-2` and so on when that's

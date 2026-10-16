@@ -28,10 +28,10 @@ env_logger = "0.11"
 ureq = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-mdns-sd = "0.17"
+mdns-sd = "0.21"
 axum = { workspace = true }
 ctrlc = "3.5"
-fancy-regex = "0.17"
+fancy-regex = "0.19"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

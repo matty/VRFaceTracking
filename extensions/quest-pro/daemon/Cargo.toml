@@ -14,12 +14,12 @@ vrft-tongue = { workspace = true }
 vrft-quest-pro-protocol = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
-if-addrs = "0.14"
+if-addrs = "0.15"
 log = { workspace = true }
-mdns-sd = "0.17"
+mdns-sd = "0.21"
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 socket2 = "0.6"
 ureq = { workspace = true }
 zip = { version = "8", default-features = false, features = ["deflate"] }

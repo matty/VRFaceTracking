@@ -244,7 +244,10 @@ impl UniversalV2 {
         let graph_path = path.with_extension("area.onnx");
         let graph = std::fs::read(&graph_path)
             .with_context(|| format!("reading {}", graph_path.display()))?;
-        let sha = format!("{:x}", Sha256::digest(&graph));
+        let sha: String = Sha256::digest(&graph)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         if meta.schema != SCHEMA
             || meta.slots != SLOTS
             || meta.brow_names != BROWS
