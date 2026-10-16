@@ -1,5 +1,6 @@
 use crate::capture::{CaptureManager, CaptureStatus};
 use crate::eye::{output_gaze, EyeOverlay, EyeProcessor, EyeState, GazePacket, GAZE_PACKET_BYTES};
+use crate::link::{self, Link, Mdns};
 use crate::native::{self, NativeFeed};
 use crate::pupil::{PupilOverlay, PupilProcessor, PupilState};
 use crate::settings::{QuestProSettings, SettingsPatch, SettingsStore, VisibilityMode};
@@ -8,7 +9,8 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{extract::State, Json, Router};
 use log::{debug, info, warn};
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
+use mdns_sd::{ResolvedService, ServiceEvent};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
@@ -22,15 +24,14 @@ use vrft_api::{UnifiedExpressions, UnifiedTrackingData};
 use vrft_extension::FrameHook;
 use vrft_quest_pro_protocol::{
     routes, CameraLayout, CaptureCommand, CaptureMode, CaptureRequest, FaceModelStatus, FaceValue,
-    Headset, Mismatch, ModelStatus, OutputStatus, PupilMark, Status, TongueSource, Update,
-    BROW_CAMERA, EYE_CAMERAS, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH, MOUTH_CAMERAS,
-    PUPILS_HEADER, STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
+    Headset, HeadsetAddress, Mismatch, ModelStatus, OutputStatus, PupilMark, Status, TongueSource,
+    Update, BROW_CAMERA, EYE_CAMERAS, FRAME_HEIGHT, FRAME_SEQUENCE_HEADER, FRAME_WIDTH,
+    MOUTH_CAMERAS, PUPILS_HEADER, STREAM_PORT, STRIP_BYTES, STRIP_WIDTH, VIEW_BYTES,
 };
 use vrft_tongue::universal::{Enrollment, FaceModel, FACE_TARGETS};
 use vrft_tongue::universal_v2::{UniversalV2, V2Frame};
 use vrft_tongue::{Accelerator, Role, TongueModel, TongueOutMap, CHEEK_COLUMNS};
 
-const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
 /// How often a headset app that couldn't be read is tried again while mDNS
 /// is quiet.
 const MISMATCH_RECHECK: Duration = Duration::from_secs(30);
@@ -48,6 +49,23 @@ const LAST_HEADSET_FILE: &str = ".local/quest-pro-headset.txt";
 /// A connection that lasted this long was healthy, so losing it starts the
 /// backoff over.
 const RETRY_RESET_AFTER: Duration = Duration::from_secs(30);
+/// A connection that has carried nothing for this long is taken as gone:
+/// the headset may have slept, left the network or restarted its app
+/// without the PC hearing. The headset app sends a `QPPING1` every few
+/// seconds while it has nothing else to send.
+const SILENCE_LIMIT: Duration = Duration::from_secs(12);
+/// TCP keepalive on the headset connection, so a headset that vanished is
+/// noticed even mid-message.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(5);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const KEEPALIVE_PROBES: u32 = 3;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long without the headset before the local networks are swept for it,
+/// and how often after that. The headset app takes up to half a minute to
+/// start its cameras before it listens, so a sweep soon after it appears
+/// can miss it.
+const SWEEP_AFTER: Duration = Duration::from_secs(10);
+const SWEEP_EVERY: Duration = Duration::from_secs(30);
 const WIDTH: usize = FRAME_WIDTH as usize;
 const HEIGHT: usize = FRAME_HEIGHT as usize;
 const FRAME_BYTES: usize = vrft_quest_pro_protocol::FRAME_BYTES;
@@ -118,6 +136,9 @@ enum Message {
     Strip(Frame),
     Gaze(GazePacket),
     Status(serde_json::Value),
+    /// One this daemon passes over: a `QPPING1`, a status it can't read, or
+    /// a type from a newer headset app. It still shows the headset is there.
+    Other,
 }
 
 /// What to tell people about a headset app this daemon can't read.
@@ -162,20 +183,27 @@ fn status_protocol(status: &serde_json::Value) -> u32 {
 
 /// A headset app found over mDNS.
 struct Advert {
-    address: SocketAddr,
+    /// Where it can be reached, in the order to try.
+    addresses: Vec<SocketAddr>,
     protocol: u32,
     apk_version: Option<String>,
 }
 
 impl Advert {
     fn from_service(info: &ResolvedService) -> Option<Self> {
-        let ip = info
+        let ips = info
             .get_addresses()
             .iter()
-            .map(|ip| ip.to_ip_addr())
-            .find(IpAddr::is_ipv4)?;
+            .filter_map(|ip| match ip.to_ip_addr() {
+                IpAddr::V4(ip) => Some(ip),
+                IpAddr::V6(_) => None,
+            });
+        let addresses = link::order_addresses(ips, info.get_port(), &link::local_networks());
+        if addresses.is_empty() {
+            return None;
+        }
         Some(Self {
-            address: SocketAddr::new(ip, info.get_port()),
+            addresses,
             protocol: advertised_protocol(
                 info.get_property_val_str("protocol"),
                 info.get_property_val_str("version"),
@@ -200,6 +228,8 @@ enum Disconnect {
     Unreachable(std::io::Error),
     Io(std::io::Error),
     Mismatch(Mismatch),
+    /// Retry was pressed.
+    Retry,
 }
 
 impl From<std::io::Error> for Disconnect {
@@ -722,8 +752,8 @@ struct PreviewState {
     settings: SettingsStore,
     eyes: EyeState,
     pupils: PupilState,
-    /// Set to try the headset again without waiting out the backoff.
-    retry: Arc<AtomicBool>,
+    /// Retry, and where the desktop app says the headset is.
+    link: Arc<Link>,
 }
 
 /// Quest Pro support once started: the frame hook, and the API routes and
@@ -749,7 +779,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
     let native_feed = Arc::new(NativeFeed::default());
     native::nanos(Instant::now());
     let capture = CaptureManager::default();
-    let retry = Arc::new(AtomicBool::new(false));
+    let link = Arc::new(Link::default());
     let training = crate::training::TrainingManager::new(root, capture.clone());
     let training_watch = training.clone();
     let watch_running = running.clone();
@@ -777,7 +807,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
         settings: settings.clone(),
         eyes: eye_state.clone(),
         pupils: pupil_state.clone(),
-        retry: retry.clone(),
+        link: link.clone(),
     };
     let mut routes = Router::new();
     if BROWSER_PAGES {
@@ -792,6 +822,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
         .route(routes::EYE_RECENTER, post(eye_recenter))
         .route(routes::EYE_RECENTER_CLEAR, post(eye_recenter_clear))
         .route(routes::RECONNECT, post(reconnect))
+        .route(routes::HEADSET_ADDRESS, post(headset_address))
         .route(routes::CAPTURE_STATUS, get(capture_status))
         .route(routes::CAPTURE_START, post(capture_start))
         .route(CaptureCommand::Stop.route(), post(capture_stop))
@@ -833,7 +864,7 @@ pub fn start(root: &Path, running: Arc<AtomicBool>) -> Running {
                 receiver_capture,
                 processors,
                 running,
-                retry,
+                link,
                 &last_headset,
             )
         })
@@ -873,7 +904,23 @@ async fn feed_status(State(preview): State<PreviewState>) -> Json<Status> {
 
 async fn reconnect(State(preview): State<PreviewState>) -> Json<Status> {
     info!("Quest Pro camera: retrying the headset now, as asked");
-    preview.retry.store(true, Ordering::SeqCst);
+    preview.link.retry();
+    Json(status(&preview))
+}
+
+async fn headset_address(
+    State(preview): State<PreviewState>,
+    Json(request): Json<HeadsetAddress>,
+) -> Json<Status> {
+    // Tried only while there's no connection.
+    let connected = preview.feed.read().unwrap().source.is_some();
+    if !connected {
+        debug!(
+            "Quest Pro camera: the desktop app sees the headset streaming at {}",
+            request.address
+        );
+        preview.link.hint(request.address);
+    }
     Json(status(&preview))
 }
 
@@ -1134,12 +1181,55 @@ struct Processors {
     pupils: PupilProcessor,
 }
 
+/// How the headset's address was learnt, which says what failing to reach
+/// it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    /// `VRFT_QUEST_PRO_ADDR`.
+    Manual,
+    /// Where it last connected from, before this run.
+    Remembered,
+    /// Over mDNS.
+    Announced,
+    /// The desktop app sees it streaming there, over adb.
+    Desktop,
+    /// It answered when the local networks were swept for it.
+    Swept,
+    /// It connected there in this run.
+    Connected,
+}
+
+/// Where the headset is being tried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    /// In the order to try; the first that takes the connection is used.
+    addresses: Vec<SocketAddr>,
+    found: Found,
+}
+
+impl Target {
+    fn one(address: SocketAddr, found: Found) -> Self {
+        Self {
+            addresses: vec![address],
+            found,
+        }
+    }
+
+    fn describe(&self) -> String {
+        self.addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 fn receive_loop(
     shared: Shared,
     capture: CaptureManager,
     mut processors: Processors,
     running: Arc<AtomicBool>,
-    retry: Arc<AtomicBool>,
+    link: Arc<Link>,
     last_headset: &Path,
 ) {
     let explicit = std::env::var("VRFT_QUEST_PRO_ADDR").ok();
@@ -1154,101 +1244,156 @@ fn receive_loop(
         return;
     }
     let mut mdns = None;
-    let mut events = None;
     if manual.is_none() {
-        match ServiceDaemon::new().and_then(|daemon| {
-            let receiver = daemon.browse(SERVICE_TYPE)?;
-            Ok((daemon, receiver))
-        }) {
-            Ok((daemon, receiver)) => {
-                mdns = Some(daemon);
-                events = Some(receiver);
+        match Mdns::start(running.clone()) {
+            Ok(started) => {
+                mdns = Some(started);
                 set_status(&shared, "Looking for the headset on the network");
             }
-            Err(error) => {
-                set_status(
-                    &shared,
-                    format!("Can't search the network for the headset ({error}). Set VRFT_QUEST_PRO_ADDR to its IP:27274"),
-                );
-                return;
-            }
+            // The other ways of finding the headset still work.
+            Err(error) => set_status(
+                &shared,
+                format!("Can't search the network for the headset with mDNS ({error}). Trying other ways"),
+            ),
         }
     }
-    let _keep_mdns_alive = mdns;
-    // The address the headset last connected from, tried alongside mDNS
-    // until it answers; failing to reach it then still reads as looking.
-    let mut unconfirmed = manual
-        .is_none()
-        .then(|| read_last_headset(last_headset))
-        .flatten();
-    if let Some(address) = unconfirmed {
-        info!("Quest Pro camera: also trying the headset's last address, {address}");
-    }
-    let mut candidate = manual.or(unconfirmed);
+    let mut target = match manual {
+        Some(address) => Some(Target::one(address, Found::Manual)),
+        None => read_last_headset(last_headset).map(|address| {
+            info!("Quest Pro camera: also trying the headset's last address, {address}");
+            Target::one(address, Found::Remembered)
+        }),
+    };
     // A headset app that couldn't be read, and when it was: it's tried again
     // now and then, in case it was updated and its announcement was missed.
-    let mut recheck: Option<(SocketAddr, Instant)> = None;
+    let mut recheck: Option<(Target, Instant)> = None;
     // Failed connections in a row, which set how long to wait before the next.
     let mut failures = 0u32;
     // The last failure logged, so a headset that stays away is logged once.
     let mut logged: Option<String> = None;
+    // Since when the headset hasn't been connected, and when the local
+    // networks were last swept for it.
+    let mut lost_since = Instant::now();
+    let mut swept_at: Option<Instant> = None;
     while running.load(Ordering::SeqCst) {
-        let Some(address) = candidate else {
-            if let Some(receiver) = &events {
-                match receiver.recv_timeout(Duration::from_secs(1)) {
-                    Ok(ServiceEvent::ServiceResolved(info)) => {
-                        if let Some(advert) = Advert::from_service(&info) {
-                            candidate = accept_advert(&shared, advert);
-                        }
+        if let Some(mdns) = &mdns {
+            mdns.set_searching(true);
+        }
+        if manual.is_none() {
+            if let Some(address) = link.take_hint() {
+                if target.as_ref().is_none_or(|target| {
+                    target.found != Found::Desktop || target.addresses != [address]
+                }) {
+                    info!("Quest Pro camera: the desktop app sees the headset streaming at {address}; trying it");
+                }
+                target = Some(Target::one(address, Found::Desktop));
+                failures = 0;
+            }
+            let sweep_due = lost_since.elapsed() >= SWEEP_AFTER
+                && swept_at.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
+            if sweep_due {
+                swept_at = Some(Instant::now());
+                shared.write().unwrap().status =
+                    "Looking for the headset on the local network".into();
+                match link::sweep(STREAM_PORT, &running) {
+                    Some(address) => {
+                        info!("Quest Pro camera: found the headset app at {address} on the local network");
+                        target = Some(Target::one(address, Found::Swept));
+                        failures = 0;
                     }
-                    Ok(ServiceEvent::ServiceRemoved(_, _)) => forget_mismatch(&shared),
-                    _ => {}
+                    None => {
+                        debug!("Quest Pro camera: no headset app answered on the local network")
+                    }
                 }
             }
-            if candidate.is_none() {
-                let now = retry.swap(false, Ordering::SeqCst);
-                candidate = recheck
+        }
+        let Some(current) = target.clone() else {
+            let event = match &mdns {
+                Some(mdns) => mdns.next(Duration::from_secs(1)),
+                None => {
+                    pause_unless_asked(Duration::from_secs(1), &link, &running);
+                    None
+                }
+            };
+            match event {
+                Some(ServiceEvent::ServiceResolved(info)) => {
+                    target = Advert::from_service(&info)
+                        .and_then(|advert| accept_advert(&shared, advert))
+                        .map(|addresses| Target {
+                            addresses,
+                            found: Found::Announced,
+                        });
+                }
+                Some(ServiceEvent::ServiceRemoved(_, _)) => forget_mismatch(&shared),
+                _ => {}
+            }
+            if target.is_none() {
+                let now = link.take_retry();
+                target = recheck
+                    .as_ref()
                     .filter(|(_, since)| now || since.elapsed() >= MISMATCH_RECHECK)
-                    .map(|(address, _)| address);
+                    .map(|(target, _)| target.clone());
             }
             continue;
         };
         // A press of Retry from before this attempt means nothing now.
-        retry.store(false, Ordering::SeqCst);
+        link.clear_retry();
         let attempt = Instant::now();
-        let remember = |address: SocketAddr| write_last_headset(last_headset, address);
+        // Set once the headset app's status shows it's the headset.
+        let confirmed = Cell::new(None);
+        let remember = |address: SocketAddr| {
+            write_last_headset(last_headset, address);
+            confirmed.set(Some(address));
+            if let Some(mdns) = &mdns {
+                mdns.set_searching(false);
+            }
+        };
         let result = connect_and_receive(
-            address,
+            &current.addresses,
             &shared,
             &capture,
             &mut processors,
             &running,
+            &link,
             &remember,
         );
-        let looking =
-            unconfirmed == Some(address) && matches!(result, Err(Disconnect::Unreachable(_)));
-        if !looking {
-            unconfirmed = None;
+        if let Some(address) = confirmed.get() {
+            // Lost after it connected: try where it was first.
+            lost_since = Instant::now();
+            swept_at = None;
+            target = Some(Target::one(address, Found::Connected));
         }
+        let unreachable = matches!(result, Err(Disconnect::Unreachable(_)));
+        // The address it had before this run may simply be old.
+        let looking = current.found == Found::Remembered && unreachable;
         let error = match result {
             Ok(()) => break,
+            Err(Disconnect::Retry) => {
+                failures = 0;
+                set_status(&shared, "Connecting to the headset again, as asked");
+                continue;
+            }
             Err(Disconnect::Mismatch(mismatch)) => {
                 report_mismatch(&shared, mismatch);
                 if manual.is_some() {
                     // Check again later, in case the headset app gets updated.
-                    thread::sleep(Duration::from_secs(5));
+                    pause_unless_asked(Duration::from_secs(5), &link, &running);
                 } else {
                     // Wait for mDNS to announce the headset app again.
-                    candidate = None;
-                    recheck = Some((address, Instant::now()));
+                    recheck = target.take().map(|target| (target, Instant::now()));
                 }
                 continue;
             }
+            Err(Disconnect::Unreachable(error)) if current.found == Found::Desktop => format!(
+                "The headset app is streaming at {}, but this PC can't reach it ({error}). \
+                 Check the PC and headset are on the same network, and that no VPN or firewall blocks it",
+                current.describe()
+            ),
             Err(Disconnect::Unreachable(error)) => {
-                format!("Can't reach the headset at {address} ({error})")
+                format!("Can't reach the headset at {} ({error})", current.describe())
             }
             Err(Disconnect::Io(error)) => {
-                format!("Lost the connection to the headset at {address} ({error})")
+                format!("Lost the connection to the headset ({error})")
             }
         };
         if attempt.elapsed() >= RETRY_RESET_AFTER {
@@ -1277,7 +1422,10 @@ fn receive_loop(
         {
             let mut state = shared.write().unwrap();
             state.status = if looking {
-                format!("Looking for the headset on the network and at {address}")
+                format!(
+                    "Looking for the headset on the network and at {}",
+                    current.describe()
+                )
             } else {
                 error
             };
@@ -1286,12 +1434,28 @@ fn receive_loop(
         // Keep retrying the address until mDNS announces another, even when
         // the headset app leaves: its announcement on coming back can be
         // missed, as when it's reinstalled, and the headset keeps its address.
-        if let Some(announced) = wait_to_retry(delay, events.as_ref(), &shared, &retry, &running) {
+        if let Some(announced) = wait_to_retry(delay, mdns.as_ref(), &shared, &link, &running) {
             // The headset app announcing itself is worth trying straight away.
-            candidate = announced;
+            target = announced.map(|addresses| Target {
+                addresses,
+                found: Found::Announced,
+            });
             failures = 0;
         }
         shared.write().unwrap().retry_at = None;
+    }
+}
+
+/// Waits `delay`, or less when Retry is pressed, the desktop app says where
+/// the headset is, or VRFT stops.
+fn pause_unless_asked(delay: Duration, link: &Link, running: &AtomicBool) {
+    let until = Instant::now() + delay;
+    while running.load(Ordering::SeqCst) && !link.wants_attention() {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        thread::sleep(left.min(Duration::from_millis(200)));
     }
 }
 
@@ -1318,25 +1482,29 @@ fn retry_delay(failures: u32) -> Duration {
 }
 
 /// Waits `delay` before retrying the headset, or less when Retry is pressed,
-/// VRFT stops, or mDNS announces the headset app. An announcement returns
-/// where to connect, `None` inside when the app can't be read.
+/// the desktop app says where the headset is, VRFT stops, or mDNS announces
+/// the headset app. An announcement returns where to connect, `None` inside
+/// when the app can't be read.
 fn wait_to_retry(
     delay: Duration,
-    events: Option<&mdns_sd::Receiver<ServiceEvent>>,
+    mdns: Option<&Mdns>,
     shared: &Shared,
-    retry: &AtomicBool,
+    link: &Link,
     running: &AtomicBool,
-) -> Option<Option<SocketAddr>> {
+) -> Option<Option<Vec<SocketAddr>>> {
     let until = Instant::now() + delay;
-    while running.load(Ordering::SeqCst) && !retry.swap(false, Ordering::SeqCst) {
+    while running.load(Ordering::SeqCst) {
+        if link.hinted() || link.take_retry() {
+            break;
+        }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
             break;
         }
         let slice = left.min(Duration::from_millis(200));
-        match events {
-            Some(receiver) => {
-                if let Ok(ServiceEvent::ServiceResolved(info)) = receiver.recv_timeout(slice) {
+        match mdns {
+            Some(mdns) => {
+                if let Some(ServiceEvent::ServiceResolved(info)) = mdns.next(slice) {
                     if let Some(advert) = Advert::from_service(&info) {
                         return Some(accept_advert(shared, advert));
                     }
@@ -1349,9 +1517,9 @@ fn wait_to_retry(
 }
 
 /// Where to connect for `advert`, or `None` once it's reported as unreadable.
-fn accept_advert(shared: &Shared, advert: Advert) -> Option<SocketAddr> {
+fn accept_advert(shared: &Shared, advert: Advert) -> Option<Vec<SocketAddr>> {
     match check_protocol(advert.protocol, advert.apk_version.as_deref()) {
-        Ok(()) => Some(advert.address),
+        Ok(()) => Some(advert.addresses),
         Err(mismatch) => {
             report_mismatch(shared, mismatch);
             None
@@ -1383,19 +1551,50 @@ fn forget_mismatch(shared: &Shared) {
     }
 }
 
+/// Connects to the first of `addresses` that takes it.
+fn connect_first(
+    addresses: &[SocketAddr],
+    shared: &Shared,
+) -> Result<(TcpStream, SocketAddr), Disconnect> {
+    let mut last_error = None;
+    for &address in addresses {
+        debug!("Quest Pro camera: connecting to the headset at {address}");
+        shared.write().unwrap().status = format!("Connecting to the headset at {address}");
+        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok((stream, address)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(Disconnect::Unreachable(last_error.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no address to try")
+    })))
+}
+
+/// Keepalive probes, so a connection the headset has left without a word
+/// ends even while a message is half read.
+fn enable_keepalive(stream: &TcpStream) {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL)
+        .with_retries(KEEPALIVE_PROBES);
+    if let Err(error) = socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive) {
+        debug!("Quest Pro camera: keepalive not enabled ({error})");
+    }
+}
+
 fn connect_and_receive(
-    address: SocketAddr,
+    addresses: &[SocketAddr],
     shared: &Shared,
     capture: &CaptureManager,
     processors: &mut Processors,
     running: &AtomicBool,
+    link: &Link,
     remember: &dyn Fn(SocketAddr),
 ) -> Result<(), Disconnect> {
-    debug!("Quest Pro camera: connecting to the headset at {address}");
-    shared.write().unwrap().status = format!("Connecting to the headset at {address}");
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))
-        .map_err(Disconnect::Unreachable)?;
+    let (mut stream, address) = connect_first(addresses, shared)?;
     info!("Quest Pro camera: connected to the headset at {address}");
+    let _opened = link.opened(&stream);
+    enable_keepalive(&stream);
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_nodelay(true)?;
     // Headset apps from before the hello never read it.
@@ -1408,11 +1607,21 @@ fn connect_and_receive(
     }
     let mut last_log = Instant::now();
     let mut last_frame_at = Instant::now();
+    // When the headset was last heard from at all.
+    let mut last_heard = Instant::now();
     // The headset app's status proves it's the headset; its address is kept once.
     let mut remembered = false;
     let mut eye_schedule = EyeSchedule::new(DEFAULT_EYE_FPS);
     while running.load(Ordering::SeqCst) {
-        match read_message(&mut stream) {
+        if link.take_retry() {
+            shared.write().unwrap().disconnect();
+            return Err(Disconnect::Retry);
+        }
+        let message = read_message(&mut stream);
+        if matches!(message, Ok(Some(_))) {
+            last_heard = Instant::now();
+        }
+        match message {
             Ok(Some(Message::Mouth(frame))) => {
                 capture.record(
                     frame.sequence,
@@ -1496,11 +1705,25 @@ fn connect_and_receive(
                 state.mismatch = None;
                 state.headset = Some(headset);
             }
-            Ok(None) => {}
+            Ok(Some(Message::Other)) | Ok(None) => {}
             Err(error) => {
                 shared.write().unwrap().disconnect();
+                // Retry ends the connection by shutting it.
+                if link.take_retry() {
+                    return Err(Disconnect::Retry);
+                }
                 return Err(error.into());
             }
+        }
+        if last_heard.elapsed() >= SILENCE_LIMIT {
+            shared.write().unwrap().disconnect();
+            return Err(Disconnect::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "nothing from the headset for {} s",
+                    last_heard.elapsed().as_secs()
+                ),
+            )));
         }
         if last_frame_at.elapsed() >= Duration::from_secs(5) {
             let mut state = shared.write().unwrap();
@@ -2211,7 +2434,7 @@ fn read_message(stream: &mut impl Read) -> std::io::Result<Option<Message>> {
                 Ok(status @ serde_json::Value::Object(_)) => Ok(Some(Message::Status(status))),
                 _ => {
                     warn!("Quest Pro camera: ignoring malformed headset status");
-                    Ok(None)
+                    Ok(Some(Message::Other))
                 }
             }
         }
@@ -2232,11 +2455,14 @@ fn read_message(stream: &mut impl Read) -> std::io::Result<Option<Message>> {
                     "Headset stream ended mid-message",
                 ));
             }
-            debug!(
-                "Quest Pro camera: skipped unknown {} message",
-                String::from_utf8_lossy(&prefix[..8]).trim_end_matches('\0')
-            );
-            Ok(None)
+            // The headset app's keepalive, sent while it has nothing else.
+            if &prefix[..8] != b"QPPING1\0" {
+                debug!(
+                    "Quest Pro camera: skipped unknown {} message",
+                    String::from_utf8_lossy(&prefix[..8]).trim_end_matches('\0')
+                );
+            }
+            Ok(Some(Message::Other))
         }
         _ => Err(invalid("Unknown headset stream message")),
     }
@@ -2874,7 +3100,10 @@ mod tests {
         let mut stream = unknown_message(&[9; 300]);
         stream.extend(frame_bytes(MOUTH_MASK, 6));
         let mut reader = std::io::Cursor::new(stream);
-        assert!(read_message(&mut reader).unwrap().is_none());
+        assert!(matches!(
+            read_message(&mut reader).unwrap(),
+            Some(Message::Other)
+        ));
         assert!(matches!(
             read_message(&mut reader).unwrap(),
             Some(Message::Mouth(frame)) if frame.sequence == 6
@@ -2934,13 +3163,147 @@ mod tests {
     #[test]
     fn retry_cuts_the_wait_short() {
         let shared = Shared::default();
-        let retry = AtomicBool::new(true);
+        let link = Link::default();
+        link.retry();
         let running = AtomicBool::new(true);
         let started = Instant::now();
-        let announced = wait_to_retry(RETRY_MAX, None, &shared, &retry, &running);
+        let announced = wait_to_retry(RETRY_MAX, None, &shared, &link, &running);
         assert!(announced.is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(!retry.load(Ordering::SeqCst));
+        assert!(!link.take_retry());
+    }
+
+    #[test]
+    fn the_desktop_apps_word_cuts_the_wait_short() {
+        let shared = Shared::default();
+        let link = Link::default();
+        link.hint("192.168.1.20:27274".parse().unwrap());
+        let started = Instant::now();
+        wait_to_retry(RETRY_MAX, None, &shared, &link, &AtomicBool::new(true));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // Kept for the loop to take.
+        assert!(link.take_hint().is_some());
+    }
+
+    fn test_processors() -> Processors {
+        let settings = SettingsStore::in_memory(QuestProSettings::default());
+        Processors {
+            eyes: EyeState::new(Err("test".into())).processor(settings),
+            pupils: PupilState::default().processor(),
+        }
+    }
+
+    /// A headset app that reads the hello and sends `status`, then runs
+    /// `then` with the connection.
+    fn fake_headset(
+        status: &'static [u8],
+        then: impl FnOnce(TcpStream) + Send + 'static,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let headset = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut hello = [0u8; 16];
+            client.read_exact(&mut hello).unwrap();
+            let mut payload =
+                vec![0u8; u32::from_le_bytes(hello[12..16].try_into().unwrap()) as usize];
+            client.read_exact(&mut payload).unwrap();
+            let mut message = b"QPSTAT1\0".to_vec();
+            message.extend(1u32.to_le_bytes());
+            message.extend((status.len() as u32).to_le_bytes());
+            message.extend(status);
+            client.write_all(&message).unwrap();
+            then(client);
+        });
+        (address, headset)
+    }
+
+    #[test]
+    fn a_silent_connection_is_given_up() {
+        let (address, headset) = fake_headset(br#"{"protocol":3}"#, |client| {
+            // Say nothing more, and keep the connection open meanwhile.
+            thread::sleep(SILENCE_LIMIT + Duration::from_secs(8));
+            drop(client);
+        });
+        let shared: Shared = Arc::new(RwLock::new(FeedState::default()));
+        let remembered = Cell::new(None);
+        let started = Instant::now();
+        let result = connect_and_receive(
+            &[address],
+            &shared,
+            &CaptureManager::default(),
+            &mut test_processors(),
+            &AtomicBool::new(true),
+            &Link::default(),
+            &|address| remembered.set(Some(address)),
+        );
+        assert!(
+            matches!(&result, Err(Disconnect::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+            "expected a timeout, got {result:?}"
+        );
+        assert!(started.elapsed() < SILENCE_LIMIT + Duration::from_secs(7));
+        assert_eq!(remembered.get(), Some(address));
+        assert!(shared.read().unwrap().source.is_none());
+        headset.join().unwrap();
+    }
+
+    #[test]
+    fn retry_ends_a_connection_at_once() {
+        let (address, headset) = fake_headset(br#"{"protocol":3}"#, |mut client| {
+            let _ = client.read(&mut [0u8; 1]);
+        });
+        let link = Arc::new(Link::default());
+        let pressing = link.clone();
+        let shared: Shared = Arc::new(RwLock::new(FeedState::default()));
+        let watch = shared.clone();
+        let press = thread::spawn(move || {
+            while watch.read().unwrap().source.is_none() {
+                thread::sleep(Duration::from_millis(20));
+            }
+            thread::sleep(Duration::from_millis(200));
+            pressing.retry();
+            Instant::now()
+        });
+        let result = connect_and_receive(
+            &[address],
+            &shared,
+            &CaptureManager::default(),
+            &mut test_processors(),
+            &AtomicBool::new(true),
+            &link,
+            &|_| {},
+        );
+        let pressed = press.join().unwrap();
+        assert!(matches!(result, Err(Disconnect::Retry)), "got {result:?}");
+        // Well inside the 5 s read timeout that would end it otherwise.
+        assert!(pressed.elapsed() < Duration::from_secs(3));
+        headset.join().unwrap();
+    }
+
+    #[test]
+    fn the_first_address_that_answers_is_used() {
+        // Nothing listens on a port just freed.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (address, headset) = fake_headset(br#"{"protocol":99}"#, |mut client| {
+            let _ = client.read(&mut [0u8; 1]);
+        });
+        let result = connect_and_receive(
+            &[closed, address],
+            &Shared::default(),
+            &CaptureManager::default(),
+            &mut test_processors(),
+            &AtomicBool::new(true),
+            &Link::default(),
+            &|_| {},
+        );
+        assert!(
+            matches!(result, Err(Disconnect::Mismatch(_))),
+            "got {result:?}"
+        );
+        headset.join().unwrap();
     }
 
     #[test]
@@ -2974,11 +3337,12 @@ mod tests {
             pupils: PupilState::default().processor(),
         };
         let result = connect_and_receive(
-            address,
+            &[address],
             &shared,
             &CaptureManager::default(),
             &mut processors,
             &AtomicBool::new(true),
+            &Link::default(),
             &|_| {},
         );
         let Err(Disconnect::Mismatch(mismatch)) = result else {
