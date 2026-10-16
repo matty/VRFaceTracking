@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use vrft_quest_pro_protocol::{
