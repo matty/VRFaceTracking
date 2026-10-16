@@ -337,4 +337,4 @@ headset:
   step_receive_hint:
     en: "Put the headset on, with the PC and headset on the same network."
   streaming_not_found_details:
-    en: "If discovery is blocked, set VRFT_QUEST_PRO_ADDR to the headset's IP:27274 and restart tracking."
+    en: "VRFT tries the address the headset reports over adb, and looks for it on the local network. If it still can't reach it, check that no VPN or firewall blocks port 27274, or set VRFT_QUEST_PRO_ADDR to the headset's IP:27274 and restart tracking."

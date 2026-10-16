@@ -199,6 +199,11 @@ pub mod routes {
     /// POST: tries the headset again now instead of waiting out the backoff;
     /// answers [`Status`](super::Status).
     pub const RECONNECT: &str = "/reconnect";
+    /// POST a [`HeadsetAddress`](super::HeadsetAddress): where the desktop
+    /// app, over adb, sees the headset streaming. The daemon tries it while
+    /// it isn't receiving the stream, as mDNS can miss the headset. Answers
+    /// [`Status`](super::Status).
+    pub const HEADSET_ADDRESS: &str = "/headset-address";
     /// GET: [`CaptureStatus`](super::CaptureStatus).
     pub const CAPTURE_STATUS: &str = "/capture/status";
     /// POST a [`CaptureRequest`](super::CaptureRequest); answers
@@ -697,6 +702,15 @@ impl CaptureMode {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|mode| mode.name() == name)
     }
+}
+
+/// The TCP port the headset app serves its camera stream on.
+pub const STREAM_PORT: u16 = 27274;
+
+/// Where the headset's camera stream can be reached, from outside the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadsetAddress {
+    pub address: std::net::SocketAddr,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -8,7 +8,8 @@
 # Rust
 target/
 debug/
-Cargo.lock
+# Only the workspace root's lockfile is used.
+*/**/Cargo.lock
 **/*.rs.bk
 *.pdb
 

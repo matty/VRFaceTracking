@@ -8,6 +8,12 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
@@ -24,6 +30,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.Inet4Address;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -63,6 +70,14 @@ public final class CameraStreamService extends Service {
     /** Relay restarts allowed per stream before it counts as failed. */
     private static final int MAX_RELAY_RESTARTS = 5;
     private static final long REGISTRATION_RETRY_NS = TimeUnit.SECONDS.toNanos(30);
+    /**
+     * Sent to the PC whenever the relay has had nothing for a while, so a PC
+     * can tell a quiet stream from a headset that has gone. The layout of
+     * every message: magic, version 1, payload length 0. VRFT versions that
+     * don't know it skip it.
+     */
+    private static final byte[] PING = {
+        'Q', 'P', 'P', 'I', 'N', 'G', '1', 0, 1, 0, 0, 0, 0, 0, 0, 0 };
     // Linux <netinet/tcp.h> values, for the keepalive timers below.
     private static final int TCP_KEEPIDLE = 4;
     private static final int TCP_KEEPINTVL = 5;
@@ -109,6 +124,12 @@ public final class CameraStreamService extends Service {
     /** When to register with mDNS again after a failure; 0 when none is due. */
     private volatile long registrationRetryAt;
     private WifiManager.MulticastLock multicastLock;
+    private ConnectivityManager connectivity;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    /** The headset's Wi-Fi address, for the panel; null while it has none. */
+    private static volatile String lanAddress;
+    /** The address mDNS was last registered for. */
+    private volatile String advertisedFor;
 
     private static final class PendingWrite {
         final Socket client;
@@ -178,6 +199,7 @@ public final class CameraStreamService extends Service {
             multicastLock.setReferenceCounted(false);
             multicastLock.acquire();
         }
+        watchNetwork();
         worker.execute(this::runServer);
         return START_NOT_STICKY;
     }
@@ -225,8 +247,12 @@ public final class CameraStreamService extends Service {
             listener.bind(new InetSocketAddress(LAN_PORT));
             listener.setSoTimeout(1000);
             server = listener;
-            advertise();
-            setStatus(Phase.WAITING, "Listening on port " + LAN_PORT);
+            // Alongside networkChanged, so one address isn't registered twice.
+            synchronized (this) {
+                advertisedFor = lanAddress;
+                advertise();
+            }
+            setStatus(Phase.WAITING, listening());
             nextRelayCheckAt = System.nanoTime() + RELAY_CHECK_NS;
             // accept() wakes at least once a second for these checks.
             while (running) {
@@ -308,7 +334,7 @@ public final class CameraStreamService extends Service {
                 closeQuietly(client);
                 releaseOutput(client);
                 if (currentClient.compareAndSet(client, null) && running) {
-                    setStatus(Phase.WAITING, "Listening on port " + LAN_PORT);
+                    setStatus(Phase.WAITING, listening());
                 }
             }
         }, "camera-client").start();
@@ -341,7 +367,11 @@ public final class CameraStreamService extends Service {
             long lastSequence = 0;
             setStatus(Phase.CONNECTED, "PC connected");
             while (running && !client.isClosed()) {
-                if (!readFully(fromRelay, header, true)) continue;
+                if (!readFully(fromRelay, header, true)) {
+                    // Nothing from the cameras for a while: say it's still here.
+                    if (!writeMessage(client, PING)) break;
+                    continue;
+                }
                 int bytes;
                 try {
                     bytes = CameraFrames.payloadBytes(header);
@@ -522,7 +552,7 @@ public final class CameraStreamService extends Service {
         return true;
     }
 
-    private void advertise() {
+    private synchronized void advertise() {
         nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
         NsdServiceInfo info = new NsdServiceInfo();
         info.setServiceName("VRFT Quest Pro Camera");
@@ -552,6 +582,69 @@ public final class CameraStreamService extends Service {
             registration = null;
             registrationRetryAt = System.nanoTime() + REGISTRATION_RETRY_NS;
         }
+    }
+
+    /** What the panel shows while no PC is connected. */
+    private static String listening() {
+        String address = lanAddress;
+        return address == null ? "Listening on port " + LAN_PORT
+                : "Listening on " + address + ":" + LAN_PORT;
+    }
+
+    /** The first IPv4 address of {@code properties}, or null. */
+    private static String ipv4(LinkProperties properties) {
+        if (properties == null) return null;
+        for (LinkAddress link : properties.getLinkAddresses()) {
+            if (link.getAddress() instanceof Inet4Address) return link.getAddress().getHostAddress();
+        }
+        return null;
+    }
+
+    /**
+     * Follows the Wi-Fi network: its address goes on the panel, and when it
+     * changes, as after Wi-Fi reconnects, mDNS is registered again, since
+     * Android can keep announcing the old address or stop announcing.
+     */
+    private void watchNetwork() {
+        connectivity = getSystemService(ConnectivityManager.class);
+        if (connectivity == null) return;
+        NetworkRequest wifi = new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build();
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onLinkPropertiesChanged(Network network, LinkProperties properties) {
+                networkChanged(ipv4(properties));
+            }
+
+            @Override public void onLost(Network network) {
+                networkChanged(null);
+            }
+        };
+        try {
+            connectivity.registerNetworkCallback(wifi, networkCallback);
+        } catch (RuntimeException error) {
+            Log.e(TAG, "Can't follow the Wi-Fi network: " + error);
+            networkCallback = null;
+        }
+    }
+
+    private synchronized void networkChanged(String address) {
+        if (java.util.Objects.equals(address, lanAddress)) return;
+        Log.i(TAG, "Wi-Fi address: " + address);
+        lanAddress = address;
+        if (phase == Phase.WAITING) setStatus(Phase.WAITING, listening());
+        // Once Wi-Fi is back, register again even at the same address.
+        if (address == null) advertisedFor = null;
+        // Registered only once the server listens, and again for a new address.
+        if (address == null || server == null || address.equals(advertisedFor)) return;
+        advertisedFor = address;
+        Log.i(TAG, "Registering mDNS again for the new address");
+        NsdManager.RegistrationListener previous = registration;
+        registration = null;
+        if (nsd != null && previous != null) {
+            try { nsd.unregisterService(previous); } catch (Exception ignored) { }
+        }
+        advertise();
     }
 
     private void retryRegistrationIfDue() {
@@ -622,6 +715,10 @@ public final class CameraStreamService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        if (connectivity != null && networkCallback != null) {
+            try { connectivity.unregisterNetworkCallback(networkCallback); } catch (RuntimeException ignored) { }
+        }
+        lanAddress = null;
         if (nsd != null && registration != null) {
             try { nsd.unregisterService(registration); } catch (Exception ignored) { }
         }

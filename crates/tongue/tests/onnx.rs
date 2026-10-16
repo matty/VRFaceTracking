@@ -5,7 +5,7 @@
 
 use burn::tensor::{Tensor, TensorData};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use vrft_tongue::backend::{Accelerator, Cpu};
 use vrft_tongue::model::{TongueNet, Weights};
 use vrft_tongue::onnx::{self, runtime::Session};

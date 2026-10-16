@@ -7,6 +7,7 @@ mod camera;
 mod capture;
 mod eye;
 mod face_check;
+mod link;
 mod native;
 mod priority;
 mod pupil;

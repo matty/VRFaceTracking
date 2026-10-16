@@ -1221,7 +1221,7 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
+    use rand::RngExt;
 
     fn layer(rng: &mut StdRng, outputs: usize, inputs: usize, spread: f32) -> Layer {
         Layer {

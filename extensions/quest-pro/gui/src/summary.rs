@@ -284,7 +284,9 @@ fn brief_state(status: &str) -> Cow<'_, str> {
     let first = first_sentence(status);
     if first.starts_with("Lost the connection") {
         t!("summary.lost_connection")
-    } else if first.starts_with("Can't reach the headset") {
+    } else if first.starts_with("Can't reach the headset")
+        || first.starts_with("The headset app is streaming at")
+    {
         t!("summary.cant_reach_headset")
     } else {
         first.into()

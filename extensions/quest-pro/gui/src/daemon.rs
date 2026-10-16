@@ -85,6 +85,11 @@ impl QuestProClient {
         self.post(routes::RECONNECT, None::<&()>)
     }
 
+    /// Tells the daemon where adb sees the headset streaming.
+    pub fn headset_address(&self, address: std::net::SocketAddr) -> Result<Status> {
+        self.post(routes::HEADSET_ADDRESS, Some(&HeadsetAddress { address }))
+    }
+
     /// The guided tongue recording, if one is running, else how the last ended.
     pub fn capture_status(&self) -> Result<CaptureStatus> {
         self.get(routes::CAPTURE_STATUS)

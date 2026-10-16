@@ -42,6 +42,10 @@ const SUCCESS_SHOWN_FOR: Duration = Duration::from_secs(15);
 /// wrong.
 const STREAM_GRACE: Duration = Duration::from_secs(20);
 
+/// How often VRFT is told again where adb sees the headset streaming, while
+/// VRFT isn't receiving it.
+const SHARE_ADDRESS_EVERY: Duration = Duration::from_secs(10);
+
 /// Below this content width the columns stack.
 const TWO_COLUMN_WIDTH: f32 = 760.;
 /// The right-hand column: the headset app, per-eye gaze and Wi-Fi.
@@ -201,6 +205,8 @@ pub struct HeadsetPage {
     five_cameras_set: Option<bool>,
     /// When Start stream was last pressed, until VRFT receives the stream.
     stream_started: Option<Instant>,
+    /// The headset address last passed to VRFT, and when.
+    shared_address: Option<(IpAddr, Instant)>,
     /// The headset app's log shows at the bottom of the page.
     show_log: bool,
     /// The Wi-Fi card shows the devices and which adb is used.
@@ -276,6 +282,7 @@ impl HeadsetPage {
             eye_gaze_set: None,
             five_cameras_set: None,
             stream_started: None,
+            shared_address: None,
             show_log: false,
             connection_details: false,
             app_details: false,
@@ -404,7 +411,43 @@ impl HeadsetPage {
         }
         self.suggest_address(window, cx);
         self.connect_advertised(cx);
+        self.share_address(cx);
         cx.notify();
+    }
+
+    /// Tells VRFT where adb sees the headset streaming while VRFT isn't
+    /// receiving it, as VRFT's own search can miss the headset.
+    fn share_address(&mut self, cx: &mut Context<Self>) {
+        let Some(ip) = self
+            .details
+            .as_ref()
+            .filter(|details| details.streaming)
+            .and_then(|details| details.wifi_address)
+            .map(IpAddr::V4)
+        else {
+            return;
+        };
+        let daemon = self.daemon.read(cx);
+        // Only while VRFT runs Quest Pro support and isn't receiving.
+        if daemon.status().is_none_or(|status| status.source.is_some()) {
+            return;
+        }
+        if self
+            .shared_address
+            .is_some_and(|(shared, at)| shared == ip && at.elapsed() < SHARE_ADDRESS_EVERY)
+        {
+            return;
+        }
+        self.shared_address = Some((ip, Instant::now()));
+        let client = daemon.client();
+        let address = SocketAddr::new(ip, crate::daemon::STREAM_PORT);
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(error) = client.headset_address(address) {
+                    log::debug!("Couldn't tell VRFT where the headset streams: {error:#}");
+                }
+            })
+            .detach();
     }
 
     /// Connects to a headset that takes adb over Wi-Fi on this network, as

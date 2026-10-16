@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use vrft_quest_pro_protocol::{
@@ -146,7 +146,7 @@ fn base_model(dir: &Path, rng: &mut StdRng) {
             "BrowOuterUpRight", "BrowLowererLeft", "BrowLowererRight", "BrowPinchLeft",
             "BrowPinchRight"],
         "imageSize": 128, "approvedForOutput": true, "allowsNoEnrollment": true,
-        "provenance": "test", "graphSha256": format!("{:x}", Sha256::digest(&graph)),
+        "provenance": "test", "graphSha256": Sha256::digest(&graph).iter().map(|b| format!("{b:02x}")).collect::<String>(),
     });
     let mut float = |shape: Vec<usize>, spread: f32| {
         let count = shape.iter().product();
