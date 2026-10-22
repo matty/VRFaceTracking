@@ -460,8 +460,16 @@ public final class EyePipeline {
         rootChecked("echo 1 > " + INSTANCE_PATH + "/tracing_on", 15);
 
         Process cat = new ProcessBuilder("su", "--mount-master", "-c",
-                "cat " + INSTANCE_PATH + "/trace_pipe").start();
+                "cat " + INSTANCE_PATH + "/trace_pipe")
+                // Fold stderr into stdout so the reader closes a single pipe;
+                // TraceParser ignores any non-trace line.
+                .redirectErrorStream(true)
+                .start();
         traceCat = cat;
+        // We never write to the trace cat's stdin; close it so its pipe fd
+        // isn't leaked each time the reader is (re)started. readTrace closes
+        // stdout when it ends.
+        closeQuietly(cat.getOutputStream());
         traceThread = new Thread(() -> readTrace(cat, profile), "eye-trace");
         traceThread.setDaemon(true);
         traceThread.start();
@@ -839,11 +847,28 @@ public final class EyePipeline {
             interrupted |= joinQuietly(outReader);
             if (errReader != null) interrupted |= joinQuietly(errReader);
         } finally {
+            // Each su call is a fresh process with three pipe fds. The drain
+            // threads read stdout/stderr to EOF but don't close them, and the
+            // child's stdin is never used, so without this the fds linger until
+            // the Process is finalized. The watchdog runs one of these every few
+            // seconds for the whole session, which otherwise exhausts fds.
+            closeQuietly(process.getOutputStream());
+            closeQuietly(process.getInputStream());
+            closeQuietly(process.getErrorStream());
             if (interrupted) Thread.currentThread().interrupt();
         }
         streams[0] = stdout.toByteArray();
         streams[1] = stderr.toByteArray();
         return process.exitValue();
+    }
+
+    private static void closeQuietly(java.io.Closeable closeable) {
+        if (closeable == null) return;
+        try {
+            closeable.close();
+        } catch (IOException ignored) {
+            // best effort
+        }
     }
 
     /** Joins a drain thread for up to a second; returns true if interrupted. */

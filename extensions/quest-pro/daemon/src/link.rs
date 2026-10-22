@@ -7,7 +7,8 @@
 //! desktop app reads from the headset over adb, and in the end tries the
 //! stream port on every address of the local networks.
 use log::{debug, info, warn};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
+use std::collections::HashSet;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +22,9 @@ pub(crate) const SERVICE_TYPE: &str = "_vrftcam._tcp.local.";
 /// started later and whose announcement this PC missed could go unseen for
 /// that long.
 const REBROWSE_EVERY: Duration = Duration::from_secs(15);
+/// A resolution the same as the last one passed on is mDNS answering the
+/// re-ask, not news, until this long has passed.
+const REPEAT_IGNORED_FOR: Duration = Duration::from_secs(60);
 /// How long the desktop app's word on where the headset streams holds.
 const HINT_FOR: Duration = Duration::from_secs(30);
 /// Connections the network sweep opens at once.
@@ -143,9 +147,25 @@ fn watch(
     running: &AtomicBool,
 ) {
     let mut browsed_at = Instant::now();
+    // The last resolution passed on, and when.
+    let mut last: Option<(Resolution, Instant)> = None;
     while running.load(Ordering::SeqCst) {
         match receiver.recv_timeout(Duration::from_millis(500)) {
-            Ok(event @ (ServiceEvent::ServiceResolved(_) | ServiceEvent::ServiceRemoved(..))) => {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                let resolution = Resolution::of(&info);
+                let repeat = last.as_ref().is_some_and(|(seen, at)| {
+                    *seen == resolution && at.elapsed() < REPEAT_IGNORED_FOR
+                });
+                if !repeat {
+                    last = Some((resolution, Instant::now()));
+                    if sender.send(ServiceEvent::ServiceResolved(info)).is_err() {
+                        break;
+                    }
+                }
+            }
+            Ok(event @ ServiceEvent::ServiceRemoved(..)) => {
+                // Coming back after this is news, even unchanged.
+                last = None;
                 if sender.send(event).is_err() {
                     break;
                 }
@@ -170,6 +190,39 @@ fn watch(
         }
     }
     let _ = daemon.shutdown();
+}
+
+/// What a resolution of the headset app says: where it is and which version.
+/// Re-asking mDNS brings the same answer back every [`REBROWSE_EVERY`];
+/// passing each on would cut every wait between retries short and keep the
+/// backoff from growing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Resolution {
+    addresses: Vec<IpAddr>,
+    port: u16,
+    properties: [Option<String>; 3],
+}
+
+impl Resolution {
+    fn of(info: &ResolvedService) -> Self {
+        let mut addresses: Vec<IpAddr> = info
+            .get_addresses()
+            .iter()
+            .map(|ip| ip.to_ip_addr())
+            .collect();
+        addresses.sort();
+        addresses.dedup();
+        let property = |key: &str| info.get_property_val_str(key).map(str::to_owned);
+        Self {
+            addresses,
+            port: info.get_port(),
+            properties: [
+                property("protocol"),
+                property("version"),
+                property("apk_version"),
+            ],
+        }
+    }
 }
 
 /// A local IPv4 network this PC is on.
@@ -322,7 +375,18 @@ pub(crate) fn answers_as_headset_app(address: SocketAddr) -> bool {
     let mut magic = [0u8; 8];
     let answered = stream.read_exact(&mut magic).is_ok() && &magic == b"QPSTAT1\0";
     if !answered {
-        warn!("Quest Pro camera: {address} takes connections on the headset app's port but isn't the headset app");
+        // Sweeps repeat every half minute; say so once per address.
+        static WARNED: Mutex<Option<HashSet<SocketAddr>>> = Mutex::new(None);
+        let first = WARNED
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashSet::new)
+            .insert(address);
+        if first {
+            warn!("Quest Pro camera: {address} takes connections on the headset app's port but didn't answer as the headset app");
+        } else {
+            debug!("Quest Pro camera: {address} again didn't answer as the headset app");
+        }
     }
     answered
 }
