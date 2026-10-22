@@ -561,6 +561,8 @@ public final class CameraStreamService extends Service {
     }
 
     private synchronized void advertise() {
+        // This attempt replaces any retry still due, which would register twice.
+        registrationRetryAt = 0;
         nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
         NsdServiceInfo info = new NsdServiceInfo();
         info.setServiceName("VRFT Quest Pro Camera");
@@ -575,9 +577,13 @@ public final class CameraStreamService extends Service {
                 Log.i(TAG, "mDNS registered: " + service.getServiceName());
             }
             @Override public void onRegistrationFailed(NsdServiceInfo service, int error) {
-                Log.e(TAG, "mDNS registration failed: " + error + "; retrying in 30 s");
-                if (registration == this) registration = null;
-                registrationRetryAt = System.nanoTime() + REGISTRATION_RETRY_NS;
+                synchronized (CameraStreamService.this) {
+                    // A registration a newer one replaced isn't retried.
+                    if (registration != this) return;
+                    Log.e(TAG, "mDNS registration failed: " + error + "; retrying in 30 s");
+                    registration = null;
+                    registrationRetryAt = System.nanoTime() + REGISTRATION_RETRY_NS;
+                }
             }
             @Override public void onServiceUnregistered(NsdServiceInfo service) { }
             @Override public void onUnregistrationFailed(NsdServiceInfo service, int error) { }
@@ -616,8 +622,11 @@ public final class CameraStreamService extends Service {
     private void watchNetwork() {
         connectivity = getSystemService(ConnectivityManager.class);
         if (connectivity == null) return;
+        // The builder asks for internet access by default; a Wi-Fi network
+        // kept just for VR often has none, and must still be followed.
         NetworkRequest wifi = new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build();
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override public void onLinkPropertiesChanged(Network network, LinkProperties properties) {
@@ -643,8 +652,9 @@ public final class CameraStreamService extends Service {
         if (phase == Phase.WAITING) setStatus(Phase.WAITING, listening());
         // Once Wi-Fi is back, register again even at the same address.
         if (address == null) advertisedFor = null;
-        // Registered only once the server listens, and again for a new address.
-        if (address == null || server == null || address.equals(advertisedFor)) return;
+        // Registered only once the server listens, and again for a new address;
+        // never after onDestroy, as a callback already queued can still arrive.
+        if (!running || address == null || server == null || address.equals(advertisedFor)) return;
         advertisedFor = address;
         Log.i(TAG, "Registering mDNS again for the new address");
         NsdManager.RegistrationListener previous = registration;
