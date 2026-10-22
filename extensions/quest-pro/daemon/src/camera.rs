@@ -136,8 +136,10 @@ enum Message {
     Strip(Frame),
     Gaze(GazePacket),
     Status(serde_json::Value),
-    /// One this daemon passes over: a `QPPING1`, a status it can't read, or
-    /// a type from a newer headset app. It still shows the headset is there.
+    /// The headset app's `QPPING1`, sent while it has nothing else to send.
+    Ping,
+    /// One this daemon passes over: a status it can't read, or a type from a
+    /// newer headset app. It still shows the headset is there.
     Other,
 }
 
@@ -1279,8 +1281,11 @@ fn receive_loop(
         if let Some(mdns) = &mdns {
             mdns.set_searching(true);
         }
+        // Taken even with VRFT_QUEST_PRO_ADDR set, which then ignores it: a
+        // hint left waiting cuts every wait short, so retries would spin.
+        let hint = link.take_hint();
         if manual.is_none() {
-            if let Some(address) = link.take_hint() {
+            if let Some(address) = hint {
                 if target.as_ref().is_none_or(|target| {
                     target.found != Found::Desktop || target.addresses != [address]
                 }) {
@@ -1609,6 +1614,10 @@ fn connect_and_receive(
     let mut last_frame_at = Instant::now();
     // When the headset was last heard from at all.
     let mut last_heard = Instant::now();
+    // Whether the headset app pings while it's quiet. Apps from before the
+    // ping can be silent for long while still there, so only TCP keepalive
+    // ends their connections.
+    let mut pings = false;
     // The headset app's status proves it's the headset; its address is kept once.
     let mut remembered = false;
     let mut eye_schedule = EyeSchedule::new(DEFAULT_EYE_FPS);
@@ -1621,6 +1630,7 @@ fn connect_and_receive(
         if matches!(message, Ok(Some(_))) {
             last_heard = Instant::now();
         }
+        pings |= matches!(message, Ok(Some(Message::Ping)));
         match message {
             Ok(Some(Message::Mouth(frame))) => {
                 capture.record(
@@ -1705,7 +1715,7 @@ fn connect_and_receive(
                 state.mismatch = None;
                 state.headset = Some(headset);
             }
-            Ok(Some(Message::Other)) | Ok(None) => {}
+            Ok(Some(Message::Ping | Message::Other)) | Ok(None) => {}
             Err(error) => {
                 shared.write().unwrap().disconnect();
                 // Retry ends the connection by shutting it.
@@ -1715,7 +1725,7 @@ fn connect_and_receive(
                 return Err(error.into());
             }
         }
-        if last_heard.elapsed() >= SILENCE_LIMIT {
+        if pings && last_heard.elapsed() >= SILENCE_LIMIT {
             shared.write().unwrap().disconnect();
             return Err(Disconnect::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -2456,12 +2466,13 @@ fn read_message(stream: &mut impl Read) -> std::io::Result<Option<Message>> {
                 ));
             }
             // The headset app's keepalive, sent while it has nothing else.
-            if &prefix[..8] != b"QPPING1\0" {
-                debug!(
-                    "Quest Pro camera: skipped unknown {} message",
-                    String::from_utf8_lossy(&prefix[..8]).trim_end_matches('\0')
-                );
+            if &prefix[..8] == b"QPPING1\0" {
+                return Ok(Some(Message::Ping));
             }
+            debug!(
+                "Quest Pro camera: skipped unknown {} message",
+                String::from_utf8_lossy(&prefix[..8]).trim_end_matches('\0')
+            );
             Ok(Some(Message::Other))
         }
         _ => Err(invalid("Unknown headset stream message")),
@@ -3220,8 +3231,10 @@ mod tests {
 
     #[test]
     fn a_silent_connection_is_given_up() {
-        let (address, headset) = fake_headset(br#"{"protocol":3}"#, |client| {
-            // Say nothing more, and keep the connection open meanwhile.
+        let (address, headset) = fake_headset(br#"{"protocol":3}"#, |mut client| {
+            // Ping once, so it's an app that pings; then say nothing more,
+            // and keep the connection open meanwhile.
+            client.write_all(PING).unwrap();
             thread::sleep(SILENCE_LIMIT + Duration::from_secs(8));
             drop(client);
         });
@@ -3244,6 +3257,43 @@ mod tests {
         assert!(started.elapsed() < SILENCE_LIMIT + Duration::from_secs(7));
         assert_eq!(remembered.get(), Some(address));
         assert!(shared.read().unwrap().source.is_none());
+        headset.join().unwrap();
+    }
+
+    const PING: &[u8] = b"QPPING1\0\x01\0\0\0\0\0\0\0";
+
+    #[test]
+    fn the_ping_is_read_as_one() {
+        let mut reader = std::io::Cursor::new(PING.to_vec());
+        assert!(matches!(
+            read_message(&mut reader).unwrap(),
+            Some(Message::Ping)
+        ));
+    }
+
+    #[test]
+    fn a_quiet_app_from_before_the_ping_is_kept() {
+        let open_for = SILENCE_LIMIT + Duration::from_secs(3);
+        let (address, headset) = fake_headset(br#"{"protocol":3}"#, move |client| {
+            thread::sleep(open_for);
+            drop(client);
+        });
+        let started = Instant::now();
+        let result = connect_and_receive(
+            &[address],
+            &Shared::default(),
+            &CaptureManager::default(),
+            &mut test_processors(),
+            &AtomicBool::new(true),
+            &Link::default(),
+            &|_| {},
+        );
+        // Ended by the headset app closing, not by the silence.
+        assert!(
+            matches!(&result, Err(Disconnect::Io(error)) if error.kind() != std::io::ErrorKind::TimedOut),
+            "expected the stream to close, got {result:?}"
+        );
+        assert!(started.elapsed() >= open_for);
         headset.join().unwrap();
     }
 
