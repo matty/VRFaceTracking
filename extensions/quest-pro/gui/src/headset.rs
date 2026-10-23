@@ -10,7 +10,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{h_flex, v_flex, Disableable as _, Icon, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    h_flex, v_flex, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     canvas, div, point, px, rgb, AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context,
@@ -23,6 +25,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vrft_gui_core::extension::open_page;
 use vrft_gui_core::palette::{self, MONO_FONT};
 use vrft_gui_core::widgets::{
     card, mono, ButtonExt as _, Notice, PageHeader, Panel, StatusDot, StatusLine,
@@ -191,6 +194,12 @@ pub struct HeadsetPage {
     installing: Option<Package>,
     /// A package that couldn't be installed over the headset's copy.
     replace: Option<Package>,
+    /// Updates already offered in the popup, as the headset's version and
+    /// the one offered, so each is offered once.
+    offered: Vec<(String, String)>,
+    /// An update accepted in the popup, installed once adb reaches the
+    /// headset while the page shows.
+    pending_install: Option<Package>,
     log: Option<SharedString>,
     address: Entity<InputState>,
     /// The address last filled into the Wi-Fi field, which is only replaced
@@ -223,8 +232,11 @@ impl HeadsetPage {
         let address =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("headset.address_placeholder")));
         let subscriptions = [
-            // The stream card shows what VRFT receives.
-            cx.observe(&daemon, |page, _, cx| {
+            // The stream card shows what VRFT receives, and a headset that
+            // connects with an old headset app is offered the update on any
+            // page.
+            cx.observe_in(&daemon, window, |page, _, window, cx| {
+                page.offer_update(window, cx);
                 if page.watching {
                     cx.notify();
                 }
@@ -274,6 +286,8 @@ impl HeadsetPage {
             message_expires: None,
             installing: None,
             replace: None,
+            offered: Vec::new(),
+            pending_install: None,
             log: None,
             address,
             suggested: None,
@@ -339,6 +353,10 @@ impl HeadsetPage {
                 self.locate(cx);
             }
             self.refresh_requested = true;
+        } else {
+            // An update accepted in the popup is installed only while the
+            // page shows how it goes.
+            self.pending_install = None;
         }
     }
 
@@ -410,9 +428,124 @@ impl HeadsetPage {
             self.asked = Some(Instant::now());
         }
         self.suggest_address(window, cx);
+        self.install_pending(cx);
         self.connect_advertised(cx);
         self.share_address(cx);
+        self.offer_update(window, cx);
         cx.notify();
+    }
+
+    /// The version of the headset app on the connected headset, when the
+    /// package is newer: as VRFT's stream reports it, or as adb reads it.
+    fn outdated_app(&self, package: &Package, cx: &App) -> Option<String> {
+        let status = self.daemon.read(cx).status();
+        // An app too old for VRFT to read connects, but sends nothing it uses.
+        let mismatch = status
+            .and_then(|status| status.headset_mismatch.as_ref())
+            .filter(|mismatch| mismatch.update == Update::HeadsetApp)
+            .map(|mismatch| mismatch.apk_version.clone().unwrap_or_default())
+            .filter(|version| version.as_str() != package.version.as_deref().unwrap_or_default());
+        if mismatch.is_some() {
+            return mismatch;
+        }
+        let streamed = status
+            .filter(|status| status.source.is_some())
+            .and_then(|status| status.headset.as_ref())
+            .and_then(|headset| headset.apk_version.clone());
+        let read = self
+            .selected_device()
+            .filter(|device| device.is_ready() && device.is_quest_pro())
+            .and(self.details.as_ref())
+            .and_then(|details| details.app.as_ref())
+            .map(|app| app.version_name.clone());
+        [streamed, read]
+            .into_iter()
+            .flatten()
+            .find(|version| headset_app::updates(version, package))
+    }
+
+    /// Asks in a popup whether to install the headset app this VRFT offers,
+    /// when a headset connects with an older one. Each pair of versions is
+    /// asked about once; after Ignore, the App card's Update button is left.
+    fn offer_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy == Some(Busy::Installing) || self.pending_install.is_some() {
+            return;
+        }
+        // A file picked by hand isn't offered, and has no version anyway.
+        let Some(package) = self
+            .package
+            .as_ref()
+            .filter(|package| package.origin != PackageOrigin::Chosen)
+        else {
+            return;
+        };
+        let Some(installed) = self.outdated_app(package, cx) else {
+            return;
+        };
+        let pair = (installed, package.describe());
+        // Another popup open now asks again on the next status.
+        if self.offered.contains(&pair) || window.has_active_dialog(cx) {
+            return;
+        }
+        let package = package.clone();
+        let description: SharedString = if pair.0.is_empty() {
+            t!("headset.update_offer_unknown", offered = pair.1)
+        } else {
+            t!("headset.update_offer", installed = pair.0, offered = pair.1)
+        }
+        .into();
+        self.offered.push(pair);
+        let page = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let page = page.clone();
+            let package = package.clone();
+            alert
+                .confirm()
+                .title(t!("headset.update_offer_title"))
+                .description(description.clone())
+                .ok_text(t!("headset.update_offer_install"))
+                .cancel_text(t!("headset.update_offer_ignore"))
+                .on_ok(move |_, _, cx| {
+                    page.update(cx, |page, cx| page.accept_update(package.clone(), cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    /// Opens this page to install an update accepted in the popup, once adb
+    /// reaches the headset.
+    fn accept_update(&mut self, package: Package, cx: &mut Context<Self>) {
+        self.pending_install = Some(package);
+        self.refresh_requested = true;
+        open_page(crate::pages::HEADSET, cx);
+        cx.notify();
+    }
+
+    /// Installs the update accepted in the popup once adb reaches the
+    /// headset. Until then the page's steps say how to connect it.
+    fn install_pending(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() || self.pending_install.is_none() {
+            return;
+        }
+        let Some(details) = self
+            .selected_device()
+            .filter(|device| device.is_ready() && device.is_quest_pro())
+            .and(self.details.as_ref())
+        else {
+            return;
+        };
+        // It may have been updated another way meanwhile.
+        let installed = details.app.clone();
+        let Some(package) = self.pending_install.take() else {
+            return;
+        };
+        if !matches!(
+            headset_app::compare(installed.as_ref(), &package),
+            Comparison::Same | Comparison::Older
+        ) {
+            self.install(package, false, cx);
+        }
     }
 
     /// Tells VRFT where adb sees the headset streaming while VRFT isn't
@@ -1704,8 +1837,16 @@ impl HeadsetPage {
                 )
                 .into_any_element()
         });
+        let pending = self.pending_install.as_ref().map(|package| {
+            Notice::new(
+                Tone::Waiting,
+                t!("headset.update_waiting", version = package.describe()),
+            )
+            .into_any_element()
+        });
         replace
             .into_iter()
+            .chain(pending)
             .chain(
                 self.message_in(Area::App)
                     .map(IntoElement::into_any_element),

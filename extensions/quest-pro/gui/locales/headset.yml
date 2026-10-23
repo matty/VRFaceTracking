@@ -208,6 +208,18 @@ headset:
     en: "Available"
   none:
     en: "None"
+  update_offer_title:
+    en: "Headset app update"
+  update_offer:
+    en: "The headset has version %{installed} of the headset app, and %{offered} is available. Installing it stops the headset's camera stream until you start it again."
+  update_offer_unknown:
+    en: "The headset's app is too old for this VRFaceTracking, and %{offered} is available. Installing it stops the headset's camera stream until you start it again."
+  update_offer_install:
+    en: "Install now"
+  update_offer_ignore:
+    en: "Ignore"
+  update_waiting:
+    en: "Installs %{version} once VRFaceTracking reaches the headset over USB or Wi-Fi, as the steps on this page show."
   headset_app_newer:
     en: "The headset's app is newer than this one. Keep it unless you need this version."
   app_version_too_new:

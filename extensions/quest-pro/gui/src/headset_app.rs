@@ -197,6 +197,16 @@ pub fn compare(installed: Option<&InstalledApp>, package: &Package) -> Compariso
     }
 }
 
+/// Whether `package` is newer than a headset app that only says its version
+/// name, such as in its stream's status.
+pub fn updates(version_name: &str, package: &Package) -> bool {
+    let installed = InstalledApp {
+        version_name: version_name.to_string(),
+        version_code: version_code(version_name).unwrap_or_default(),
+    };
+    compare(Some(&installed), package) == Comparison::Update
+}
+
 /// The commits since the last release in a dev build's version, the 14 of
 /// `2026.9.1-dev.14`.
 fn dev_commits(version: &str) -> Option<u32> {
@@ -291,6 +301,17 @@ mod tests {
             compare(Some(&installed("2026.9.0")), &package(None)),
             Comparison::Unknown
         );
+    }
+
+    #[test]
+    fn updates_from_a_version_name() {
+        let offer = package(Some("2026.10.0"));
+        assert!(updates("2026.9.0", &offer));
+        assert!(updates("2026.10.0-dev.7", &offer));
+        assert!(!updates("2026.10.0", &offer));
+        assert!(!updates("2026.11.0", &offer));
+        assert!(!updates("0.2", &offer));
+        assert!(!updates("2026.9.0", &package(None)));
     }
 
     #[test]
