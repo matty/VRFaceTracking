@@ -11,7 +11,10 @@ struct State {
     found: bool,
     /// The OSC port the found VRChat reports it listens on.
     discovered_port: Option<u16>,
+    /// Whether the avatar has parameters this application drives.
     avatar_face_tracking: Option<bool>,
+    /// Whether VRChat reports the avatar takes native face tracking.
+    avatar_native_face_tracking: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +31,7 @@ impl VrchatTarget {
                 found: false,
                 discovered_port: None,
                 avatar_face_tracking: None,
+                avatar_native_face_tracking: None,
             })),
         }
     }
@@ -44,7 +48,11 @@ impl VrchatTarget {
         let state = self.state.read().unwrap();
         VrchatLink {
             found: state.found,
-            avatar_face_tracking: state.avatar_face_tracking,
+            // Either way in counts; an avatar may have only native tracking.
+            avatar_face_tracking: match state.avatar_native_face_tracking {
+                Some(true) => Some(true),
+                _ => state.avatar_face_tracking,
+            },
             sending_to: format!(
                 "{}:{}",
                 state.host,
@@ -79,10 +87,39 @@ impl VrchatTarget {
         state.found = false;
         state.discovered_port = None;
         state.avatar_face_tracking = None;
+        state.avatar_native_face_tracking = None;
     }
 
     pub fn set_avatar_face_tracking(&self, face_tracking: Option<bool>) {
         self.state.write().unwrap().avatar_face_tracking = face_tracking;
+    }
+
+    /// A new avatar: nothing is known about it until VRChat says.
+    pub fn avatar_changed(&self) {
+        let mut state = self.state.write().unwrap();
+        state.avatar_face_tracking = None;
+        state.avatar_native_face_tracking = None;
+    }
+
+    /// What VRChat pushed over OSC, which is always about the current avatar.
+    pub fn set_avatar_native_face_tracking(&self, native: bool) {
+        self.state.write().unwrap().avatar_native_face_tracking = Some(native);
+    }
+
+    /// What an OSCQuery read found. That covers an avatar loaded before we
+    /// started, when no OSC message is coming, but the read may have been of
+    /// the previous avatar, so it never overrides what OSC said.
+    pub fn offer_avatar_native_face_tracking(&self, native: bool) {
+        self.state
+            .write()
+            .unwrap()
+            .avatar_native_face_tracking
+            .get_or_insert(native);
+    }
+
+    /// Whether the current avatar takes `/tracking/face/v1`.
+    pub fn native_face_tracking(&self) -> bool {
+        self.state.read().unwrap().avatar_native_face_tracking == Some(true)
     }
 
     /// The address of this PC that reaches the configured host, for telling
@@ -165,7 +202,68 @@ mod tests {
         let target = VrchatTarget::new("127.0.0.1", 9000);
         target.found(Some(9000));
         target.set_avatar_face_tracking(Some(true));
+        target.set_avatar_native_face_tracking(true);
         target.lost();
         assert_eq!(target.link().avatar_face_tracking, None);
+        assert!(!target.native_face_tracking());
+    }
+
+    #[test]
+    fn a_native_only_avatar_counts_as_having_face_tracking() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.set_avatar_face_tracking(Some(false));
+        target.set_avatar_native_face_tracking(true);
+        assert_eq!(target.link().avatar_face_tracking, Some(true));
+        assert!(target.native_face_tracking());
+    }
+
+    #[test]
+    fn an_avatar_with_only_parameters_still_counts() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.set_avatar_face_tracking(Some(true));
+        target.set_avatar_native_face_tracking(false);
+        assert_eq!(target.link().avatar_face_tracking, Some(true));
+        assert!(!target.native_face_tracking());
+    }
+
+    #[test]
+    fn an_avatar_with_neither_has_no_face_tracking() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.set_avatar_face_tracking(Some(false));
+        target.set_avatar_native_face_tracking(false);
+        assert_eq!(target.link().avatar_face_tracking, Some(false));
+    }
+
+    #[test]
+    fn a_read_fills_the_gap_but_never_overrides_what_osc_said() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.offer_avatar_native_face_tracking(true);
+        assert!(target.native_face_tracking(), "nothing heard over OSC yet");
+
+        target.avatar_changed();
+        target.set_avatar_native_face_tracking(false);
+        target.offer_avatar_native_face_tracking(true);
+        assert!(
+            !target.native_face_tracking(),
+            "a stale read of the last avatar"
+        );
+    }
+
+    #[test]
+    fn osc_corrects_an_earlier_read() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.offer_avatar_native_face_tracking(true);
+        target.set_avatar_native_face_tracking(false);
+        assert!(!target.native_face_tracking());
+    }
+
+    #[test]
+    fn an_avatar_change_forgets_both_kinds_of_face_tracking() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.set_avatar_face_tracking(Some(true));
+        target.set_avatar_native_face_tracking(true);
+        target.avatar_changed();
+        assert_eq!(target.link().avatar_face_tracking, None);
+        assert!(!target.native_face_tracking());
     }
 }

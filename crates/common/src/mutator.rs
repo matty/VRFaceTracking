@@ -287,6 +287,8 @@ impl UnifiedTrackingMutator {
 pub trait IntegrationAdapter: Send + Sync {
     fn initialize(&mut self) -> anyhow::Result<()>;
     fn send(&self, data: &UnifiedTrackingData) -> anyhow::Result<()>;
+    /// Called once when sending ends, for an output to leave things tidy.
+    fn stop(&self) {}
 }
 
 #[cfg(test)]

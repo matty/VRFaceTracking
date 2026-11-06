@@ -24,6 +24,10 @@ impl IntegrationAdapter for VRChatOsc {
     fn send(&self, data: &UnifiedTrackingData) -> Result<()> {
         VRChatOsc::send(self, data)
     }
+
+    fn stop(&self) {
+        self.send_neutral_face();
+    }
 }
 
 impl IntegrationAdapter for ResoniteOsc {

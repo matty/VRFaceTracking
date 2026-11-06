@@ -99,8 +99,22 @@ On startup, vrft_d will:
 
 1. Load the configured tracking module.
 2. Find VRChat over OSCQuery (mDNS), using the port it reports, and listen for its replies on `send_port` + 1 (9001 by default). VRChat's OSC must be on.
-3. Read which parameters your avatar supports, and read them again on each avatar change.
+3. Read which parameters your avatar supports, and whether it takes VRChat's native face tracking, and read them again on each avatar change.
 4. Begin sending OSC messages at the configured `max_fps` rate.
+
+### VRChat's native face tracking
+
+VRChat 2026.4.1 and Avatars SDK 3.10.6 added face tracking to the SDK itself. VRFT uses it automatically, with no setting to change, on any avatar that has **Face Tracking** enabled in its Avatar Descriptor with **Use All Tracking Keys** on. VRChat reports this for each avatar. On those avatars:
+
+- VRFT sends all 102 Unified Expressions keys to `/tracking/face/v1`, including per-eye gaze, lids and pupils. VRChat syncs them to other players without using the avatar's synced parameters, though that sync is lossy and gets coarser with distance.
+- `/tracking/eye/*` is no longer sent, because these keys replace it.
+- Any older parameters the avatar also has (such as `v2/*` or `FT/v2/*`) are still sent, so whatever the avatar's animator does with them keeps working.
+
+Every other avatar works as before. When you close VRFT, it sends one neutral frame so the avatar doesn't freeze mid-expression. Force-closing it skips that frame.
+
+Only one program should send to `/tracking/face/v1`: each message replaces the whole face, so two senders make it flicker between them. Close VRCFaceTracking while VRFT is running. VRChat doesn't document which source wins between OSC and its own Selfie Expression, so turn that off too.
+
+If nothing moves on an avatar you built, check its Face Tracking mappings. Avatar Optimizer's **Optimize BlendShape** option can remove blendshapes used only by that section, and VRChat's log then shows `Avatar Face Tracking Blendshape '...' not found on any mesh`. VRChat's **Toggle Debug UI** quick menu setting has a **Face Tracking** page that shows what arrives.
 
 Log output goes to the console. To increase verbosity, set the `RUST_LOG` environment variable:
 

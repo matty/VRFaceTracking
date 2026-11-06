@@ -18,7 +18,7 @@ use vrft_common::UnifiedTrackingData;
 /// whenever gaze holds still, and a module reporting a constant is ordinary --
 /// `vd_module` emits a fixed pose for an eye it cannot see. Well under the
 /// timeout, and two messages a second costs nothing.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Type alias for value getter function to reduce type complexity
 type ValueGetterFn = Arc<dyn Fn(&UnifiedTrackingData) -> Vec<f32> + Send + Sync>;
