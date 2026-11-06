@@ -25,6 +25,7 @@
 //!    brow head's share.
 //! 5. The event layer ([`events`]).
 
+pub mod enrollment;
 pub mod events;
 pub mod npz;
 pub mod train;
@@ -38,10 +39,42 @@ use sha2::{Digest, Sha256};
 
 use crate::backend::Accelerator;
 use crate::onnx::runtime::{Input, Session};
+pub use enrollment::Enrollment;
 use events::{Event, FaceEvents, BROW, PUFF, SUCK, TONGUE};
 use npz::Array;
 
 pub const SCHEMA: &str = "universal-face-v2";
+/// The brow outputs, as recordings and reports name them.
+pub const BROW_OUTPUTS: [&str; 8] = [
+    "brow_inner_up_left",
+    "brow_inner_up_right",
+    "brow_outer_up_left",
+    "brow_outer_up_right",
+    "brow_lowerer_left",
+    "brow_lowerer_right",
+    "brow_pinch_left",
+    "brow_pinch_right",
+];
+/// The face's outputs, in the order a face reading lists them.
+pub const FACE_TARGETS: [&str; 17] = [
+    "visibility",
+    "extension",
+    "horizontal",
+    "vertical",
+    "cheek_puff_left",
+    "cheek_puff_right",
+    "cheek_suck_left",
+    "cheek_suck_right",
+    "jaw_open",
+    "brow_inner_up_left",
+    "brow_inner_up_right",
+    "brow_outer_up_left",
+    "brow_outer_up_right",
+    "brow_lowerer_left",
+    "brow_lowerer_right",
+    "brow_pinch_left",
+    "brow_pinch_right",
+];
 /// The heads' file, as QFT+ names it.
 pub const FILE_NAME: &str = "universal-face-v2.npz";
 /// The graph, beside the heads.

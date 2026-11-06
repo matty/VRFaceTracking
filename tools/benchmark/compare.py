@@ -5,7 +5,7 @@ figure is that model's alone.
     cargo build -p vrft-tongue --release --example benchmark
     pip install onnxruntime numpy        # onnxruntime-directml for --gpu on Windows
     python tools/benchmark/qftplus.py --fetch
-    python tools/benchmark/compare.py --pair <model dir> --face <universal-face-v1.safetensors> [--gpu]
+    python tools/benchmark/compare.py --pair <model dir> [--gpu]
 
 Every model runs on the CPU with one thread (as QFT+ runs ONNX Runtime) and
 with all cores. `--gpu` adds the GPU: wgpu for VRFT, DirectML for QFT+.
@@ -40,7 +40,6 @@ def run(command, threads):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=Path, help="a stereo pair model folder")
-    parser.add_argument("--face", type=Path, help="a universal-face-v1 checkpoint")
     parser.add_argument("--qftplus", type=Path, default=REPO / ".local" / "qftplus" / "universal-face-v2.npz")
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--frames", type=int, default=300)
@@ -54,15 +53,11 @@ def main():
     for threads in sorted({1, args.threads}):
         if args.pair:
             runs.append(([BENCHMARK, "--pair", args.pair, "--device", "cpu", *common], threads))
-        if args.face:
-            runs.append(([BENCHMARK, "--face", args.face, "--device", "cpu", *common], threads))
         runs.append(([sys.executable, REPO / "tools" / "benchmark" / "qftplus.py", "--model", args.qftplus,
                       "--threads", str(threads), *common], threads))
     if args.gpu:
         if args.pair:
             runs.append(([BENCHMARK, "--pair", args.pair, "--device", "gpu", *common], args.threads))
-        if args.face:
-            runs.append(([BENCHMARK, "--face", args.face, "--device", "gpu", *common], args.threads))
         runs.append(([sys.executable, REPO / "tools" / "benchmark" / "qftplus.py", "--model", args.qftplus,
                       "--provider", "directml", *common], 1))
     rows = []

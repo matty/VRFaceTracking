@@ -10,7 +10,6 @@ pub mod onnx;
 pub mod preprocess;
 pub mod recordings;
 pub mod train;
-pub mod universal;
 pub mod universal_v2;
 
 pub use backend::Accelerator;

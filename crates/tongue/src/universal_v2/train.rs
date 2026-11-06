@@ -40,15 +40,14 @@ use serde_json::json;
 
 use super::npz::{self, Array};
 use super::{
-    sigmoid, silu, solve, tongue_direction, Layer, TongueMapV2, UniversalV2, BROWS, CHEEKS,
-    FILE_NAME, GRAPH_FILE, RIDGE, SLOTS, TONGUE_ARRAYS, TONGUE_DIRECTION, TONGUE_GAIN,
-    TONGUE_REACH,
+    sigmoid, silu, solve, tongue_direction, Enrollment, Layer, TongueMapV2, UniversalV2, BROWS,
+    BROW_OUTPUTS, CHEEKS, FILE_NAME, GRAPH_FILE, RIDGE, SLOTS, TONGUE_ARRAYS, TONGUE_DIRECTION,
+    TONGUE_GAIN, TONGUE_REACH,
 };
 use crate::backend::Accelerator;
 use crate::dataset::{held_back, sampling_key, select, ACTIVE};
 use crate::recordings::{Recording, Sample};
 use crate::train::{estimate, write_json, Options, Progress, Request};
-use crate::universal::{Enrollment, BROW_OUTPUTS};
 use vrft_quest_pro_protocol::{
     CameraLayout, ReportKept, TrainingProgress, TrainingReport, TrainingStage,
 };

@@ -9,7 +9,6 @@ use rand::{RngExt, SeedableRng};
 use vrft_tongue::backend::{Accelerator, Cpu};
 use vrft_tongue::model::{TongueNet, Weights};
 use vrft_tongue::onnx::{self, runtime::Session};
-use vrft_tongue::universal::net::{activate, FaceNet};
 
 fn runtime() -> bool {
     match onnx::runtime::available() {
@@ -91,70 +90,6 @@ fn the_pair_graph_matches_burn() {
             .run(&[("views", &[1, 2, size, size], &views)], &["values"])
             .unwrap();
         close("values", &burn, &ort[0], 1e-4);
-    }
-}
-
-#[test]
-fn the_face_graph_matches_burn() {
-    if !runtime() {
-        return;
-    }
-    let device = Default::default();
-    let mut rng = StdRng::seed_from_u64(11);
-    let mut weights = FaceNet::<Cpu>::init(&device).weights();
-    scramble(&mut weights, &mut rng);
-    for name in ["mouth_missing", "brow_missing", "mouth_offset"] {
-        let data = &weights[name];
-        let values = pixels(&mut rng, data.num_elements());
-        let shape = data.shape.clone();
-        weights.insert(name.into(), TensorData::new(values, shape));
-    }
-    let size = 64;
-    let net = FaceNet::<Cpu>::from_weights(weights.clone(), false, &device)
-        .unwrap()
-        .fold();
-    let mut session = Session::new(
-        &onnx::face_graph(&weights, size).unwrap().to_model(),
-        Accelerator::Cpu,
-    )
-    .unwrap();
-    // Without a face setup, then with some anchors and the brow neutral.
-    for (present, brow_present) in [([0.0; 6], 0.0), ([1.0, 0.0, 1.0, 1.0, 0.0, 1.0], 1.0)] {
-        let views = pixels(&mut rng, 5 * size * size);
-        let anchors = pixels(&mut rng, 6 * 512);
-        let neutral = pixels(&mut rng, 480);
-        let tensor = |values: &[f32], shape: Vec<usize>| {
-            Tensor::<Cpu, 2>::from_data(TensorData::new(values.to_vec(), shape), &device)
-        };
-        let embeddings = net.embed(Tensor::from_data(
-            TensorData::new(views.clone(), [1, 5, size, size]),
-            &device,
-        ));
-        let raw = net.raw(
-            &embeddings,
-            Tensor::from_data(TensorData::new(anchors.clone(), [1, 6, 512]), &device),
-            tensor(&present, vec![1, 6]),
-            tensor(&neutral, vec![1, 480]),
-            tensor(&[brow_present], vec![1, 1]),
-        );
-        let burn_values = activate(raw).into_data().to_vec::<f32>().unwrap();
-        let burn_q = embeddings.mouth.into_data().to_vec::<f32>().unwrap();
-        let burn_w = embeddings.brow.into_data().to_vec::<f32>().unwrap();
-        let ort = session
-            .run(
-                &[
-                    ("views", &[1, 5, size, size], &views),
-                    ("anchors", &[1, 6, 512], &anchors),
-                    ("present", &[1, 6], &present),
-                    ("brow_neutral", &[1, 480], &neutral),
-                    ("brow_present", &[1, 1], &[brow_present]),
-                ],
-                &["values", "q", "w"],
-            )
-            .unwrap();
-        close("values", &burn_values, &ort[0], 1e-4);
-        close("q", &burn_q, &ort[1], 1e-3);
-        close("w", &burn_w, &ort[2], 1e-3);
     }
 }
 

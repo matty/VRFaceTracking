@@ -36,7 +36,7 @@ pub const CALIBRATION_FRAMES: usize = 48;
 
 /// The tensors quantization covers: the graph's `views` input and every
 /// float output of a convolutional-part node, in graph order, except those
-/// whose names start with one of `float` (see [`super::TONGUE_SCOPE`]).
+/// whose names start with one of `float`.
 pub fn tensors(graph: &Graph, float: &[&str]) -> Vec<String> {
     let mut region: HashSet<String> = HashSet::from(["views".to_string()]);
     let mut out = vec!["views".to_string()];

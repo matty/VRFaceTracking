@@ -5,11 +5,6 @@
 //!
 //! - The stereo pair's gate or direction model: `views` `[1, 2, size, size]`
 //!   in 0..1 in, `values` `[1, 12]` out, activated as `TongueNet::forward`.
-//! - The universal face model: `views` `[1, 5, size, size]`, the face setup's
-//!   `anchors` `[1, 6, 512]`, `present` `[1, 6]`, `brow_neutral` `[1, 480]`
-//!   and `brow_present` `[1, 1]` in; `values` `[1, 17]` (activated as
-//!   `universal::net::activate`), the mouth embedding `q` and the brow
-//!   embedding `w` out.
 
 pub mod live;
 pub mod proto;
@@ -19,9 +14,6 @@ pub mod runtime;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::model::{Weights, BATCH_NORM_EPSILON, ENCODER, FUSION, HEAD, SIGNED};
-use crate::universal::{
-    ANCHOR_SLOTS, BROW_EMBEDDING, CAMERAS, FACE_TARGETS, MOUTH_EMBEDDING, SIGNED as FACE_SIGNED,
-};
 use crate::TARGETS;
 use proto::{Attribute, DataType, Graph, Initializer, Node, ValueInfo};
 
@@ -30,14 +22,7 @@ pub(crate) struct Builder<'w> {
     weights: &'w Weights,
     graph: Graph,
     next: usize,
-    /// Prefixed to the values made while it is set, such as
-    /// [`TONGUE_SCOPE`], so quantization can leave them float.
-    scope: &'static str,
 }
-
-/// The universal face model's tongue tail and head: left float when the rest
-/// is quantized, as QFT+ does, since the tongue reads small differences.
-pub const TONGUE_SCOPE: &str = "tongue/";
 
 impl<'w> Builder<'w> {
     fn new(weights: &'w Weights, name: &str) -> Self {
@@ -48,13 +33,12 @@ impl<'w> Builder<'w> {
                 ..Graph::default()
             },
             next: 0,
-            scope: "",
         }
     }
 
     fn fresh(&mut self, prefix: &str) -> String {
         self.next += 1;
-        format!("{}{prefix}_{}", self.scope, self.next)
+        format!("{prefix}_{}", self.next)
     }
 
     fn input(&mut self, name: &str, dims: &[usize]) -> String {
@@ -273,95 +257,5 @@ pub fn pair_graph(weights: &Weights, size: usize) -> Result<Graph> {
     let signed = TARGETS.map(|name| SIGNED.contains(&name));
     let values = b.activate(&values, &signed);
     b.output(&values, "values", &[1, TARGETS.len()]);
-    Ok(b.finish())
-}
-
-/// The universal face model at `size` px, heads and all.
-pub fn face_graph(weights: &Weights, size: usize) -> Result<Graph> {
-    let mut b = Builder::new(weights, "universal-face-v1");
-    let slots = ANCHOR_SLOTS.len();
-    let views = b.input("views", &[1, CAMERAS, size, size]);
-    let anchors = b.input("anchors", &[1, slots, MOUTH_EMBEDDING]);
-    let present = b.input("present", &[1, slots]);
-    let brow_neutral = b.input("brow_neutral", &[1, BROW_EMBEDDING]);
-    let brow_present = b.input("brow_present", &[1, 1]);
-
-    let mut x = b.reshape(&views, &[CAMERAS as i64, 1, size as i64, size as i64]);
-    for &(start, _, stride) in &ENCODER[..3] {
-        x = b.stage(&x, "front", start, stride)?;
-    }
-    let (tail_start, tail_stride) = (ENCODER[3].0, ENCODER[3].2);
-    let tail_channels = ENCODER[3].1[1] as i64;
-    let mouth_views = b.slice(&x, 0, 2, 4);
-
-    // Mouth: pooled to 4 x 4, projected per camera, plus each camera's offset.
-    let mouth = b.stage(&mouth_views, "mouth_tail", tail_start, tail_stride)?;
-    // The tail's grid is size / 16 across; pool it to 4 x 4.
-    let pool = (size / 64).max(1) as i64;
-    let grid = b.op(
-        "AveragePool",
-        &[&mouth],
-        vec![
-            ("kernel_shape", Attribute::Ints(vec![pool, pool])),
-            ("strides", Attribute::Ints(vec![pool, pool])),
-        ],
-    );
-    let flat = b.reshape(&grid, &[2, tail_channels * 16]);
-    let projected = b.linear(&flat, "mouth_projection")?;
-    let (offset, offset_shape) = b.weight("mouth_offset")?;
-    let offset = b.floats("offset", &offset_shape, &offset);
-    let mouth = b.op("Add", &[&projected, &offset], vec![]);
-    let q = b.reshape(&mouth, &[1, MOUTH_EMBEDDING as i64]);
-
-    b.scope = TONGUE_SCOPE;
-    let tongue = b.stage(&mouth_views, "tongue_tail", tail_start, tail_stride)?;
-    let tongue = b.global_mean(&tongue, 2 * tail_channels);
-    let tongue = b.linear(&tongue, "tongue_head")?;
-    b.scope = "";
-
-    let eyes = b.slice(&x, 0, 0, 2);
-    let brow_view = b.slice(&x, 0, 4, 5);
-    let brow_views = b.concat(&[&eyes, &brow_view], 0);
-    let brow = b.stage(&brow_views, "brow_tail", tail_start, tail_stride)?;
-    let w = b.global_mean(&brow, BROW_EMBEDDING as i64);
-
-    // Mouth head: absent anchors read as the learned missing vectors.
-    let half = b.floats("half", &[1], &[0.5]);
-    let mask = b.op("Greater", &[&present, &half], vec![]);
-    let mask = b.reshape(&mask, &[1, slots as i64, 1]);
-    let (missing, _) = b.weight("mouth_missing")?;
-    let missing = b.floats("missing", &[1, slots, MOUTH_EMBEDDING], &missing);
-    let anchors = b.op("Where", &[&mask, &anchors, &missing], vec![]);
-    let neutral = b.slice(&anchors, 1, 0, 1);
-    let neutral = b.reshape(&neutral, &[1, MOUTH_EMBEDDING as i64]);
-    let flat_anchors = b.reshape(&anchors, &[1, (slots * MOUTH_EMBEDDING) as i64]);
-    let moved = b.op("Sub", &[&q, &neutral], vec![]);
-    let mut head = b.concat(&[&q, &flat_anchors, &moved, &present], 1);
-    for layer in 0..3 {
-        head = b.linear(&head, &format!("mouth_head.{layer}"))?;
-        if layer < 2 {
-            head = b.silu(&head);
-        }
-    }
-
-    // Brow head: against the neutral face, or the learned missing one.
-    let brow_mask = b.op("Greater", &[&brow_present, &half], vec![]);
-    let (brow_missing, _) = b.weight("brow_missing")?;
-    let brow_missing = b.floats("missing", &[1, BROW_EMBEDDING], &brow_missing);
-    let reference = b.op("Where", &[&brow_mask, &brow_neutral, &brow_missing], vec![]);
-    let raised = b.op("Sub", &[&w, &reference], vec![]);
-    let brows = b.concat(&[&w, &raised, &brow_present], 1);
-    let brows = b.linear(&brows, "brow_head.0")?;
-    let brows = b.silu(&brows);
-    let brows = b.linear(&brows, "brow_head.1")?;
-
-    let raw = b.concat(&[&tongue, &head, &brows], 1);
-    let signed: Vec<bool> = (0..FACE_TARGETS.len())
-        .map(|i| FACE_SIGNED.contains(&i))
-        .collect();
-    let values = b.activate(&raw, &signed);
-    b.output(&values, "values", &[1, FACE_TARGETS.len()]);
-    b.output(&q, "q", &[1, MOUTH_EMBEDDING]);
-    b.output(&w, "w", &[1, BROW_EMBEDDING]);
     Ok(b.finish())
 }

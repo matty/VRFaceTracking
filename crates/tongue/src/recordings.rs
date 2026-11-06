@@ -1,8 +1,6 @@
 //! Guided recordings, as the daemon saves them under
 //! `.local/tongue-captures/<recording>/`. Recordings from before the cheek
 //! puff heads carry tongue labels alone, so their cheeks count as unlabelled.
-//! Rendered sets from earlier versions use the same format, stored already
-//! shrunk to a model's input size.
 //!
 //! A frame holds the views of the cameras `metadata.json` lists in `cameras`,
 //! side by side: the mouth pair (2 and 3) in recordings from before the
@@ -38,16 +36,12 @@ pub struct Sample {
     pub cheeks_labelled: bool,
     /// A follow-the-dot frame, whose label moves with the dot.
     pub moving: bool,
-    /// Labels for the universal face model's outputs beyond the tongue, by
-    /// name (see `universal::FACE_TARGETS`): each one given is labelled.
+    /// Labels for the face's outputs beyond the tongue, by name (see
+    /// `universal_v2::FACE_TARGETS`): each one given is labelled.
     pub face: BTreeMap<String, f32>,
     /// The enrollment slot this frame shows, such as `neutral`, when it was
-    /// recorded as one (the one-minute face setup, or a rendered set's
-    /// enrollment poses).
+    /// recorded as one (the one-minute face setup).
     pub anchor: Option<String>,
-    /// Whose face this is, in a rendered set of many; recordings are one
-    /// person's.
-    pub identity: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +62,6 @@ struct Line {
     #[serde(default)]
     face: BTreeMap<String, f32>,
     anchor: Option<String>,
-    identity: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -80,8 +73,7 @@ pub struct Recording {
     pub dir: PathBuf,
     /// Frames usable for training: not in a skipped or unticked pose.
     pub samples: Vec<Sample>,
-    /// Each camera view's width and height: 400 as the headset sends them,
-    /// less in a rendered set stored at the model's input size.
+    /// Each camera view's width and height.
     pub view: usize,
     /// The cameras each frame holds.
     pub layout: CameraLayout,
@@ -178,7 +170,6 @@ impl Recording {
                 moving: line.dot.is_some_and(|dot| !dot.is_null()),
                 face: line.face,
                 anchor: line.anchor,
-                identity: line.identity,
             });
         }
         Ok(Self {
