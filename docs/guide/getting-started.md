@@ -98,9 +98,19 @@ To personalise tracking, open the desktop app's **Training** page (or the previe
 On startup, vrft_d will:
 
 1. Load the configured tracking module.
-2. Find VRChat over OSCQuery (mDNS), using the port it reports, and listen for its replies on `send_port` + 1 (9001 by default). VRChat's OSC must be on.
-3. Read which parameters your avatar supports, and whether it takes VRChat's native face tracking, and read them again on each avatar change.
+2. Find VRChat over OSCQuery (mDNS), using the port it reports. VRFT listens for VRChat's replies on a free port and advertises it over OSCQuery. VRChat's OSC must be on.
+3. Read which parameters your avatar supports, and whether it takes VRChat's native face tracking, and read them again on each avatar change. VRFT also checks which avatar VRChat is on every couple of seconds, so it catches up if VRChat's OSC was off or a change message was missed.
 4. Begin sending OSC messages at the configured `max_fps` rate.
+
+### Running alongside other OSC apps
+
+VRFT doesn't use VRChat's default output port (9001), so another app can hold it without affecting VRFT. VRChat can send its output to several apps at once when each one:
+
+1. Listens on a free UDP port of its own.
+2. Advertises that port as `_osc._udp` over mDNS.
+3. Advertises an OSCQuery server as `_oscjson._tcp`, reporting that port in `HOST_INFO` as `OSC_PORT`, with the addresses it wants in its address tree.
+
+VRFT does all three. VRChat describes this on its [OSCQuery wiki page](https://github.com/vrchat-community/osc/wiki/OSCQuery). The page doesn't say whether VRChat keeps sending to 9001 while other apps are advertised, so an app that listens only on 9001 should do the same.
 
 ### VRChat's native face tracking
 
