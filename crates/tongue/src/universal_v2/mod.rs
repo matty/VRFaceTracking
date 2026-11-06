@@ -2,13 +2,12 @@
 //! that reads the raw five-camera strip (`<name>.area.onnx`) and NumPy heads
 //! with metadata pinned to the graph (`<name>.npz`), as QFT+ made them. They
 //! run on VRFT's ONNX Runtime with QFT+'s per-frame logic, ported from its
-//! `universal_face.py` and `face_events.py` (MIT), so a QFT+ model gives in
+//! `universal_face.py` and `face_events.py`, so a QFT+ model gives in
 //! VRFT what it gives in QFT+.
 //!
-//! QFT+'s own model is opt-in only. Its weights were trained on Ava-256 (CC BY-NC 4.0) and
-//! private MetaHuman renders: VRFT never ships them or downloads them
-//! unprompted. The Training page downloads them from QFT+'s release when
-//! the user asks (`models/qftplus/`), or the user points VRFT at a copy
+//! QFT+'s own model is opt-in only. The Training page downloads it into
+//! `models/qftplus/` when the user asks, from QFT+'s release or the copy in
+//! `third_party/models/` if that can't be used, or the user points VRFT at a copy
 //! (`VRFT_FACE_MODEL`, the `.npz`; its `.area.onnx` beside it), fetched
 //! with `tools/benchmark/qftplus.py --fetch`.
 //!
@@ -26,6 +25,7 @@
 //!    brow head's share.
 //! 5. The event layer ([`events`]).
 
+pub mod enrollment;
 pub mod events;
 pub mod npz;
 pub mod train;
@@ -39,10 +39,42 @@ use sha2::{Digest, Sha256};
 
 use crate::backend::Accelerator;
 use crate::onnx::runtime::{Input, Session};
+pub use enrollment::Enrollment;
 use events::{Event, FaceEvents, BROW, PUFF, SUCK, TONGUE};
 use npz::Array;
 
 pub const SCHEMA: &str = "universal-face-v2";
+/// The brow outputs, as recordings and reports name them.
+pub const BROW_OUTPUTS: [&str; 8] = [
+    "brow_inner_up_left",
+    "brow_inner_up_right",
+    "brow_outer_up_left",
+    "brow_outer_up_right",
+    "brow_lowerer_left",
+    "brow_lowerer_right",
+    "brow_pinch_left",
+    "brow_pinch_right",
+];
+/// The face's outputs, in the order a face reading lists them.
+pub const FACE_TARGETS: [&str; 17] = [
+    "visibility",
+    "extension",
+    "horizontal",
+    "vertical",
+    "cheek_puff_left",
+    "cheek_puff_right",
+    "cheek_suck_left",
+    "cheek_suck_right",
+    "jaw_open",
+    "brow_inner_up_left",
+    "brow_inner_up_right",
+    "brow_outer_up_left",
+    "brow_outer_up_right",
+    "brow_lowerer_left",
+    "brow_lowerer_right",
+    "brow_pinch_left",
+    "brow_pinch_right",
+];
 /// The heads' file, as QFT+ names it.
 pub const FILE_NAME: &str = "universal-face-v2.npz";
 /// The graph, beside the heads.

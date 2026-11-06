@@ -2155,7 +2155,6 @@ impl TongueTraining {
         let points = [
             t!("tongue.model_point_cameras"),
             t!("tongue.model_point_training"),
-            t!("tongue.model_point_licence"),
         ]
         .into_iter()
         .map(|point| {

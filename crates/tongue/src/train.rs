@@ -1,7 +1,7 @@
 //! Personal training on the recordings the user ticks: fine-tuning a
 //! `universal-face-v2` model such as the QFTPlus Model
-//! (`universal_v2::train`). Models trained by earlier versions, tongue pairs
-//! and `universal-face-v1`, still load, but are no longer trained.
+//! (`universal_v2::train`). Tongue pairs trained by earlier versions still
+//! load, but are no longer trained.
 //!
 //! The daemon runs this in a child process (`vrft_d train-tongue`) and
 //! reads `progress.json`; cancelling kills the process.
@@ -166,7 +166,7 @@ mod tests {
         let request = dir.join("request.json");
         std::fs::write(
             &request,
-            r#"{"base_model_dir": ".", "recordings": ["."], "architecture": "universal-face-v1"}"#,
+            r#"{"base_model_dir": ".", "recordings": ["."], "architecture": "spatial-stereo-resnet-v2"}"#,
         )
         .unwrap();
         let error = run(&request, &dir.join("run"), &Options::default()).unwrap_err();

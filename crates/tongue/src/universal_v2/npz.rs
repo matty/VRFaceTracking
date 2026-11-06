@@ -68,23 +68,29 @@ pub fn parse_npy(bytes: &[u8]) -> Result<Array> {
     let array = match descr {
         "<f4" => Array::Float {
             values: data[..count * 4]
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect(),
             shape,
         },
         "<f8" => Array::Float {
             values: data[..count * 8]
-                .chunks_exact(8)
-                .map(|b| f64::from_le_bytes(b.try_into().unwrap()) as f32)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|b| f64::from_le_bytes(*b) as f32)
                 .collect(),
             shape,
         },
         unicode if unicode.starts_with("<U") => {
             let chars: usize = unicode[2..].parse().context("npy string width")?;
             let text: String = data[..chars * 4 * count.max(1)]
-                .chunks_exact(4)
-                .filter_map(|b| char::from_u32(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter_map(|b| char::from_u32(u32::from_le_bytes(*b)))
                 .take_while(|&c| c != '\0')
                 .collect();
             Array::Text(text)

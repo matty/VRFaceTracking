@@ -974,10 +974,6 @@ pub enum TrainerArchitecture {
     #[default]
     #[serde(rename = "spatial-stereo-resnet-v2")]
     StereoPair,
-    /// VRFT's own universal face model, from all five cameras, conditioned
-    /// on the wearer's face setup.
-    #[serde(rename = "universal-face-v1")]
-    UniversalFace,
     /// A model in QFT+'s format, such as the QFTPlus Model, with its heads
     /// fine-tuned on the wearer's recordings.
     #[serde(rename = "universal-face-v2")]

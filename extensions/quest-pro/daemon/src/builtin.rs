@@ -1,13 +1,14 @@
 //! Installs the QFTPlus Model, the base model: QFT+'s universal face model
 //! (`universal-face-v2`) from QFT+'s own release, only when the user asks for
-//! it on the Training page, since its weights were trained on Ava-256
-//! (CC BY-NC 4.0) and private renders and VRFT never ships them or downloads
-//! them unprompted. With it comes the mouth-camera pair, which reads the
-//! mouth cameras whenever the headset sends only those: the v8 demo
-//! checkpoints from the Qpro-Enhanced-FT v0.1.10 release (MIT license).
+//! it on the Training page. With it comes the mouth-camera pair, which reads
+//! the mouth cameras whenever the headset sends only those: the v8 demo
+//! checkpoints from the Qpro-Enhanced-FT v0.1.10 release.
+//! If a release can't be used, the same files come from the copies in VRFT's
+//! repository (`third_party/models/`).
 //! Every download is verified by SHA-256, files already present are never
 //! overwritten, and each release is removed once its files are out of it.
 
+use log::warn;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -27,7 +28,16 @@ struct Release {
     megabytes: u32,
     /// What it is, for errors.
     what: &'static str,
+    /// Where its files sit in the zip.
+    entry: &'static str,
+    /// The files to keep and their SHA-256, in the order they go in.
+    files: &'static [(&'static str, &'static str)],
+    /// The folder of VRFT's repository holding copies of those files.
+    mirror: &'static str,
 }
+
+/// VRFT's repository, for the copies used when a release can't be.
+const MIRROR_BASE: &str = "https://raw.githubusercontent.com/matty/VRFaceTracking/main";
 
 const MODEL_RELEASE: Release = Release {
     url: "https://github.com/n0tmast3r/Qpro-Enhanced-FT/releases/download/v0.1.10/QproFaceTracking-0.1.10-poc.zip",
@@ -35,6 +45,9 @@ const MODEL_RELEASE: Release = Release {
     sha256: "db40f4b8331a50ca6c2ec37372f1ab4b44cfbe6d21e09ca04244aaaa339cb18f",
     megabytes: 140,
     what: "the mouth-camera model",
+    entry: "QproFaceTracking-0.1.10-poc/models",
+    files: &MODELS,
+    mirror: "third_party/models/qpro-enhanced-ft",
 };
 const MODELS: [(&str, &str); 2] = [
     (
@@ -54,11 +67,12 @@ const QFTPLUS_RELEASE: Release = Release {
     sha256: "fffa879943724c5621ecdef42085bcb73aae19a5ccc12b5255d74220ba9bc61d",
     megabytes: 194,
     what: "QFT+'s model",
+    entry: "lib/app/models",
+    files: &QFTPLUS_FILES,
+    mirror: "third_party/models/qftplus",
 };
 /// Where QFT+'s model goes, apart from the mouth-camera pair.
 const QFTPLUS_DIR: &str = "models/qftplus";
-/// Where its files sit in the package.
-const QFTPLUS_ENTRY: &str = "lib/app/models";
 /// Its files: the graph, then the heads that name it.
 const QFTPLUS_FILES: [(&str, &str); 2] = [
     (
@@ -170,6 +184,30 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Those of `files` not yet in `dir` with the right contents.
+fn missing_files(
+    dir: &Path,
+    files: &'static [(&'static str, &'static str)],
+) -> Vec<(&'static str, &'static str)> {
+    files
+        .iter()
+        .filter(|(name, hash)| {
+            let path = dir.join(name);
+            !(path.is_file() && sha256_file(&path).as_deref() == Ok(*hash))
+        })
+        .copied()
+        .collect()
+}
+
+/// The size a response says it is.
+fn content_length(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
 impl BuiltinModel {
     pub fn state(&self) -> InstallState {
         self.state.lock().unwrap().clone()
@@ -240,99 +278,110 @@ impl BuiltinModel {
         self.install_qftplus(root)
     }
 
-    /// Takes QFT+'s model out of its release package, checking each file.
-    /// Like the pair, files already there are never overwritten.
     fn install_qftplus(&self, root: &Path) -> Result<(), String> {
-        let dir = qftplus_dir(root);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let missing: Vec<_> = QFTPLUS_FILES
-            .iter()
-            .filter(|(name, hash)| {
-                let path = dir.join(name);
-                !(path.is_file() && sha256_file(&path).as_deref() == Ok(*hash))
-            })
-            .collect();
+        self.install_files(&qftplus_dir(root), root, &QFTPLUS_RELEASE, MIRROR_BASE)
+    }
+
+    fn install_pair(&self, root: &Path) -> Result<(), String> {
+        self.install_files(&models_dir(root), root, &MODEL_RELEASE, MIRROR_BASE)
+    }
+
+    /// Puts `release`'s files in `dir`, from the release or, when that can't
+    /// be used, from the copies at `mirror_base`, checking each file. Files
+    /// already there are never overwritten.
+    fn install_files(
+        &self,
+        dir: &Path,
+        root: &Path,
+        release: &Release,
+        mirror_base: &str,
+    ) -> Result<(), String> {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let missing = missing_files(dir, release.files);
         if missing.is_empty() {
             return Ok(());
         }
         for (name, _) in &missing {
             if dir.join(name).exists() {
                 return Err(format!(
-                    "{} differs from QFT+'s model; move it away first. VRFaceTracking never overwrites model files.",
-                    dir.join(name).display()
+                    "{} differs from {}; move it away first. VRFaceTracking never overwrites model files.",
+                    dir.join(name).display(),
+                    release.what
                 ));
             }
         }
-        let archive = self.download(root, &QFTPLUS_RELEASE)?;
+        let upstream = match self.install_from_release(dir, root, release) {
+            Ok(()) => return Ok(()),
+            Err(error) if error == CANCELLED => return Err(error),
+            Err(error) => error,
+        };
+        warn!("{upstream}; trying VRFaceTracking's own copy");
+        self.install_from_mirror(dir, release, mirror_base)
+            .map_err(|error| {
+                if error == CANCELLED {
+                    error
+                } else {
+                    format!("{upstream}; VRFaceTracking's own copy failed too: {error}")
+                }
+            })
+    }
+
+    /// Takes the files out of the release zip, which only they are needed from.
+    fn install_from_release(
+        &self,
+        dir: &Path,
+        root: &Path,
+        release: &Release,
+    ) -> Result<(), String> {
+        let archive = self.download(root, release)?;
         self.check_cancelled()?;
         self.set_stage(BuiltinStage::Unpacking);
         let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        // The graph goes in first, so the heads never appear without it.
-        for (name, hash) in missing {
+        // In listed order, so QFT+'s heads never appear without their graph.
+        for (name, hash) in missing_files(dir, release.files) {
             let mut entry = zip
-                .by_name(&format!("{QFTPLUS_ENTRY}/{name}"))
-                .map_err(|_| format!("{name} is missing from QFT+'s release"))?;
+                .by_name(&format!("{}/{name}", release.entry))
+                .map_err(|_| format!("{name} is missing from the release of {}", release.what))?;
             let pending = dir.join(format!("{name}.download"));
             let mut out = File::create(&pending).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
             drop(out);
-            if sha256_file(&pending)? != *hash {
+            if sha256_file(&pending)? != hash {
                 let _ = fs::remove_file(&pending);
                 return Err(format!("{name} failed its SHA-256 check"));
             }
             fs::rename(&pending, dir.join(name)).map_err(|e| e.to_string())?;
         }
         drop(zip);
-        // The rest of QFT+'s app isn't needed.
         let _ = fs::remove_file(&archive);
         Ok(())
     }
 
-    fn install_pair(&self, root: &Path) -> Result<(), String> {
-        let dir = models_dir(root);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let missing: Vec<_> = MODELS
-            .iter()
-            .filter(|(name, hash)| {
-                let path = dir.join(name);
-                !(path.is_file() && sha256_file(&path).as_deref() == Ok(*hash))
-            })
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        for (name, _) in &missing {
-            if dir.join(name).exists() {
-                return Err(format!(
-                    "{} differs from the mouth-camera model; move it away first. VRFaceTracking never overwrites model files.",
-                    dir.join(name).display()
-                ));
-            }
-        }
-        let archive = self.download(root, &MODEL_RELEASE)?;
-        self.check_cancelled()?;
-        self.set_stage(BuiltinStage::Unpacking);
-        let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        for (name, hash) in missing {
-            let entry_name = format!("QproFaceTracking-0.1.10-poc/models/{name}");
-            let mut entry = zip
-                .by_name(&entry_name)
-                .map_err(|_| format!("{name} is missing from the release"))?;
+    /// Downloads whichever files are still missing from VRFT's repository.
+    fn install_from_mirror(
+        &self,
+        dir: &Path,
+        release: &Release,
+        mirror_base: &str,
+    ) -> Result<(), String> {
+        for (name, hash) in missing_files(dir, release.files) {
+            self.check_cancelled()?;
+            self.set_stage(BuiltinStage::Connecting);
+            let url = format!("{mirror_base}/{}/{name}", release.mirror);
+            let mut response = ureq::get(&url)
+                .call()
+                .map_err(|e| format!("could not download {name}: {e}"))?;
+            let total = content_length(&response);
+            self.progress(0, total, None);
+            self.set_stage(BuiltinStage::Downloading);
             let pending = dir.join(format!("{name}.download"));
-            let mut out = File::create(&pending).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-            drop(out);
-            if sha256_file(&pending)? != *hash {
+            if let Err(error) = self.receive(response.body_mut(), &pending, total, hash) {
                 let _ = fs::remove_file(&pending);
-                return Err(format!("{name} failed its SHA-256 check"));
+                return Err(error);
             }
             fs::rename(&pending, dir.join(name)).map_err(|e| e.to_string())?;
         }
-        drop(zip);
-        // Only the pair is needed, so the release doesn't keep 140 MB on disk.
-        let _ = fs::remove_file(&archive);
         Ok(())
     }
 
@@ -351,15 +400,11 @@ impl BuiltinModel {
         let mut response = ureq::get(release.url)
             .call()
             .map_err(|e| format!("could not download {}: {e}", release.what))?;
-        let total = response
-            .headers()
-            .get("content-length")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok());
+        let total = content_length(&response);
         self.progress(0, total, None);
         self.set_stage(BuiltinStage::Downloading);
         let pending = local.join(format!("{}.download", release.name));
-        if let Err(error) = self.receive(response.body_mut(), &pending, total, release) {
+        if let Err(error) = self.receive(response.body_mut(), &pending, total, release.sha256) {
             let _ = fs::remove_file(&pending);
             return Err(error);
         }
@@ -367,13 +412,13 @@ impl BuiltinModel {
         Ok(archive)
     }
 
-    /// Writes the release to `pending`, checking its SHA-256 as it arrives.
+    /// Writes the download to `pending`, checking its SHA-256 as it arrives.
     fn receive(
         &self,
         body: &mut ureq::Body,
         pending: &Path,
         total: Option<u64>,
-        release: &Release,
+        sha256: &str,
     ) -> Result<(), String> {
         let mut out = File::create(pending).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
@@ -404,8 +449,8 @@ impl BuiltinModel {
         }
         drop(out);
         self.set_stage(BuiltinStage::Verifying);
-        if hex(&hasher.finalize()) != release.sha256 {
-            return Err("the downloaded release failed its SHA-256 check".into());
+        if hex(&hasher.finalize()) != sha256 {
+            return Err("the download failed its SHA-256 check".into());
         }
         Ok(())
     }
@@ -522,6 +567,161 @@ mod tests {
             .unwrap_err()
             .contains("never overwrites"));
         assert_eq!(fs::read(&graph).unwrap(), b"other");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The copies the install falls back to, as checked out: wrong bytes here
+    /// would only show the day a release has gone.
+    #[test]
+    fn the_repository_copies_match_the_pinned_hashes() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        for release in [&MODEL_RELEASE, &QFTPLUS_RELEASE] {
+            for (name, hash) in release.files {
+                let path = repo.join(release.mirror).join(name);
+                assert_eq!(sha256_file(&path).as_deref(), Ok(*hash), "{name}");
+            }
+        }
+    }
+
+    /// Answers each path in `files` with its bytes and anything else with a
+    /// 404, returning the base URL.
+    fn serve(files: Vec<(String, Vec<u8>)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut request = [0u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request.split_whitespace().nth(1).unwrap_or_default();
+                let found = files.iter().find(|(served, _)| served == path);
+                let (status, body): (_, &[u8]) = match found {
+                    Some((_, body)) => ("200 OK", body),
+                    None => ("404 Not Found", b""),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+        base
+    }
+
+    fn sha256_of(bytes: &[u8]) -> &'static str {
+        hex(&Sha256::digest(bytes)).leak()
+    }
+
+    /// A release whose zip is at `url`, and whose copies are `contents`.
+    fn test_release(url: String, zip_sha256: &'static str, contents: &[&[u8]]) -> Release {
+        let files: Vec<(&'static str, &'static str)> = ["first.bin", "second.bin"]
+            .into_iter()
+            .zip(contents)
+            .map(|(name, bytes)| (name, sha256_of(bytes)))
+            .collect();
+        Release {
+            url: url.leak(),
+            name: "release.zip",
+            sha256: zip_sha256,
+            megabytes: 1,
+            what: "the test model",
+            entry: "inner",
+            files: files.leak(),
+            mirror: "copies",
+        }
+    }
+
+    #[test]
+    fn a_gone_release_installs_from_the_repository_copies() {
+        let root = scratch("mirror");
+        let dir = root.join("models");
+        let base = serve(vec![
+            ("/copies/first.bin".into(), b"first".to_vec()),
+            ("/copies/second.bin".into(), b"second".to_vec()),
+        ]);
+        let release = test_release(format!("{base}/gone.zip"), "", &[b"first", b"second"]);
+
+        BuiltinModel::default()
+            .install_files(&dir, &root, &release, &base)
+            .unwrap();
+
+        assert_eq!(fs::read(dir.join("first.bin")).unwrap(), b"first");
+        assert_eq!(fs::read(dir.join("second.bin")).unwrap(), b"second");
+        assert!(!dir.join("second.bin.download").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_copy_with_the_wrong_hash_is_refused_and_both_failures_are_reported() {
+        let root = scratch("mirror-bad");
+        let dir = root.join("models");
+        let base = serve(vec![
+            ("/copies/first.bin".into(), b"first".to_vec()),
+            ("/copies/second.bin".into(), b"tampered".to_vec()),
+        ]);
+        let release = test_release(format!("{base}/gone.zip"), "", &[b"first", b"second"]);
+
+        let error = BuiltinModel::default()
+            .install_files(&dir, &root, &release, &base)
+            .unwrap_err();
+
+        assert!(
+            error.contains("could not download the test model"),
+            "{error}"
+        );
+        assert!(error.contains("SHA-256"), "{error}");
+        assert!(!dir.join("second.bin").exists());
+        assert!(!dir.join("second.bin.download").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_does_not_fall_back_to_the_copies() {
+        let root = scratch("mirror-cancel");
+        let dir = root.join("models");
+        let base = serve(vec![("/copies/first.bin".into(), b"first".to_vec())]);
+        let release = test_release(format!("{base}/gone.zip"), "", &[b"first"]);
+        let model = BuiltinModel::default();
+        model.cancel.store(true, Ordering::SeqCst);
+
+        let error = model
+            .install_files(&dir, &root, &release, &base)
+            .unwrap_err();
+
+        assert_eq!(error, CANCELLED);
+        assert!(!dir.join("first.bin").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_working_release_needs_no_copies_and_is_removed_afterwards() {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [
+            ("inner/first.bin", b"first".as_slice()),
+            ("inner/other", b"x"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let zip = zip.finish().unwrap().into_inner();
+        let zip_sha256 = sha256_of(&zip);
+
+        let root = scratch("release");
+        let dir = root.join("models");
+        let base = serve(vec![("/release.zip".into(), zip)]);
+        let release = test_release(format!("{base}/release.zip"), zip_sha256, &[b"first"]);
+
+        BuiltinModel::default()
+            .install_files(&dir, &root, &release, &format!("{base}/no-copies-here"))
+            .unwrap();
+
+        assert_eq!(fs::read(dir.join("first.bin")).unwrap(), b"first");
+        assert!(!dir.join("other").exists());
+        assert!(!root.join(".local/release.zip").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -35,16 +35,11 @@ pub fn complete_pair(dir: &Path) -> bool {
     Role::Gate.find(dir).is_some() && Role::Direction.find(dir).is_some()
 }
 
-/// Whether `dir` holds a QFT+-format face model: its heads and graph.
-fn has_v2_model(dir: &Path) -> bool {
+/// Whether `dir` holds a QFT+-format face model, such as a fine-tuned
+/// QFTPlus Model: its heads and graph.
+pub fn has_face_model(dir: &Path) -> bool {
     use vrft_tongue::universal_v2::{FILE_NAME, GRAPH_FILE};
     dir.join(FILE_NAME).is_file() && dir.join(GRAPH_FILE).is_file()
-}
-
-/// Whether `dir` holds a universal face model: VRFT's, or a fine-tuned
-/// QFTPlus Model.
-pub fn has_face_model(dir: &Path) -> bool {
-    dir.join(vrft_tongue::universal::FILE_NAME).is_file() || has_v2_model(dir)
 }
 
 /// Whether `dir` holds a model inference can use: a pair, or a universal
@@ -56,10 +51,8 @@ pub fn complete_model(dir: &Path) -> bool {
 fn architecture(dir: &Path) -> TrainerArchitecture {
     if complete_pair(dir) {
         TrainerArchitecture::StereoPair
-    } else if has_v2_model(dir) {
-        TrainerArchitecture::UniversalFaceV2
     } else {
-        TrainerArchitecture::UniversalFace
+        TrainerArchitecture::UniversalFaceV2
     }
 }
 type ApiError = (StatusCode, String);
@@ -646,8 +639,8 @@ fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
 }
 
 /// Downloads the QFTPlus Model in the background: the mouth-camera pair,
-/// then QFT+'s universal face model from QFT+'s release. Only ever on the
-/// user's say-so: QFT+'s weights are for non-commercial use.
+/// then QFT+'s universal face model, each from its release or VRFT's copy of
+/// it. Only ever on the user's say-so.
 async fn install_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
     if builtin::qftplus_megabytes(&manager.root) > 0 {
         manager.qftplus.start(manager.root.clone());
@@ -894,9 +887,11 @@ mod tests {
         let dir = root.join(".local/tongue-models/face");
         fs::create_dir_all(&dir).unwrap();
         assert!(!complete_model(&dir));
-        fs::write(dir.join(vrft_tongue::universal::FILE_NAME), b"weights").unwrap();
+        fs::write(dir.join(vrft_tongue::universal_v2::FILE_NAME), b"heads").unwrap();
+        assert!(!complete_model(&dir), "the heads need their graph");
+        fs::write(dir.join(vrft_tongue::universal_v2::GRAPH_FILE), b"graph").unwrap();
         assert!(complete_model(&dir) && !complete_pair(&dir));
-        assert_eq!(architecture(&dir), TrainerArchitecture::UniversalFace);
+        assert_eq!(architecture(&dir), TrainerArchitecture::UniversalFaceV2);
         fs::remove_dir_all(root).unwrap();
     }
 

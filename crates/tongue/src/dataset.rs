@@ -125,7 +125,6 @@ mod tests {
             moving,
             face: Default::default(),
             anchor: None,
-            identity: None,
         }
     }
 

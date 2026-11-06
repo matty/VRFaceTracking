@@ -15,9 +15,8 @@ use vrft_quest_pro_protocol::{
 };
 use vrft_tongue::onnx::proto::{Attribute, DataType, Graph, Initializer, Node, ValueInfo};
 use vrft_tongue::train::{run, Options};
-use vrft_tongue::universal::Enrollment;
 use vrft_tongue::universal_v2::npz::{self, Array};
-use vrft_tongue::universal_v2::{UniversalV2, FILE_NAME, GRAPH_FILE};
+use vrft_tongue::universal_v2::{Enrollment, UniversalV2, FILE_NAME, GRAPH_FILE};
 use vrft_tongue::{Accelerator, TARGETS};
 
 /// The strip pools to 5 x 25 cells of 80 px, five across each camera.
