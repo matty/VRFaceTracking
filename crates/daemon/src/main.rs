@@ -206,7 +206,7 @@ fn main() -> Result<()> {
         tracking_data: shared_data_for_host.clone(),
         vrchat: vrchat_target,
     };
-    let (mut output, strategy_router) = strategies::create_strategy(&config, osc_context);
+    let (mut output, osc_query_advert) = strategies::create_strategy(&config, osc_context);
     // Set up before any module loads, which can take a while. Without it,
     // sends fail, and say why, until the setting is fixed.
     match output.initialize() {
@@ -254,13 +254,15 @@ fn main() -> Result<()> {
         rt.block_on(async {
             let extensions_router = osc::query::extensions::get_router(debug_state_for_host);
 
-            let app_router = if let Some(strategy_router) = strategy_router {
-                extensions_router.merge(strategy_router)
-            } else {
-                extensions_router
+            let (app_router, osc_port) = match osc_query_advert {
+                Some(advert) => (
+                    extensions_router.merge(advert.router),
+                    Some(advert.osc_port),
+                ),
+                None => (extensions_router, None),
             };
 
-            if let Err(e) = OscQueryHost::start(0, app_router).await {
+            if let Err(e) = OscQueryHost::start(0, app_router, osc_port).await {
                 error!("OSC Query Host failed: {}", e);
             }
         });

@@ -7,9 +7,16 @@ use std::net::IpAddr;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::target::VrchatTarget;
+
+/// How often to ask VRChat which avatar it's on. Its `/avatar/change` message
+/// can miss us, and an avatar can load after our last read, or with OSC off.
+const AVATAR_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long after a read gives up before the poll starts another.
+const FAILED_READ_BACKOFF: Duration = Duration::from_secs(10);
 
 /// OSC type tag to Rust type mapping
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +49,8 @@ pub struct OscParameterInfo {
 /// What an OSCQuery read found of the avatar.
 #[derive(Debug, Clone)]
 pub struct AvatarInfo {
+    /// The avatar's ID, if VRChat said.
+    pub id: Option<String>,
     pub parameters: Vec<OscParameterInfo>,
     /// Whether the avatar takes native face tracking, if VRChat said.
     pub full_face_tracking: Option<bool>,
@@ -67,6 +76,15 @@ impl OscQueryNode {
             serde_json::Value::Array(values) => values.first()?.as_bool(),
             value => value.as_bool(),
         }
+    }
+
+    /// The node's value as a non-empty string.
+    fn string_value(&self) -> Option<&str> {
+        let value = match self.value.as_ref()? {
+            serde_json::Value::Array(values) => values.first()?.as_str(),
+            value => value.as_str(),
+        }?;
+        (!value.is_empty()).then_some(value)
     }
 }
 
@@ -95,12 +113,16 @@ impl OscQueryService {
         let current_url = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let current_url_mdns = current_url.clone();
         let current_url_change = current_url.clone();
+        let current_url_poll = current_url.clone();
 
         let sender_mdns = sender.clone();
         let sender_change = sender.clone();
+        let sender_poll = sender.clone();
         let target = self.target.clone();
+        let target_poll = self.target.clone();
         let fetches = Fetches::default();
         let fetches_change = fetches.clone();
+        let fetches_poll = fetches.clone();
 
         // mDNS Thread
         let discover = move || {
@@ -196,7 +218,7 @@ impl OscQueryService {
                                 let mut lock = current_url_mdns.lock().unwrap();
                                 *lock = None;
                             }
-                            fetches.cancel();
+                            fetches.forget();
                             let _ = sender_mdns.send(None);
                             target.lost();
 
@@ -261,6 +283,27 @@ impl OscQueryService {
                 .spawn(listen)?;
         }
 
+        let poll = move || loop {
+            thread::sleep(AVATAR_POLL_INTERVAL);
+            let url = current_url_poll.lock().unwrap().clone();
+            let Some(url) = url else { continue };
+            // Quiet when this fails: that's VRChat loading, or its OSC being off.
+            let Some(id) = fetch_avatar_id(&url) else {
+                continue;
+            };
+            if !fetches_poll.needs_read(&id, Instant::now()) {
+                continue;
+            }
+            info!("VRChat is on avatar {}; reading it", id);
+            if fetches_poll.has_read_an_avatar() {
+                target_poll.avatar_changed();
+            }
+            fetches_poll.start(&url, &sender_poll);
+        };
+        thread::Builder::new()
+            .name("avatar-poll".into())
+            .spawn(poll)?;
+
         Ok(())
     }
 }
@@ -269,7 +312,18 @@ impl OscQueryService {
 /// read of an earlier avatar can't overwrite a later one.
 #[derive(Clone, Default)]
 struct Fetches {
-    latest: Arc<Mutex<u64>>,
+    state: Arc<Mutex<FetchState>>,
+}
+
+#[derive(Default)]
+struct FetchState {
+    latest: u64,
+    /// Whether the latest read is still running.
+    reading: bool,
+    /// The avatar the last delivered read was of.
+    read_id: Option<String>,
+    /// When the latest read gave up.
+    failed_at: Option<Instant>,
 }
 
 impl Fetches {
@@ -277,6 +331,7 @@ impl Fetches {
     /// still running stops delivering.
     fn start(&self, url: &str, sender: &Sender<Option<AvatarInfo>>) {
         let generation = self.cancel();
+        self.state.lock().unwrap().reading = true;
         let fetches = self.clone();
         let max_retries = 5;
         let retry_delay = Duration::from_secs(1);
@@ -314,6 +369,7 @@ impl Fetches {
                 "Failed to fetch avatar parameters after {} attempts.",
                 max_retries
             );
+            fetches.gave_up(generation, Instant::now());
         };
         thread::Builder::new()
             .name("avatar-fetch".into())
@@ -323,20 +379,52 @@ impl Fetches {
 
     /// Stops any read running from delivering; returns the new generation.
     fn cancel(&self) -> u64 {
-        let mut latest = self.latest.lock().unwrap();
-        *latest += 1;
-        *latest
+        let mut state = self.state.lock().unwrap();
+        state.latest += 1;
+        state.reading = false;
+        state.failed_at = None;
+        state.latest
     }
 
     fn is_current(&self, generation: u64) -> bool {
-        *self.latest.lock().unwrap() == generation
+        self.state.lock().unwrap().latest == generation
+    }
+
+    /// VRChat has gone: stops any read and forgets the avatar.
+    fn forget(&self) {
+        self.cancel();
+        self.state.lock().unwrap().read_id = None;
+    }
+
+    fn gave_up(&self, generation: u64, now: Instant) {
+        let mut state = self.state.lock().unwrap();
+        if state.latest == generation {
+            state.reading = false;
+            state.failed_at = Some(now);
+        }
+    }
+
+    fn has_read_an_avatar(&self) -> bool {
+        self.state.lock().unwrap().read_id.is_some()
+    }
+
+    /// Whether VRChat being on avatar `id` calls for a new read at `now`.
+    fn needs_read(&self, id: &str, now: Instant) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.reading
+            && state.read_id.as_deref() != Some(id)
+            && state
+                .failed_at
+                .is_none_or(|failed| now.duration_since(failed) >= FAILED_READ_BACKOFF)
     }
 
     /// Sends a read's parameters if no later read has started. The lock is
     /// held while sending so a cancel can't slip in between.
     fn deliver(&self, generation: u64, sender: &Sender<Option<AvatarInfo>>, avatar: AvatarInfo) {
-        let latest = self.latest.lock().unwrap();
-        if *latest == generation {
+        let mut state = self.state.lock().unwrap();
+        if state.latest == generation {
+            state.reading = false;
+            state.read_id = avatar.id.clone();
             let _ = sender.send(Some(avatar));
         } else {
             info!("Dropped avatar parameters read for an earlier avatar.");
@@ -375,6 +463,19 @@ fn fetch_osc_port(base: &str) -> Option<u16> {
     }
 }
 
+/// The ID of the avatar VRChat is on, asked of its OSCQuery server at `url`,
+/// the `/avatar` node.
+fn fetch_avatar_id(url: &str) -> Option<String> {
+    let node: OscQueryNode = HTTP
+        .get(format!("{}/change", url))
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    node.string_value().map(str::to_string)
+}
+
 fn fetch_avatar_info(url: &str) -> Result<AvatarInfo> {
     let mut resp = HTTP.get(url).call()?;
     let root: OscQueryNode = resp.body_mut().read_json()?;
@@ -397,7 +498,13 @@ fn avatar_info(root: &OscQueryNode) -> Result<AvatarInfo> {
         .and_then(|contents| contents.get("avatarfullfacetracking"))
         .and_then(OscQueryNode::bool_value);
 
+    let id = contents
+        .and_then(|contents| contents.get("change"))
+        .and_then(OscQueryNode::string_value)
+        .map(str::to_string);
+
     Ok(AvatarInfo {
+        id,
         parameters,
         full_face_tracking,
     })
@@ -430,6 +537,7 @@ mod tests {
 
     fn params() -> AvatarInfo {
         AvatarInfo {
+            id: Some("avtr_a".into()),
             parameters: vec![OscParameterInfo {
                 address: "/avatar/parameters/FT/v2/JawOpen".into(),
                 param_type: OscParamType::Float,
@@ -507,6 +615,83 @@ mod tests {
     fn a_tree_without_parameters_is_still_loading() {
         let tree = node(serde_json::json!({ "FULL_PATH": "/avatar", "CONTENTS": {} }));
         assert!(avatar_info(&tree).is_err());
+    }
+
+    #[test]
+    fn the_read_reports_the_avatar_id() {
+        let tree = avatar_tree(serde_json::json!({
+            "change": {
+                "FULL_PATH": "/avatar/change",
+                "TYPE": "s",
+                "VALUE": ["avtr_a"],
+            }
+        }));
+        assert_eq!(avatar_info(&tree).unwrap().id.as_deref(), Some("avtr_a"));
+    }
+
+    #[test]
+    fn an_empty_avatar_id_is_no_avatar() {
+        let change = node(serde_json::json!({
+            "FULL_PATH": "/avatar/change",
+            "VALUE": [""],
+        }));
+        assert_eq!(change.string_value(), None);
+    }
+
+    /// The case a missed `/avatar/change` leaves: nothing else would read it.
+    #[test]
+    fn an_unread_avatar_needs_a_read() {
+        let fetches = Fetches::default();
+        assert!(fetches.needs_read("avtr_a", Instant::now()));
+        assert!(!fetches.has_read_an_avatar());
+    }
+
+    #[test]
+    fn the_avatar_just_read_needs_no_other() {
+        let fetches = Fetches::default();
+        let (tx, _rx) = channel();
+        let generation = fetches.cancel();
+        fetches.deliver(generation, &tx, params());
+        assert!(fetches.has_read_an_avatar());
+        assert!(!fetches.needs_read("avtr_a", Instant::now()));
+    }
+
+    #[test]
+    fn a_different_avatar_needs_a_read() {
+        let fetches = Fetches::default();
+        let (tx, _rx) = channel();
+        let generation = fetches.cancel();
+        fetches.deliver(generation, &tx, params());
+        assert!(fetches.needs_read("avtr_b", Instant::now()));
+    }
+
+    #[test]
+    fn a_read_in_progress_is_left_to_finish() {
+        let fetches = Fetches::default();
+        fetches.cancel();
+        fetches.state.lock().unwrap().reading = true;
+        assert!(!fetches.needs_read("avtr_a", Instant::now()));
+    }
+
+    #[test]
+    fn a_read_that_gave_up_is_tried_again_after_the_backoff() {
+        let fetches = Fetches::default();
+        let generation = fetches.cancel();
+        let failed = Instant::now();
+        fetches.gave_up(generation, failed);
+        assert!(!fetches.needs_read("avtr_a", failed));
+        assert!(fetches.needs_read("avtr_a", failed + FAILED_READ_BACKOFF));
+    }
+
+    #[test]
+    fn vrchat_going_forgets_the_avatar() {
+        let fetches = Fetches::default();
+        let (tx, _rx) = channel();
+        let generation = fetches.cancel();
+        fetches.deliver(generation, &tx, params());
+        fetches.forget();
+        assert!(!fetches.has_read_an_avatar());
+        assert!(fetches.needs_read("avtr_a", Instant::now()));
     }
 
     #[test]

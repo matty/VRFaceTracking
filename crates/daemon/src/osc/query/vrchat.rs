@@ -1,4 +1,8 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{RawQuery, State},
+    routing::get,
+    Json, Router,
+};
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
@@ -11,8 +15,7 @@ struct VRChatState {
     osc_port: u16,
 }
 
-/// `osc_ip` is the address of this PC VRChat can reach, where it sends
-/// avatar changes back to.
+/// `osc_ip` and `osc_port` are where VRChat sends its output back to.
 pub fn get_router(data: Arc<RwLock<UnifiedTrackingData>>, osc_ip: IpAddr, osc_port: u16) -> Router {
     let state = VRChatState {
         data,
@@ -22,32 +25,61 @@ pub fn get_router(data: Arc<RwLock<UnifiedTrackingData>>, osc_ip: IpAddr, osc_po
 
     Router::new()
         .route("/", get(root_handler))
-        .route("/HOST_INFO", get(host_info_handler))
         .route("/avatar/parameters", get(avatar_parameters_handler))
         .with_state(state)
 }
 
-async fn root_handler(State(state): State<VRChatState>) -> Json<Value> {
-    Json(json!({
-        "DESCRIPTION": "VRFaceTracking",
-        "OSC_PORT": state.osc_port,
-        "OSC_IP": state.osc_ip.to_string()
-    }))
+/// `/?HOST_INFO` says where OSC goes; plain `/` is the address tree.
+async fn root_handler(State(state): State<VRChatState>, RawQuery(query): RawQuery) -> Json<Value> {
+    Json(if query.as_deref() == Some("HOST_INFO") {
+        host_info(state.osc_ip, state.osc_port)
+    } else {
+        address_tree()
+    })
 }
 
-async fn host_info_handler(State(state): State<VRChatState>) -> Json<Value> {
-    Json(json!({
-        "name": "VRFaceTracking",
-        "osc_port": state.osc_port,
-        "osc_ip": state.osc_ip.to_string(),
-        "extensions": {
+fn host_info(osc_ip: IpAddr, osc_port: u16) -> Value {
+    json!({
+        "NAME": "VRFT",
+        "OSC_IP": osc_ip.to_string(),
+        "OSC_PORT": osc_port,
+        "OSC_TRANSPORT": "UDP",
+        "EXTENSIONS": {
             "ACCESS": true,
             "CLIPMODE": false,
             "RANGE": true,
             "TYPE": true,
             "VALUE": true
         }
-    }))
+    })
+}
+
+/// What we want from VRChat. It sends an app the output matching the paths in
+/// its tree, so avatar parameters stay out: we'd only have to discard them.
+fn address_tree() -> Value {
+    json!({
+        "DESCRIPTION": "root node",
+        "FULL_PATH": "/",
+        "ACCESS": 0,
+        "CONTENTS": {
+            "avatar": {
+                "FULL_PATH": "/avatar",
+                "ACCESS": 0,
+                "CONTENTS": {
+                    "change": {
+                        "FULL_PATH": "/avatar/change",
+                        "ACCESS": 2,
+                        "TYPE": "s"
+                    },
+                    "avatarfullfacetracking": {
+                        "FULL_PATH": "/avatar/avatarfullfacetracking",
+                        "ACCESS": 2,
+                        "TYPE": "T"
+                    }
+                }
+            }
+        }
+    })
 }
 
 async fn avatar_parameters_handler(State(state): State<VRChatState>) -> Json<Value> {
@@ -117,4 +149,25 @@ async fn avatar_parameters_handler(State(state): State<VRChatState>) -> Json<Val
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_info_says_where_vrchat_should_send() {
+        let info = host_info(IpAddr::from([127, 0, 0, 1]), 54321);
+        assert_eq!(info["OSC_IP"], "127.0.0.1");
+        assert_eq!(info["OSC_PORT"], 54321);
+        assert_eq!(info["OSC_TRANSPORT"], "UDP");
+    }
+
+    #[test]
+    fn the_tree_asks_for_avatar_changes_and_not_parameters() {
+        let tree = address_tree();
+        let avatar = &tree["CONTENTS"]["avatar"]["CONTENTS"];
+        assert_eq!(avatar["change"]["FULL_PATH"], "/avatar/change");
+        assert!(avatar.get("parameters").is_none());
+    }
 }

@@ -34,14 +34,14 @@ pub struct VRChatOsc {
 }
 
 impl VRChatOsc {
-    /// Listens for VRChat's replies on `receive_port`, or on any free port
-    /// when that's taken; see [`Self::receive_port`].
-    pub fn new(target: VrchatTarget, receive_port: u16) -> Self {
-        let recv_socket = bind_receive(receive_port);
+    /// Listens for VRChat's replies on a free port, which VRChat finds over
+    /// OSCQuery, so other OSC apps can run alongside; see [`Self::receive_port`].
+    pub fn new(target: VrchatTarget) -> Self {
+        let recv_socket = bind_receive();
         let receive_port = recv_socket
             .as_ref()
             .and_then(|socket| socket.local_addr().ok())
-            .map_or(receive_port, |addr| addr.port());
+            .map_or(0, |addr| addr.port());
         let (query_tx, query_rx) = channel();
         let (change_tx_query, change_rx_query) = channel();
 
@@ -61,7 +61,8 @@ impl VRChatOsc {
         }
     }
 
-    /// The port VRChat's replies arrive on, to advertise over OSCQuery.
+    /// The port VRChat's replies arrive on, to advertise over OSCQuery. 0 when
+    /// no socket could be bound.
     pub fn receive_port(&self) -> u16 {
         self.receive_port
     }
@@ -253,17 +254,9 @@ impl VRChatOsc {
     }
 }
 
-/// Binds the socket VRChat's replies arrive on: `port`, or any free port when
-/// another app has it.
-fn bind_receive(port: u16) -> Option<UdpSocket> {
-    let socket = UdpSocket::bind(("0.0.0.0", port))
-        .or_else(|e| {
-            warn!(
-                "Port {} is in use ({}); listening for VRChat on a free port instead",
-                port, e
-            );
-            UdpSocket::bind("0.0.0.0:0")
-        })
+/// Binds the socket VRChat's replies arrive on, at a free port.
+fn bind_receive() -> Option<UdpSocket> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
         .inspect_err(|e| error!("Failed to listen for VRChat: {}", e))
         .ok()?;
     // Set socket timeout for graceful shutdown (500ms)
@@ -311,20 +304,12 @@ mod tests {
     use rosc::OscMessage;
 
     #[test]
-    fn a_taken_receive_port_falls_back_to_a_free_one() {
-        let taken = UdpSocket::bind("0.0.0.0:0").unwrap();
-        let port = taken.local_addr().unwrap().port();
-        let socket = bind_receive(port).expect("a free port");
-        assert_ne!(socket.local_addr().unwrap().port(), port);
-    }
-
-    #[test]
     fn the_advertised_port_is_the_one_bound() {
-        let taken = UdpSocket::bind("0.0.0.0:0").unwrap();
-        let port = taken.local_addr().unwrap().port();
-        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", 9000), port);
-        assert_ne!(osc.receive_port(), port);
-        assert_ne!(osc.receive_port(), 0);
+        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", 9000));
+        let socket = osc.recv_socket.lock().unwrap();
+        let bound = socket.as_ref().unwrap().local_addr().unwrap().port();
+        assert_ne!(bound, 0);
+        assert_eq!(osc.receive_port(), bound);
     }
 
     #[test]
@@ -399,7 +384,7 @@ mod tests {
     fn osc_for_avatar(params: &[&str]) -> (VRChatOsc, UdpSocket) {
         let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", port), 0);
+        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", port));
         let avatar_params: HashSet<String> = params
             .iter()
             .map(|p| format!("/avatar/parameters/{p}"))
