@@ -9,8 +9,6 @@ use std::rc::Rc;
 use vrft_gui_core::palette::{MONO_FONT, SANS_FONT};
 
 /// Geist and Geist Mono, embedded so the app looks the same on every PC.
-/// They're under the SIL Open Font License, beside them in
-/// `resources/fonts`.
 const FONTS: [&[u8]; 6] = [
     include_bytes!("../resources/fonts/Geist-Regular.ttf"),
     include_bytes!("../resources/fonts/Geist-Medium.ttf"),

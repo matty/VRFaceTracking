@@ -1,8 +1,6 @@
 """Times QFT+'s universal face model (universal-face-v2) the way QFT+ runs
 it, one frame at a time, and reports its latency and the process's memory,
-in the same JSON as `cargo run --example benchmark`. For comparison only:
-QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0) and never ship with
-VRFT.
+in the same JSON as `cargo run --example benchmark`. For comparison only.
 
     pip install onnxruntime numpy        # onnxruntime-directml for --provider directml
     python tools/benchmark/qftplus.py --fetch
@@ -36,7 +34,7 @@ RELEASE = ("https://github.com/Yeusepe/QFTPlus/releases/download/v0.4.0-rc.25.2/
            "QproFaceTracking.App-0.4.0-rc.25.2-full.nupkg")
 RELEASE_SHA256 = "fffa879943724c5621ecdef42085bcb73aae19a5ccc12b5255d74220ba9bc61d"
 FILES = ("lib/app/models/universal-face-v2.area.onnx", "lib/app/models/universal-face-v2.npz")
-# QFT+'s per-frame logic (MIT), for tools/benchmark/qftplus_parity.py.
+# QFT+'s per-frame logic, for tools/benchmark/qftplus_parity.py.
 APP_FILES = ("universal_face.py", "face_events.py", "eye_signal_filter.py", "label_capture.py")
 
 
@@ -87,7 +85,7 @@ def megabytes(value):
     return None if value is None else round(value / 1048576, 1)
 
 
-# QFT+'s heads (src/tracking/universal_face.py, MIT), unchanged.
+# QFT+'s heads (src/tracking/universal_face.py), unchanged.
 def silu(x):
     return x / (1.0 + np.exp(-np.clip(x, -60.0, 60.0)))
 

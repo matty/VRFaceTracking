@@ -504,8 +504,6 @@ tongue:
     en: "Reads all five cameras for the cheeks, brows and tongue. When the headset sends only the mouth cameras, the mouth-camera model that comes with it takes over."
   model_point_training:
     en: "Training keeps QFT+'s network and fine-tunes the small heads on top of it, and your tongue directions, on your own recordings."
-  model_point_licence:
-    en: "Its weights are for non-commercial use only (CC BY-NC 4.0). VRFaceTracking downloads them from QFT+'s release only when you ask, and never shares them."
   model_ready:
     en: "Downloaded. It's in use unless you choose a model of your own."
   continue_to_face_setup:

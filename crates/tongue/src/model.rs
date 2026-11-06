@@ -1,5 +1,5 @@
 //! The Quest Pro stereo tongue network, `spatial-stereo-resnet-v2` from
-//! Qpro-Enhanced-FT (MIT license), in Burn.
+//! Qpro-Enhanced-FT, in Burn.
 //!
 //! Layers are written out rather than taken from `burn::nn` so that
 //! BatchNorm always uses its running statistics: personal training
