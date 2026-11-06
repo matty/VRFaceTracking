@@ -1,1 +1,5 @@
 * text=auto eol=lf
+# Model weights, byte for byte: the app checks their SHA-256.
+*.onnx binary
+*.npz binary
+*.pt binary

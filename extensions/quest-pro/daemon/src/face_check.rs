@@ -1,5 +1,5 @@
 //! Checks each held pose of the face setup as it ends, as QFT+'s enrollment
-//! does (`guided_session.py`, MIT): the cameras sent images that weren't
+//! does (`guided_session.py`): the cameras sent images that weren't
 //! frozen, too dark or too bright; the face moved away from the relaxed one
 //! and held still; and, with a tracking module sending, the headset's own
 //! tracking saw the pose. A pose that fails is asked for once more.

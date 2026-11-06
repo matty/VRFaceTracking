@@ -2,13 +2,12 @@
 //! that reads the raw five-camera strip (`<name>.area.onnx`) and NumPy heads
 //! with metadata pinned to the graph (`<name>.npz`), as QFT+ made them. They
 //! run on VRFT's ONNX Runtime with QFT+'s per-frame logic, ported from its
-//! `universal_face.py` and `face_events.py` (MIT), so a QFT+ model gives in
+//! `universal_face.py` and `face_events.py`, so a QFT+ model gives in
 //! VRFT what it gives in QFT+.
 //!
-//! QFT+'s own model is opt-in only. Its weights were trained on Ava-256 (CC BY-NC 4.0) and
-//! private MetaHuman renders: VRFT never ships them or downloads them
-//! unprompted. The Training page downloads them from QFT+'s release when
-//! the user asks (`models/qftplus/`), or the user points VRFT at a copy
+//! QFT+'s own model is opt-in only. The Training page downloads it into
+//! `models/qftplus/` when the user asks, from QFT+'s release or the copy in
+//! `third_party/models/` if that can't be used, or the user points VRFT at a copy
 //! (`VRFT_FACE_MODEL`, the `.npz`; its `.area.onnx` beside it), fetched
 //! with `tools/benchmark/qftplus.py --fetch`.
 //!

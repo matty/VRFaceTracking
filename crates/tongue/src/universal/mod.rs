@@ -3,7 +3,7 @@
 //! face setup. It sits beside the stereo tongue pair, which keeps running
 //! whenever the headset sends only the mouth cameras.
 //!
-//! The design follows QFT+'s "universal face" model (MIT license), rebuilt
+//! The design follows QFT+'s "universal face" model, rebuilt
 //! in Burn and trained from VRFT's own v8 encoder rather than QFT+'s weights.
 //! Models of it that earlier versions trained still run; personal training
 //! now fine-tunes QFT+'s own model (`universal_v2`) instead.

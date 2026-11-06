@@ -1,4 +1,4 @@
-//! QFT+'s face event layer (`face_events.py`, MIT), ported line for line so
+//! QFT+'s face event layer (`face_events.py`), ported line for line so
 //! VRFT gives the same outputs from QFT+'s model as QFT+ does. Per frame, for
 //! each configured channel, in this order:
 //!

@@ -17,7 +17,7 @@ python tools/benchmark/compare.py --pair models/quest-pro --face <universal-face
   - `VRFT_INFERENCE=burn` times Burn instead.
 - **`tools/benchmark/qftplus.py`** runs QFT+'s `universal-face-v2` as QFT+'s `universal_face.py` does: the ONNX graph on the raw strip, then its mouth and brow heads in NumPy, with QFT+'s ONNX Runtime session options (one thread).
   - `--fetch` downloads QFT+'s v0.4.0-rc.25.2 package, checks its SHA-256, and keeps the model's two files in `.local/qftplus/`.
-  - QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0). They're only for comparison and never ship with VRFT.
+  - QFT+'s weights are trained on Ava-256 (CC BY-NC 4.0). They're for non-commercial use, and VRFT's releases don't include them.
 - **`compare.py`** runs each model in its own process, on one thread and on every core, and prints a table.
 - **Weights don't change timing:** the networks do the same arithmetic whatever their weights are, so an untrained checkpoint times the same as a trained one.
 

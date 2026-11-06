@@ -646,8 +646,8 @@ fn qftplus_status(manager: &TrainingManager) -> BuiltinStatus {
 }
 
 /// Downloads the QFTPlus Model in the background: the mouth-camera pair,
-/// then QFT+'s universal face model from QFT+'s release. Only ever on the
-/// user's say-so: QFT+'s weights are for non-commercial use.
+/// then QFT+'s universal face model, each from its release or VRFT's copy of
+/// it. Only ever on the user's say-so.
 async fn install_qftplus(State(manager): State<TrainingManager>) -> Json<BuiltinStatus> {
     if builtin::qftplus_megabytes(&manager.root) > 0 {
         manager.qftplus.start(manager.root.clone());

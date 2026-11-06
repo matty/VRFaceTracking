@@ -10,7 +10,7 @@
 //!
 //! Pupils widen and narrow together, so a size far from what an eye usually
 //! shows, or a sudden change, counts only when the other eye shows it too.
-//! Checks after Qpro-Enhanced-FT-GNimrodG's `pupil_tracking.py` (MIT).
+//! Checks after Qpro-Enhanced-FT-GNimrodG's `pupil_tracking.py`.
 
 use crate::settings::QuestProSettings;
 use std::collections::VecDeque;
