@@ -39,25 +39,46 @@ pub struct OscParameterInfo {
     pub param_type: OscParamType,
 }
 
+/// What an OSCQuery read found of the avatar.
+#[derive(Debug, Clone)]
+pub struct AvatarInfo {
+    pub parameters: Vec<OscParameterInfo>,
+    /// Whether the avatar takes native face tracking, if VRChat said.
+    pub full_face_tracking: Option<bool>,
+}
+
 #[derive(Deserialize, Debug)]
 struct OscQueryNode {
     #[serde(rename = "FULL_PATH")]
     full_path: String,
     #[serde(rename = "TYPE")]
     type_: Option<String>,
+    #[serde(rename = "VALUE")]
+    value: Option<serde_json::Value>,
     #[serde(rename = "CONTENTS")]
     contents: Option<HashMap<String, OscQueryNode>>,
 }
 
+impl OscQueryNode {
+    /// The node's value as a bool. OSCQuery holds values in an array, one per
+    /// argument.
+    fn bool_value(&self) -> Option<bool> {
+        match self.value.as_ref()? {
+            serde_json::Value::Array(values) => values.first()?.as_bool(),
+            value => value.as_bool(),
+        }
+    }
+}
+
 pub struct OscQueryService {
-    update_sender: Sender<Option<Vec<OscParameterInfo>>>,
+    update_sender: Sender<Option<AvatarInfo>>,
     change_receiver: Option<Receiver<String>>,
     target: VrchatTarget,
 }
 
 impl OscQueryService {
     pub fn new(
-        update_sender: Sender<Option<Vec<OscParameterInfo>>>,
+        update_sender: Sender<Option<AvatarInfo>>,
         change_receiver: Receiver<String>,
         target: VrchatTarget,
     ) -> Self {
@@ -254,7 +275,7 @@ struct Fetches {
 impl Fetches {
     /// Reads the parameters at `url`, retrying, in the background; any read
     /// still running stops delivering.
-    fn start(&self, url: &str, sender: &Sender<Option<Vec<OscParameterInfo>>>) {
+    fn start(&self, url: &str, sender: &Sender<Option<AvatarInfo>>) {
         let generation = self.cancel();
         let fetches = self.clone();
         let max_retries = 5;
@@ -271,10 +292,13 @@ impl Fetches {
                     i + 1,
                     max_retries
                 );
-                match fetch_avatar_parameters(&url) {
-                    Ok(params) => {
-                        info!("Successfully fetched {} parameters.", params.len());
-                        fetches.deliver(generation, &sender, params);
+                match fetch_avatar_info(&url) {
+                    Ok(avatar) => {
+                        info!(
+                            "Successfully fetched {} parameters.",
+                            avatar.parameters.len()
+                        );
+                        fetches.deliver(generation, &sender, avatar);
                         return;
                     }
                     Err(e) => {
@@ -310,15 +334,10 @@ impl Fetches {
 
     /// Sends a read's parameters if no later read has started. The lock is
     /// held while sending so a cancel can't slip in between.
-    fn deliver(
-        &self,
-        generation: u64,
-        sender: &Sender<Option<Vec<OscParameterInfo>>>,
-        params: Vec<OscParameterInfo>,
-    ) {
+    fn deliver(&self, generation: u64, sender: &Sender<Option<AvatarInfo>>, avatar: AvatarInfo) {
         let latest = self.latest.lock().unwrap();
         if *latest == generation {
-            let _ = sender.send(Some(params));
+            let _ = sender.send(Some(avatar));
         } else {
             info!("Dropped avatar parameters read for an earlier avatar.");
         }
@@ -356,21 +375,32 @@ fn fetch_osc_port(base: &str) -> Option<u16> {
     }
 }
 
-fn fetch_avatar_parameters(url: &str) -> Result<Vec<OscParameterInfo>> {
+fn fetch_avatar_info(url: &str) -> Result<AvatarInfo> {
     let mut resp = HTTP.get(url).call()?;
     let root: OscQueryNode = resp.body_mut().read_json()?;
+    avatar_info(&root)
+}
 
+/// What the `/avatar` node of VRChat's OSCQuery tree says of the avatar.
+fn avatar_info(root: &OscQueryNode) -> Result<AvatarInfo> {
+    let contents = root.contents.as_ref();
     // Every avatar has some, so a tree without them is VRChat still loading
     // it: an error, so the read is tried again, rather than an avatar with
     // nothing to drive.
-    let parameters_node = root
-        .contents
-        .as_ref()
+    let parameters_node = contents
         .and_then(|contents| contents.get("parameters"))
         .ok_or_else(|| anyhow::anyhow!("VRChat's avatar has no parameters yet"))?;
-    let mut params = Vec::new();
-    flatten_node(parameters_node, &mut params);
-    Ok(params)
+    let mut parameters = Vec::new();
+    flatten_node(parameters_node, &mut parameters);
+
+    let full_face_tracking = contents
+        .and_then(|contents| contents.get("avatarfullfacetracking"))
+        .and_then(OscQueryNode::bool_value);
+
+    Ok(AvatarInfo {
+        parameters,
+        full_face_tracking,
+    })
 }
 
 fn flatten_node(node: &OscQueryNode, params: &mut Vec<OscParameterInfo>) {
@@ -398,11 +428,85 @@ mod tests {
     use super::*;
     use std::sync::mpsc::channel;
 
-    fn params() -> Vec<OscParameterInfo> {
-        vec![OscParameterInfo {
-            address: "/avatar/parameters/FT/v2/JawOpen".into(),
-            param_type: OscParamType::Float,
-        }]
+    fn params() -> AvatarInfo {
+        AvatarInfo {
+            parameters: vec![OscParameterInfo {
+                address: "/avatar/parameters/FT/v2/JawOpen".into(),
+                param_type: OscParamType::Float,
+            }],
+            full_face_tracking: None,
+        }
+    }
+
+    fn node(json: serde_json::Value) -> OscQueryNode {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn avatar_tree(extra: serde_json::Value) -> OscQueryNode {
+        let mut contents = serde_json::json!({
+            "parameters": {
+                "FULL_PATH": "/avatar/parameters",
+                "CONTENTS": {
+                    "JawOpen": {
+                        "FULL_PATH": "/avatar/parameters/JawOpen",
+                        "TYPE": "f",
+                        "VALUE": [0.5],
+                    }
+                }
+            }
+        });
+        contents
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        node(serde_json::json!({ "FULL_PATH": "/avatar", "CONTENTS": contents }))
+    }
+
+    #[test]
+    fn the_read_reports_full_face_tracking() {
+        for value in [true, false] {
+            let tree = avatar_tree(serde_json::json!({
+                "avatarfullfacetracking": {
+                    "FULL_PATH": "/avatar/avatarfullfacetracking",
+                    "TYPE": "T",
+                    "VALUE": [value],
+                }
+            }));
+            let avatar = avatar_info(&tree).unwrap();
+            assert_eq!(avatar.full_face_tracking, Some(value));
+            assert_eq!(avatar.parameters.len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_tree_without_the_flag_says_nothing_about_it() {
+        let tree = avatar_tree(serde_json::json!({}));
+        assert_eq!(avatar_info(&tree).unwrap().full_face_tracking, None);
+    }
+
+    /// The node can exist with no value yet, or one we can't read. That isn't
+    /// the same as VRChat saying no.
+    #[test]
+    fn a_flag_without_a_bool_says_nothing_about_it() {
+        for value in [
+            serde_json::json!([]),
+            serde_json::json!(["yes"]),
+            serde_json::Value::Null,
+        ] {
+            let tree = avatar_tree(serde_json::json!({
+                "avatarfullfacetracking": {
+                    "FULL_PATH": "/avatar/avatarfullfacetracking",
+                    "VALUE": value,
+                }
+            }));
+            assert_eq!(avatar_info(&tree).unwrap().full_face_tracking, None);
+        }
+    }
+
+    #[test]
+    fn a_tree_without_parameters_is_still_loading() {
+        let tree = node(serde_json::json!({ "FULL_PATH": "/avatar", "CONTENTS": {} }));
+        assert!(avatar_info(&tree).is_err());
     }
 
     #[test]

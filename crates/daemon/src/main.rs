@@ -423,8 +423,9 @@ fn main() -> Result<()> {
                 }
             }
         }
+        output.stop();
     };
-    thread::Builder::new()
+    let output_thread = thread::Builder::new()
         .name("output".into())
         .spawn(consumer)
         .expect("couldn't start the output thread");
@@ -493,6 +494,14 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down...");
+
+    // The output's last message must go out before the process ends. The
+    // thread sees `running` within its 100 ms wait for a frame; the deadline
+    // is for an extension hook that blocks, which mustn't hold up the exit.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !output_thread.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
 
     if let Some(loaded) = current.take() {
         retire_module(loaded, &mut retired);

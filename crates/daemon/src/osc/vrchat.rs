@@ -1,18 +1,23 @@
+use crate::osc::native_face::{self, NativeFaceSender};
 use crate::osc::parameters::registry::ParameterRegistry;
 use crate::osc::parameters::ParamType;
-use crate::osc::query::service::{OscParamType, OscParameterInfo, OscQueryService};
+use crate::osc::query::service::{AvatarInfo, OscParamType, OscQueryService};
 use crate::osc::query::target::VrchatTarget;
 use anyhow::Result;
 use log::{error, info, warn};
-use rosc::{decoder, OscPacket, OscType};
+use rosc::{decoder, encoder, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vrft_common::UnifiedTrackingData;
+
+/// The eye endpoints the native face blob takes over from: it carries gaze and
+/// both lids itself, and wins over these on an avatar that takes it.
+const TRACKING_EYE_PREFIX: &str = "/tracking/eye/";
 
 pub struct VRChatOsc {
     socket: Mutex<Option<UdpSocket>>,
@@ -21,9 +26,10 @@ pub struct VRChatOsc {
     recv_socket: Mutex<Option<UdpSocket>>,
     receive_port: u16,
     osc_query_service: Mutex<Option<OscQueryService>>,
-    query_rx: Mutex<Receiver<Option<Vec<OscParameterInfo>>>>,
+    query_rx: Mutex<Receiver<Option<AvatarInfo>>>,
     change_tx_query: Sender<String>,
     pub param_registry: Mutex<ParameterRegistry>,
+    native_face: Mutex<NativeFaceSender>,
     shutdown_flag: Arc<AtomicBool>,
 }
 
@@ -50,6 +56,7 @@ impl VRChatOsc {
             query_rx: Mutex::new(query_rx),
             change_tx_query,
             param_registry: Mutex::new(ParameterRegistry::new()),
+            native_face: Mutex::new(NativeFaceSender::default()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -125,7 +132,11 @@ impl VRChatOsc {
         if let Ok(rx) = self.query_rx.lock() {
             while let Ok(update) = rx.try_recv() {
                 // Convert Vec<OscParameterInfo> to the structures we need
-                if let Some(param_infos) = &update {
+                if let Some(avatar) = &update {
+                    if let Some(native) = avatar.full_face_tracking {
+                        self.target.offer_avatar_native_face_tracking(native);
+                    }
+                    let param_infos = &avatar.parameters;
                     let avatar_params: HashSet<String> =
                         param_infos.iter().map(|p| p.address.clone()).collect();
 
@@ -161,16 +172,30 @@ impl VRChatOsc {
             }
         }
 
-        let messages = {
+        let mut messages = {
             let mut registry = self.param_registry.lock().unwrap();
             registry.process(data)
         };
 
-        if messages.is_empty() {
+        let native = self.target.native_face_tracking();
+        if native {
+            messages.retain(|message| !message.addr.starts_with(TRACKING_EYE_PREFIX));
+        }
+        let native_face = self
+            .native_face
+            .lock()
+            .unwrap()
+            .next(data, native, Instant::now());
+
+        if messages.is_empty() && native_face.is_none() {
             return Ok(());
         }
 
-        let bundles = super::encode_bundles(messages)?;
+        let mut datagrams = super::encode_bundles(messages)?;
+        // In a datagram of its own: the one form VRChat's spec describes.
+        if let Some(message) = native_face {
+            datagrams.push(encoder::encode(&OscPacket::Message(message))?);
+        }
 
         // Send to target address
         let mut socket_guard = self.socket.lock().unwrap();
@@ -192,14 +217,33 @@ impl VRChatOsc {
             .ok_or_else(|| anyhow::anyhow!("VRChatOsc socket not available"))?;
 
         let address = self.target.send_addr();
-        for bundle in bundles {
-            if let Err(e) = socket.send_to(&bundle, &address) {
+        for datagram in datagrams {
+            if let Err(e) = socket.send_to(&datagram, &address) {
                 // The caller logs it; the socket is made again next frame.
                 *socket_guard = None;
                 return Err(anyhow::anyhow!("OSC Send failed: {}", e));
             }
         }
         Ok(())
+    }
+
+    /// Leaves a native avatar's face neutral, because VRChat documents no
+    /// timeout that would release the last blob when we stop sending.
+    pub fn send_neutral_face(&self) {
+        if !self.target.native_face_tracking() {
+            return;
+        }
+        let packet = OscPacket::Message(native_face::neutral_message());
+        let sent = encoder::encode(&packet)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| {
+                let socket = UdpSocket::bind("0.0.0.0:0")?;
+                socket.send_to(&bytes, self.target.send_addr())?;
+                Ok(())
+            });
+        if let Err(e) = sent {
+            warn!("Failed to send the neutral face: {}", e);
+        }
     }
 
     /// Signal the OSC listener thread to shut down gracefully
@@ -243,9 +287,14 @@ fn handle_packet(packet: OscPacket, tx_query: &Sender<String>, target: &VrchatTa
                     "Unknown".to_string()
                 };
                 info!("Avatar change detected! New Avatar ID: {}", avatar_id);
-                // Not known for the new avatar until its parameters are read.
-                target.set_avatar_face_tracking(None);
+                // Not known for the new avatar until VRChat says.
+                target.avatar_changed();
                 let _ = tx_query.send(avatar_id);
+            } else if msg.addr == native_face::AVATAR_FULL_FACE_TRACKING {
+                if let Some(OscType::Bool(native)) = msg.args.first() {
+                    info!("Avatar takes native face tracking: {}", native);
+                    target.set_avatar_native_face_tracking(*native);
+                }
             }
         }
         OscPacket::Bundle(bundle) => {
@@ -293,5 +342,179 @@ mod tests {
 
         assert_eq!(target.link().avatar_face_tracking, None);
         assert_eq!(rx_query.try_recv().unwrap(), "avtr_test");
+    }
+
+    fn full_face_tracking(value: OscType) -> OscPacket {
+        OscPacket::Message(OscMessage {
+            addr: "/avatar/avatarfullfacetracking".into(),
+            args: vec![value],
+        })
+    }
+
+    #[test]
+    fn vrchat_saying_so_turns_native_face_tracking_on_and_off() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        let (tx_query, _rx_query) = channel();
+
+        handle_packet(full_face_tracking(OscType::Bool(true)), &tx_query, &target);
+        assert!(target.native_face_tracking());
+
+        handle_packet(full_face_tracking(OscType::Bool(false)), &tx_query, &target);
+        assert!(!target.native_face_tracking());
+    }
+
+    #[test]
+    fn an_unexpected_argument_changes_nothing() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        let (tx_query, _rx_query) = channel();
+        handle_packet(full_face_tracking(OscType::Bool(true)), &tx_query, &target);
+        handle_packet(full_face_tracking(OscType::Int(0)), &tx_query, &target);
+        assert!(target.native_face_tracking());
+    }
+
+    /// Everything arriving at a stand-in for VRChat from one `send`, unpacked
+    /// from bundles, and whether each came on its own rather than in a bundle.
+    fn sent_by(osc: &VRChatOsc, listener: &UdpSocket) -> Vec<(OscMessage, bool)> {
+        osc.send(&UnifiedTrackingData::default()).unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut buf = [0u8; 65535];
+        let mut received = Vec::new();
+        while let Ok(size) = listener.recv(&mut buf) {
+            match decoder::decode_udp(&buf[..size]).unwrap().1 {
+                OscPacket::Message(message) => received.push((message, true)),
+                OscPacket::Bundle(bundle) => {
+                    received.extend(bundle.content.into_iter().map(|packet| match packet {
+                        OscPacket::Message(message) => (message, false),
+                        OscPacket::Bundle(_) => panic!("nested bundle"),
+                    }))
+                }
+            }
+        }
+        received
+    }
+
+    /// A VRChatOsc sending to a local listener, for an avatar with `params`.
+    fn osc_for_avatar(params: &[&str]) -> (VRChatOsc, UdpSocket) {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let osc = VRChatOsc::new(VrchatTarget::new("127.0.0.1", port), 0);
+        let avatar_params: HashSet<String> = params
+            .iter()
+            .map(|p| format!("/avatar/parameters/{p}"))
+            .collect();
+        let types = avatar_params
+            .iter()
+            .map(|p| (p.clone(), ParamType::Float))
+            .collect();
+        osc.param_registry
+            .lock()
+            .unwrap()
+            .reset(&avatar_params, &types);
+        (osc, listener)
+    }
+
+    #[test]
+    fn a_native_avatar_gets_the_blob_on_its_own_instead_of_the_eye_endpoints() {
+        let (osc, listener) = osc_for_avatar(&["SomethingElse"]);
+        osc.target.set_avatar_native_face_tracking(true);
+
+        let sent = sent_by(&osc, &listener);
+
+        let blobs: Vec<_> = sent
+            .iter()
+            .filter(|(m, _)| m.addr == native_face::ADDRESS)
+            .collect();
+        let [(message, alone)] = blobs.as_slice() else {
+            panic!("expected one blob, got {sent:?}")
+        };
+        assert!(*alone, "the blob should not be in a bundle");
+        let [OscType::Blob(payload)] = message.args.as_slice() else {
+            panic!("expected one blob argument, got {:?}", message.args)
+        };
+        assert_eq!(payload.len(), native_face::PAYLOAD_LEN);
+        assert!(
+            !sent
+                .iter()
+                .any(|(m, _)| m.addr.starts_with("/tracking/eye/")),
+            "{sent:?}"
+        );
+    }
+
+    /// The blob is the only output for an avatar with no parameters we drive,
+    /// so an empty parameter list must not end the frame early.
+    #[test]
+    fn a_frame_with_no_parameters_still_sends_the_blob() {
+        let (osc, listener) = osc_for_avatar(&[]);
+        osc.target.set_avatar_native_face_tracking(true);
+
+        let sent = sent_by(&osc, &listener);
+
+        let [(message, true)] = sent.as_slice() else {
+            panic!("expected only the blob, got {sent:?}")
+        };
+        assert_eq!(message.addr, native_face::ADDRESS);
+    }
+
+    #[test]
+    fn stopping_leaves_a_native_avatar_neutral() {
+        let (osc, listener) = osc_for_avatar(&[]);
+        osc.target.set_avatar_native_face_tracking(true);
+
+        osc.send_neutral_face();
+
+        let mut buf = [0u8; 65535];
+        listener
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let size = listener.recv(&mut buf).unwrap();
+        let OscPacket::Message(message) = decoder::decode_udp(&buf[..size]).unwrap().1 else {
+            panic!("expected a message")
+        };
+        assert_eq!(message.addr, native_face::ADDRESS);
+        assert_eq!(
+            message.args,
+            vec![OscType::Blob(vec![0; native_face::PAYLOAD_LEN])]
+        );
+    }
+
+    #[test]
+    fn stopping_sends_nothing_to_an_older_avatar() {
+        let (osc, listener) = osc_for_avatar(&["JawOpen"]);
+
+        osc.send_neutral_face();
+
+        listener
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert!(listener.recv(&mut [0u8; 2048]).is_err());
+    }
+
+    #[test]
+    fn an_older_avatar_keeps_the_eye_endpoints_and_gets_no_blob() {
+        let (osc, listener) = osc_for_avatar(&["JawOpen"]);
+
+        let sent = sent_by(&osc, &listener);
+
+        assert!(!sent.iter().any(|(m, _)| m.addr == native_face::ADDRESS));
+        assert!(sent
+            .iter()
+            .any(|(m, _)| m.addr.starts_with("/tracking/eye/")));
+    }
+
+    /// An avatar can carry both; parameters may drive things the native
+    /// section does not, so they keep flowing.
+    #[test]
+    fn a_native_avatar_with_old_parameters_keeps_getting_them() {
+        let (osc, listener) = osc_for_avatar(&["v2/JawOpen"]);
+        osc.target.set_avatar_native_face_tracking(true);
+
+        let sent = sent_by(&osc, &listener);
+
+        assert!(sent.iter().any(|(m, _)| m.addr == native_face::ADDRESS));
+        assert!(sent
+            .iter()
+            .any(|(m, _)| m.addr == "/avatar/parameters/v2/JawOpen"));
     }
 }
