@@ -10,6 +10,12 @@ lib:
     en: "Training"
   description:
     en: "Tongue tracking and better eye tracking for the Quest Pro."
+  setting_up:
+    en: "Setting up"
+  steps_done:
+    en: "%{done} of %{total} done"
+  reconnect:
+    en: "Reconnect"
   setup_question:
     en: "Do you have a Meta Quest Pro?"
   setup_tongue:

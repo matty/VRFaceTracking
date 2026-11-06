@@ -534,6 +534,9 @@ pub struct Settings {
     /// Send the brows, cheek suck and jaw from the universal face model
     /// while it runs.
     pub face_expressions: bool,
+    /// This PC has received the headset's cameras at least once, so the app
+    /// helps reconnect rather than walking through setup again.
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -551,6 +554,7 @@ impl Default for Settings {
             pupil_smoothing: 40.0,
             pupil_hold_closed: true,
             face_expressions: true,
+            setup_done: false,
         }
     }
 }
@@ -582,6 +586,8 @@ pub struct SettingsPatch {
     pub pupil_hold_closed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face_expressions: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_done: Option<bool>,
 }
 
 /// How the camera model's visibility confidence combines with the tracking

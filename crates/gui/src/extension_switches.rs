@@ -157,12 +157,26 @@ impl ExtensionSwitches {
                         Some(true),
                         Some(error.clone()),
                     ),
-                    (None, true) => (
-                        Tone::Good,
-                        t!("extension_switches.running"),
-                        Some(true),
-                        None,
-                    ),
+                    // Its own status, so this can't say all's well while the
+                    // navigation warns.
+                    (None, true) => {
+                        let reading = extension.status(cx);
+                        if reading.tone == Tone::Problem {
+                            (
+                                Tone::Problem,
+                                t!("extension_switches.needs_attention"),
+                                Some(true),
+                                Some(reading.value),
+                            )
+                        } else {
+                            (
+                                Tone::Good,
+                                t!("extension_switches.running"),
+                                Some(true),
+                                None,
+                            )
+                        }
+                    }
                     (None, false) => (Tone::Off, t!("extension_switches.off"), Some(false), None),
                 },
             };
@@ -179,7 +193,7 @@ impl ExtensionSwitches {
             // Its pages, once it's on and they have something to show.
             let open = extensions
                 .shown(id, daemon)
-                .then(|| extension.pages().first().map(|entry| entry.page))
+                .then(|| extensions.opening_page(extension.as_ref(), cx))
                 .flatten()
                 .map(|page| {
                     Button::new(format!("open-extension-{id}"))
@@ -257,10 +271,7 @@ impl ExtensionSwitches {
                                                     .gap_2()
                                                     .text_sm()
                                                     .font_semibold()
-                                                    .child(t!(
-                                                        "extension_switches.add_on",
-                                                        name = extension.name()
-                                                    ))
+                                                    .child(extension.name())
                                                     .child(
                                                         h_flex()
                                                             .gap_1p5()

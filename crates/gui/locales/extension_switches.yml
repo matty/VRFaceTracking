@@ -16,6 +16,8 @@ extension_switches:
     en: "Didn't start"
   running:
     en: "Running"
+  needs_attention:
+    en: "Needs attention"
   add_on:
     en: "%{name} add-on"
   restart_to_apply:

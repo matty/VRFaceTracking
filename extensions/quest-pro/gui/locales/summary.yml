@@ -36,6 +36,10 @@ summary:
     en: "%{ms} ms per frame"
   not_running:
     en: "Not running"
+  tongue_model_not_running:
+    en: "Tongue model not running"
+  eye_tracking_error:
+    en: "Eye tracking error"
   paused:
     en: "Paused"
   no_prediction_for:

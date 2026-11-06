@@ -23,6 +23,10 @@ pub struct PathSource {
     pub label: String,
     /// A rate in a few characters, such as `24 fps`, while it has one.
     pub value: Option<String>,
+    /// A few words under the label on why it isn't working.
+    pub detail: Option<String>,
+    /// A button on the stage: its label and the page it opens.
+    pub action: Option<(String, PageId)>,
     pub tone: Tone,
     /// The page that manages it; the stage opens it.
     pub page: PageId,
@@ -77,6 +81,18 @@ pub trait GuiExtension {
     /// something to say, that's the one to act on first.
     fn status(&self, _cx: &App) -> Reading {
         Reading::new(Tone::Off, "", "")
+    }
+
+    /// How far through first-time setup it is, as steps done and steps in
+    /// all, while that's what it's doing.
+    fn setup_progress(&self, _cx: &App) -> Option<(usize, usize)> {
+        None
+    }
+
+    /// The one page that shows for now, when the others have nothing to show,
+    /// such as during setup. Its tabs are hidden meanwhile.
+    fn only_page(&self, _cx: &App) -> Option<PageId> {
+        None
     }
 
     /// How `page` stands. Its tab is marked only when it needs attention.

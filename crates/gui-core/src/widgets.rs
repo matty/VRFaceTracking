@@ -8,8 +8,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, relative, AnyElement, App, ClipboardItem, Div, ElementId, Hsla, IntoElement,
-    ParentElement, RenderOnce, SharedString, Styled, Window,
+    canvas, div, point, px, relative, AnyElement, App, Bounds, ClipboardItem, Div, ElementId, Hsla,
+    IntoElement, ParentElement, PathBuilder, Pixels, RenderOnce, SharedString, Styled, Window,
 };
 use rust_i18n::t;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
@@ -158,6 +158,44 @@ pub fn add_on_tag() -> Div {
         .font_medium()
         .text_color(palette::text_2())
         .child(SharedString::from(t!("widgets.add_on").to_uppercase()))
+}
+
+/// How far through a set of steps something is, as a small ring.
+pub fn progress_ring(done: usize, total: usize, size: f32) -> impl IntoElement {
+    let fraction = done as f32 / total.max(1) as f32;
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window, _| {
+            let radius = size / 2. - 1.25;
+            let centre = bounds.center();
+            let at = |angle: f32| {
+                point(
+                    centre.x + px(radius * angle.cos()),
+                    centre.y + px(radius * angle.sin()),
+                )
+            };
+            // Quarter-turn back, so it fills from the top.
+            let start = -std::f32::consts::FRAC_PI_2;
+            let arc = |from: f32, to: f32, color: Hsla, window: &mut Window| {
+                let segments = (((to - from) / 0.2).ceil() as usize).max(1);
+                let mut path = PathBuilder::stroke(px(2.));
+                path.move_to(at(from));
+                for segment in 1..=segments {
+                    path.line_to(at(from + (to - from) * segment as f32 / segments as f32));
+                }
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, color);
+                }
+            };
+            let turn = std::f32::consts::TAU;
+            arc(start, start + turn, palette::line_strong(), window);
+            if fraction > 0. {
+                arc(start, start + turn * fraction, palette::text(), window);
+            }
+        },
+    )
+    .flex_none()
+    .size(px(size))
 }
 
 /// A thin bar filled to `fraction` (0..1). It follows live values without
@@ -428,7 +466,7 @@ impl RenderOnce for IconBadge {
 
 /// A page's title, with a line on what it's for and optional trailing
 /// content such as a status pill. A page under a tab goes without the title,
-/// as its tab names it.
+/// as its tab names it, and usually without the line too.
 #[derive(IntoElement)]
 pub struct PageHeader {
     title: Option<SharedString>,
@@ -445,7 +483,8 @@ impl PageHeader {
         }
     }
 
-    /// The header of a page whose tab already names it.
+    /// The header of a page whose tab already names it: just its trailing
+    /// content.
     pub fn under_tab() -> Self {
         Self {
             title: None,
@@ -470,6 +509,7 @@ impl RenderOnce for PageHeader {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         h_flex()
             .items_end()
+            // Trailing content alone keeps to the right.
             .justify_between()
             .gap_6()
             .child(

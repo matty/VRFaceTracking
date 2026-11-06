@@ -1,7 +1,13 @@
 //! Headset: reaches the Quest Pro with adb over USB or Wi-Fi, installs and
 //! updates the VRFT headset app, and starts and stops its camera stream.
+//!
+//! The page has three faces. Until this PC first receives the cameras, it
+//! guides setup one step at a time. After that, setup never comes back on its
+//! own: without the cameras it checks the way from this PC to them and says
+//! what to do about the first thing that fails. With them, it shows the link
+//! and the headset's upkeep.
 use crate::adb::{self, Adb, Details, Device, DeviceState, InstallError, NotAllowed, Origin};
-use crate::daemon::Update;
+use crate::daemon::{SettingsPatch, Update};
 use crate::headset_app::{self, Comparison, Package, PackageOrigin};
 use crate::live::QuestProState;
 use crate::summary::Tone;
@@ -57,6 +63,7 @@ const RELEASES_URL: &str = "https://github.com/matty/VRFaceTracking/releases";
 /// The setup steps whose place is taken by their own controls: allowing
 /// debugging, installing the app, starting the stream and waiting for it to
 /// arrive.
+const CONNECT_STEP: usize = 1;
 const ALLOW_STEP: usize = 2;
 const INSTALL_STEP: usize = 3;
 const START_STEP: usize = 4;
@@ -213,6 +220,10 @@ pub struct HeadsetPage {
     connection_details: bool,
     /// The headset app card shows the firmware build.
     app_details: bool,
+    /// The setup step shows its help.
+    setup_help: bool,
+    /// Whether setup has finished is being saved.
+    _save_setup: Option<Task<()>>,
     _poll: Task<()>,
     _action: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
@@ -225,6 +236,10 @@ impl HeadsetPage {
         let subscriptions = [
             // The stream card shows what VRFT receives.
             cx.observe(&daemon, |page, _, cx| {
+                // The first time the cameras arrive, whichever page shows.
+                if page.received(cx) {
+                    page.remember_setup(true, cx);
+                }
                 if page.watching {
                     cx.notify();
                 }
@@ -286,6 +301,8 @@ impl HeadsetPage {
             show_log: false,
             connection_details: false,
             app_details: false,
+            setup_help: false,
+            _save_setup: None,
             _poll: poll,
             _action: None,
             _subscriptions: subscriptions,
@@ -623,6 +640,64 @@ impl HeadsetPage {
             .read(cx)
             .status()
             .is_some_and(|status| status.source.is_some())
+    }
+
+    /// Whether this page is guiding first-time setup: tracking can say it
+    /// hasn't finished, and the cameras haven't arrived. While tracking can't
+    /// say, it's not assumed, so someone set up never sees it flash by.
+    fn guiding(&self, cx: &App) -> bool {
+        self.daemon
+            .read(cx)
+            .status()
+            .is_some_and(|status| !status.settings.setup_done && status.source.is_none())
+    }
+
+    /// Steps done and steps in all, during first-time setup.
+    pub fn setup_progress(&self, cx: &App) -> Option<(usize, usize)> {
+        self.guiding(cx).then(|| {
+            let steps = setup_steps(&self.setup_state(false));
+            (steps.iter().filter(|step| step.done).count(), steps.len())
+        })
+    }
+
+    /// Whether the headset is linked and has the app, but isn't sending its
+    /// cameras.
+    pub fn stream_stopped(&self, cx: &App) -> bool {
+        !self.received(cx)
+            && self
+                .details
+                .as_ref()
+                .filter(|_| self.ready_serial().is_some())
+                .is_some_and(|details| details.app.is_some() && !details.streaming)
+    }
+
+    /// Saves whether first-time setup has finished, if that's changed.
+    fn remember_setup(&mut self, done: bool, cx: &mut Context<Self>) {
+        let Some(mut settings) = self
+            .daemon
+            .read(cx)
+            .status()
+            .map(|status| status.settings.clone())
+        else {
+            return;
+        };
+        if settings.setup_done == done {
+            return;
+        }
+        settings.setup_done = done;
+        self.daemon
+            .update(cx, |daemon, cx| daemon.show_settings(settings, cx));
+        let client = self.daemon.read(cx).client();
+        let patch = SettingsPatch {
+            setup_done: Some(done),
+            ..SettingsPatch::default()
+        };
+        self._save_setup = Some(cx.background_executor().spawn(async move {
+            // Not worth interrupting anyone over: it's asked again next time.
+            if let Err(error) = client.update_settings(&patch) {
+                log::warn!("Couldn't save that Quest Pro setup finished: {error}");
+            }
+        }));
     }
 
     /// Runs `work` with adb off the UI thread, one action at a time.
@@ -1034,45 +1109,6 @@ impl HeadsetPage {
 
     /// The line under the page's title: how the headset is reached, and how
     /// far along setting it up is.
-    fn description(&self, received: bool, remaining: usize) -> String {
-        match &self.adb {
-            AdbSetup::Looking => return t!("headset.looking_for_tool").into(),
-            AdbSetup::Missing if !received => return t!("headset.download_tool_to_set_up").into(),
-            _ => {}
-        }
-        if self.devices_error.is_some() && !received {
-            return t!("headset.tool_not_working").into();
-        }
-        let Some(device) = self.selected_device() else {
-            return if received {
-                t!("headset.streaming_not_reachable").into()
-            } else {
-                t!("headset.not_reachable").into()
-            };
-        };
-        let name = if device.is_quest_pro() {
-            "Quest Pro".to_string()
-        } else {
-            device.name()
-        };
-        match &device.state {
-            DeviceState::Ready => match (device.is_wireless(), remaining) {
-                (true, 0) => t!("headset.wifi_streaming", name = name),
-                (true, 1 | 2) => t!("headset.wifi_almost", name = name),
-                (true, _) => t!("headset.wifi_linked", name = name),
-                (false, 0) => t!("headset.usb_streaming", name = name),
-                (false, 1 | 2) => t!("headset.usb_almost", name = name),
-                (false, _) => t!("headset.usb_linked", name = name),
-            }
-            .into(),
-            DeviceState::Unauthorized => t!("headset.waiting_for_debugging", name = name).into(),
-            DeviceState::Offline => t!("headset.not_responding_replug", name = name).into(),
-            DeviceState::Other(state) => {
-                t!("headset.device_state", name = name, state = state).into()
-            }
-        }
-    }
-
     /// How the USB or Wi-Fi link that controls the headset stands: its mark,
     /// its label and a word on it.
     fn control_link(&self) -> (Tone, String, String) {
@@ -1259,148 +1295,55 @@ impl HeadsetPage {
         }
     }
 
-    /// What's done of setting up the headset, the step to do now with its
-    /// controls, and what's left, until VRFT receives the cameras.
-    fn setup_card(
+    /// First-time setup: the step to do now, beside all of them.
+    fn guided_setup(
         &self,
         steps: &[SetupStep],
         current: usize,
-        received: bool,
+        two_columns: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let done = steps.iter().filter(|step| step.done).count();
-        let total = steps.len();
-        let progress = steps.iter().enumerate().map(|(index, step)| {
-            div().w(px(16.)).h(px(3.)).rounded(px(2.)).bg(if step.done {
-                palette::text()
-            } else if index == current {
-                palette::line_focus()
-            } else {
-                palette::line_strong()
-            })
-        });
-        let rows: Vec<AnyElement> = steps
-            .iter()
-            .enumerate()
-            .map(|(index, step)| {
-                if step.done {
-                    self.done_row(index, step)
-                } else if index == current {
-                    self.current_step(index, step, received, cx)
-                } else {
-                    pending_row(index, step, index > current + 1)
-                }
-            })
-            .collect();
-        // What starting the stream said, when the step it's about isn't the
-        // one showing.
-        let stream_notices = if matches!(current, START_STEP | RECEIVE_STEP) {
-            Vec::new()
+        let main = v_flex()
+            .gap_4()
+            .child(self.step_card(current, &steps[current], cx))
+            .when(current <= CONNECT_STEP, |column| {
+                column.child(
+                    div()
+                        .text_xs()
+                        .line_height(px(17.))
+                        .text_color(palette::text_3())
+                        .child(t!("headset.setup_needs")),
+                )
+            });
+        let mut side: Vec<AnyElement> = vec![steps_list(steps, current, cx).into_any_element()];
+        // Someone connecting over Wi-Fi types the address here.
+        if current <= ALLOW_STEP {
+            side.push(self.connection_card(Some(current), cx));
+        }
+        if two_columns {
+            h_flex()
+                .items_start()
+                .gap(px(GAP))
+                .child(div().flex_1().min_w_0().child(main))
+                .child(
+                    v_flex()
+                        .w(px(SIDE_WIDTH))
+                        .flex_none()
+                        .gap_4()
+                        .children(side),
+                )
+                .into_any_element()
         } else {
-            self.stream_notices(received)
-        };
-        card(cx)
-            .px(px(20.))
-            .pt(px(18.))
-            .pb_2()
-            .flex()
-            .flex_col()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .pb(px(14.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(15.))
-                            .font_semibold()
-                            .text_color(palette::text())
-                            .child(t!("headset.set_up")),
-                    )
-                    .child(h_flex().gap(px(3.)).children(progress))
-                    .child(
-                        mono(t!("headset.steps_done", done = done, total = total))
-                            .text_size(px(11.5))
-                            .text_color(palette::text_3()),
-                    ),
-            )
-            .children(rows)
-            .when(!stream_notices.is_empty(), |card| {
-                card.child(v_flex().gap_2().pt_2().pb_2().children(stream_notices))
-            })
-            .into_any_element()
+            v_flex()
+                .gap_4()
+                .child(main)
+                .children(side)
+                .into_any_element()
+        }
     }
 
-    /// A step that's done, in one line with a word on how.
-    fn done_row(&self, index: usize, step: &SetupStep) -> AnyElement {
-        let details = self.details.as_ref();
-        let detail: Option<(String, bool)> = match index {
-            0 => match &self.adb {
-                AdbSetup::Found(adb) if adb.origin() == Origin::App => {
-                    Some(("Platform-Tools".into(), false))
-                }
-                AdbSetup::Found(_) => Some((t!("headset.found").into(), false)),
-                _ => None,
-            },
-            1 => self.selected_device().map(|device| {
-                let via = if device.is_wireless() { "Wi-Fi" } else { "USB" };
-                (via.to_string(), false)
-            }),
-            2 => self
-                .selected_device()
-                .filter(|device| device.is_ready())
-                .map(|_| (t!("headset.allowed").into(), false)),
-            INSTALL_STEP => details
-                .and_then(|details| details.app.as_ref())
-                .map(|app| (app.version_name.clone(), true)),
-            START_STEP => Some((t!("headset.streaming").into(), false)),
-            _ => None,
-        };
-        h_flex()
-            .h(px(40.))
-            .gap_3()
-            .border_t_1()
-            .border_color(palette::line_soft())
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(px(18.))
-                    .rounded_full()
-                    .bg(step_grey())
-                    .text_color(palette::text())
-                    .child(Icon::new(IconName::Check).size(px(11.))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(13.))
-                    .text_color(palette::text_2())
-                    .child(step.label.clone()),
-            )
-            .children(detail.map(|(text, numeric)| {
-                let detail = if numeric {
-                    mono(text).text_size(px(11.5))
-                } else {
-                    div().text_xs().child(text)
-                };
-                detail.flex_none().text_color(palette::text_3())
-            }))
-            .into_any_element()
-    }
-
-    /// The step to do now, raised, with what does it inside.
-    fn current_step(
-        &self,
-        index: usize,
-        step: &SetupStep,
-        received: bool,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    /// The setup step to do now: what to do, and the buttons that do it.
+    fn step_card(&self, index: usize, step: &SetupStep, cx: &Context<Self>) -> AnyElement {
         let actions = self.step_actions(index, cx);
         let mut notices: Vec<AnyElement> = Vec::new();
         match index {
@@ -1423,53 +1366,369 @@ impl HeadsetPage {
             }
             INSTALL_STEP => notices.extend(self.app_outcome(cx)),
             START_STEP | RECEIVE_STEP => notices.extend(
-                self.stream_notices(received)
+                self.stream_notices(false)
                     .into_iter()
                     .map(IntoElement::into_any_element),
             ),
             _ => {}
         }
-        h_flex()
-            .items_start()
-            .gap_3()
-            .my(px(6.))
-            .mx(px(-10.))
-            .px(px(10.))
-            .py_4()
-            .rounded(px(11.))
-            .bg(palette::raised())
-            .border_1()
-            .border_color(palette::line_strong())
-            .child(step_number(index + 1, true))
+        let instructions = if index == CONNECT_STEP {
+            numbered(vec![
+                t!("headset.step_connect_mode").into(),
+                t!("headset.step_connect_plug").into(),
+            ])
+            .into_any_element()
+        } else {
+            div()
+                .text_sm()
+                .line_height(px(21.))
+                .text_color(palette::text_2())
+                .child(step.hint.clone())
+                .into_any_element()
+        };
+        let waiting = match index {
+            CONNECT_STEP => Some(t!("headset.looking_for_headset")),
+            RECEIVE_STEP => Some(t!("headset.waiting_for_cameras")),
+            _ => None,
+        };
+        card(cx)
+            .p(px(22.))
+            .flex()
+            .flex_col()
+            .gap(px(18.))
             .child(
+                div()
+                    .text_size(px(22.))
+                    .line_height(px(28.))
+                    .font_semibold()
+                    .text_color(palette::text())
+                    .child(step.label.clone()),
+            )
+            .child(instructions)
+            .when(!actions.is_empty(), |card| {
+                card.child(h_flex().gap_2().flex_wrap().children(actions))
+            })
+            .children(waiting.map(|waiting| StatusLine::new(Tone::Waiting, waiting)))
+            .children(notices)
+            .when(index == CONNECT_STEP, |card| {
+                card.child(
+                    disclosure("setup-help", t!("headset.not_showing_up"), self.setup_help)
+                        .pt_3()
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.setup_help = !page.setup_help;
+                            cx.notify();
+                        })),
+                )
+                .when(self.setup_help, |card| {
+                    card.child(bullets(vec![
+                        t!("headset.help_cable").into(),
+                        t!("headset.help_developer_mode").into(),
+                        t!("headset.help_prompt").into(),
+                        t!("headset.help_wifi").into(),
+                    ]))
+                })
+            })
+            .into_any_element()
+    }
+
+    /// Set up, but no cameras: each thing the way from this PC to them
+    /// depends on, and what to do about the first that fails.
+    fn connection_checks(&self, found: bool, cx: &Context<Self>) -> AnyElement {
+        let state = self.setup_state(false);
+        let results = check_results(&state, self.devices_error.is_some());
+        let rows = results.iter().enumerate().map(|(index, result)| {
+            let (label, outcome) = self.check_text(index, *result);
+            let failed = *result == CheckResult::Failed;
+            h_flex()
+                .min_h(px(44.))
+                .gap_3()
+                .child(check_mark(*result))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(14.))
+                        .font_medium()
+                        .text_color(if *result == CheckResult::Unknown {
+                            palette::text_3()
+                        } else {
+                            palette::text()
+                        })
+                        .child(label),
+                )
+                .children(outcome.map(|outcome| {
+                    div()
+                        .flex_none()
+                        .text_size(px(13.))
+                        .text_color(if failed {
+                            palette::signal_text()
+                        } else {
+                            palette::text_2()
+                        })
+                        .child(outcome)
+                }))
+                .into_any_element()
+        });
+        // Each row, and what to do under the one that failed.
+        let mut list = v_flex();
+        let fix_at = results
+            .iter()
+            .position(|result| *result == CheckResult::Failed);
+        for (index, row) in rows.enumerate() {
+            list = list.child(
                 v_flex()
-                    .flex_1()
-                    .min_w_0()
+                    .border_t_1()
+                    .border_color(palette::line_soft())
+                    .child(row)
+                    .when(fix_at == Some(index), |row| {
+                        row.child(
+                            v_flex()
+                                .ml(px(36.))
+                                .mb_3()
+                                .gap_3()
+                                .children(self.check_fix(index, cx)),
+                        )
+                    }),
+            );
+        }
+        let reason = self
+            .daemon
+            .read(cx)
+            .status()
+            .map(|status| status.status.clone())
+            .filter(|reason| !reason.is_empty());
+        let copy_text = {
+            let mut lines: Vec<String> = results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    let (label, outcome) = self.check_text(index, *result);
+                    match outcome {
+                        Some(outcome) => format!("{label}: {outcome}"),
+                        None => label.to_string(),
+                    }
+                })
+                .collect();
+            lines.extend(reason.clone());
+            lines.join("\n")
+        };
+        v_flex()
+            .gap_3()
+            .child(
+                card(cx)
+                    .px(px(22.))
+                    .pt(px(20.))
+                    .pb_2()
+                    .flex()
+                    .flex_col()
                     .gap_3()
                     .child(
-                        v_flex()
-                            .gap_1()
+                        h_flex()
+                            .items_start()
+                            .gap_3()
                             .child(
-                                div()
-                                    .text_size(px(15.))
-                                    .font_semibold()
-                                    .text_color(palette::text())
-                                    .child(step.label.clone()),
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(26.))
+                                            .font_semibold()
+                                            .text_color(palette::text())
+                                            .child(t!("headset.checks_title")),
+                                    )
+                                    .children(reason.map(|reason| {
+                                        div()
+                                            .text_xs()
+                                            .line_height(px(17.))
+                                            .text_color(palette::text_3())
+                                            .child(reason)
+                                    })),
                             )
                             .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .line_height(px(19.))
-                                    .text_color(palette::text_2())
-                                    .child(step.hint.clone()),
+                                Button::new("check-again")
+                                    .regular()
+                                    .icon(IconName::RefreshCw)
+                                    .label(t!("headset.check_again"))
+                                    .on_click(cx.listener(|page, _, _, cx| {
+                                        page.refresh_requested = true;
+                                        cx.notify();
+                                    })),
                             ),
                     )
-                    .when(!actions.is_empty(), |body| {
-                        body.child(h_flex().gap_2().flex_wrap().children(actions))
-                    })
-                    .children(notices),
+                    .child(list),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("toggle-log")
+                            .ghost()
+                            .regular()
+                            .icon(IconName::FileText)
+                            .label(t!("headset.headset_log"))
+                            .disabled(!found)
+                            .on_click(cx.listener(|page, _, _, cx| page.toggle_log(cx))),
+                    )
+                    .child(
+                        Button::new("copy-checks")
+                            .ghost()
+                            .regular()
+                            .label(t!("headset.copy_details"))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()))
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("run-setup-again")
+                            .cursor_pointer()
+                            .text_size(px(12.5))
+                            .text_color(palette::text_3())
+                            .hover(|style| style.text_color(palette::text()))
+                            .on_click(cx.listener(|page, _, _, cx| page.remember_setup(false, cx)))
+                            .child(t!("headset.run_setup_again")),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// A check's name, and how it came out when it's known.
+    fn check_text(&self, index: usize, result: CheckResult) -> (SharedString, Option<String>) {
+        let device = self.selected_device();
+        let details = self
+            .details
+            .as_ref()
+            .filter(|_| self.ready_serial().is_some());
+        let label: SharedString = match index {
+            CHECK_TOOL => t!("headset.check_tool"),
+            CHECK_FIND => t!("headset.check_find"),
+            CHECK_APP => t!("headset.check_app"),
+            CHECK_STREAM => t!("headset.check_stream"),
+            _ => t!("headset.step_receive"),
+        }
+        .into();
+        let outcome: Option<String> = match (index, result) {
+            (_, CheckResult::Unknown) => None,
+            (CHECK_TOOL, CheckResult::Passed) => Some(t!("headset.check_ready").into()),
+            (CHECK_TOOL, CheckResult::Failed) if self.devices_error.is_some() => {
+                Some(t!("headset.not_working").into())
+            }
+            (CHECK_TOOL, CheckResult::Failed) => Some(t!("headset.tool_not_downloaded").into()),
+            (CHECK_FIND, CheckResult::Passed) => device.map(|device| {
+                let via = if device.is_wireless() {
+                    t!("headset.over_wifi")
+                } else {
+                    t!("headset.over_usb")
+                };
+                match details.and_then(|details| details.battery) {
+                    Some(battery) => format!("{via} · {}", battery_text(battery, true)),
+                    None => via.into_owned(),
+                }
+            }),
+            (CHECK_FIND, CheckResult::Failed) => Some(match device.map(|device| &device.state) {
+                Some(DeviceState::Unauthorized) => t!("headset.check_needs_permission").into(),
+                Some(_) => t!("headset.not_responding").into(),
+                None => t!("headset.check_not_found").into(),
+            }),
+            (CHECK_APP, CheckResult::Passed) => details
+                .and_then(|details| details.app.as_ref())
+                .map(|app| app.version_name.clone()),
+            (CHECK_APP, CheckResult::Failed) => Some(t!("headset.check_not_installed").into()),
+            (CHECK_STREAM, CheckResult::Passed) => Some(t!("headset.streaming").into()),
+            (CHECK_STREAM, CheckResult::Failed) => Some(t!("headset.stopped").into()),
+            (_, CheckResult::Passed) => Some(t!("headset.receiving").into()),
+            (_, CheckResult::Failed) => Some(t!("headset.check_cant_reach").into()),
+        };
+        (label, outcome)
+    }
+
+    /// What to do about the check that failed.
+    fn check_fix(&self, index: usize, cx: &Context<Self>) -> Vec<AnyElement> {
+        let say = |text: SharedString| {
+            div()
+                .text_size(px(13.5))
+                .line_height(px(20.))
+                .text_color(palette::text_2())
+                .child(text)
+                .into_any_element()
+        };
+        let buttons = |actions: Vec<AnyElement>| {
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .children(actions)
+                .into_any_element()
+        };
+        let mut fix = Vec::new();
+        match index {
+            CHECK_TOOL => match &self.devices_error {
+                Some(error) => fix.push(say(error.clone().into())),
+                None => {
+                    fix.push(say(t!("headset.step_download_hint").into()));
+                    fix.push(buttons(self.step_actions(0, cx)));
+                    fix.extend(
+                        self.message_in(Area::Connection)
+                            .map(IntoElement::into_any_element),
+                    );
+                }
+            },
+            CHECK_FIND => {
+                match self.selected_device().map(|device| &device.state) {
+                    Some(DeviceState::Unauthorized) => {
+                        fix.push(say(t!("headset.step_allow_hint").into()));
+                    }
+                    Some(_) => {
+                        fix.push(say(
+                            t!("headset.not_responding_replug", name = "Quest Pro").into()
+                        ));
+                    }
+                    None => fix.push(
+                        bullets(vec![
+                            t!("headset.try_wake").into(),
+                            t!("headset.try_network").into(),
+                            t!("headset.try_usb").into(),
+                        ])
+                        .into_any_element(),
+                    ),
+                }
+                fix.extend(
+                    self.message_in(Area::Connection)
+                        .map(IntoElement::into_any_element),
+                );
+            }
+            CHECK_APP => {
+                fix.push(say(t!("headset.step_install_hint").into()));
+                fix.push(buttons(self.step_actions(INSTALL_STEP, cx)));
+            }
+            CHECK_STREAM => {
+                fix.push(say(t!("headset.step_start_hint").into()));
+                fix.push(buttons(self.step_actions(START_STEP, cx)));
+                fix.extend(
+                    self.message_in(Area::Stream)
+                        .map(IntoElement::into_any_element),
+                );
+            }
+            _ => {
+                fix.push(
+                    bullets(vec![
+                        t!("headset.try_network").into(),
+                        t!("headset.try_firewall").into(),
+                        t!("headset.try_address").into(),
+                    ])
+                    .into_any_element(),
+                );
+                fix.extend(
+                    self.message_in(Area::Stream)
+                        .map(IntoElement::into_any_element),
+                );
+            }
+        }
+        fix
     }
 
     /// The buttons that do the step to do now.
@@ -2441,21 +2700,35 @@ impl Render for HeadsetPage {
         let two_columns = vrft_gui_core::content_width(window) >= TWO_COLUMN_WIDTH;
         let found = matches!(self.adb, AdbSetup::Found(_));
         let received = self.received(cx);
-        let steps = setup_steps(&self.setup_state(received));
-        let current = steps.iter().position(|step| !step.done);
-        let remaining = steps.iter().filter(|step| !step.done).count();
-        // Once every step is done the checklist gives way to the stream.
-        let main = match current {
-            Some(current) => self.setup_card(&steps, current, received, cx),
-            None => self.stream_card(received, cx),
+        if self.guiding(cx) {
+            let steps = setup_steps(&self.setup_state(false));
+            // Guiding means the cameras haven't arrived, so a step is always
+            // left; the last is what's shown if that ever changes.
+            let current = steps
+                .iter()
+                .position(|step| !step.done)
+                .unwrap_or(RECEIVE_STEP);
+            return v_flex()
+                .gap(px(GAP))
+                .children(
+                    self.busy
+                        .map(|busy| StatusLine::new(Tone::Waiting, busy.doing())),
+                )
+                .child(self.guided_setup(&steps, current, two_columns, cx))
+                .into_any_element();
+        }
+        let main = if received {
+            self.stream_card(received, cx)
+        } else {
+            self.connection_checks(found, cx)
         };
         let mut side: Vec<AnyElement> = Vec::new();
         if found {
-            side.push(self.app_card(current, cx));
+            side.push(self.app_card(None, cx));
             side.extend(self.five_cameras_card(cx));
             side.extend(self.eye_gaze_card(cx));
         }
-        side.push(self.connection_card(current, cx));
+        side.push(self.connection_card(None, cx));
         let columns = if two_columns {
             h_flex()
                 .items_start()
@@ -2473,10 +2746,9 @@ impl Render for HeadsetPage {
         };
         v_flex()
             .gap(px(GAP))
-            .child(
-                PageHeader::under_tab()
-                    .description(self.description(received, remaining))
-                    .trailing(
+            .when(received, |page| {
+                page.child(
+                    PageHeader::under_tab().trailing(
                         Button::new("toggle-log")
                             .ghost()
                             .regular()
@@ -2490,14 +2762,17 @@ impl Render for HeadsetPage {
                             .disabled(!found)
                             .on_click(cx.listener(|page, _, _, cx| page.toggle_log(cx))),
                     ),
-            )
+                )
+            })
             .children(
                 self.busy
                     .map(|busy| StatusLine::new(Tone::Waiting, busy.doing())),
             )
-            .child(self.chain(received, cx))
+            // The checks say how the link stands while there's something wrong.
+            .when(received, |page| page.child(self.chain(received, cx)))
             .child(columns)
             .when(found && self.show_log, |page| page.child(self.log_card(cx)))
+            .into_any_element()
     }
 }
 
@@ -2641,59 +2916,122 @@ fn step_grey() -> Hsla {
 }
 
 /// A step's number in a ring, white for the step to do now.
-fn step_number(number: usize, current: bool) -> impl IntoElement {
-    div()
+/// All of setup's steps: what's done, what's now and what's left.
+fn steps_list(steps: &[SetupStep], current: usize, cx: &Context<HeadsetPage>) -> impl IntoElement {
+    card(cx)
+        .p(px(18.))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .children(steps.iter().enumerate().map(|(index, step)| {
+            let now = index == current;
+            let mark = div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(20.))
+                .rounded_full();
+            let mark = if step.done {
+                mark.bg(palette::text())
+                    .text_color(palette::page())
+                    .child(Icon::new(IconName::Check).size(px(12.)))
+            } else if now {
+                mark.border_1()
+                    .border_color(palette::text())
+                    .child(StatusDot::new(Tone::Waiting))
+            } else {
+                mark.border_1().border_color(step_grey())
+            };
+            h_flex()
+                .items_start()
+                .gap(px(10.))
+                .text_size(px(13.))
+                .line_height(px(20.))
+                .when(now, |row| row.font_medium())
+                .text_color(if now {
+                    palette::text()
+                } else if step.done {
+                    palette::text_2()
+                } else {
+                    palette::text_3()
+                })
+                .child(mark)
+                .child(div().flex_1().min_w_0().child(step.label.clone()))
+        }))
+}
+
+/// Things to do in order, each with its number.
+fn numbered(items: Vec<SharedString>) -> impl IntoElement {
+    v_flex()
+        .gap_3()
+        .children(items.into_iter().enumerate().map(|(index, item)| {
+            h_flex()
+                .items_start()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(24.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(palette::line_strong())
+                        .font_family(MONO_FONT)
+                        .text_size(px(11.))
+                        .text_color(palette::text_2())
+                        .child(format!("{}", index + 1)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pt_px()
+                        .text_sm()
+                        .line_height(px(21.))
+                        .text_color(palette::text())
+                        .child(item),
+                )
+        }))
+}
+
+/// Things to try, in no special order.
+fn bullets(items: Vec<SharedString>) -> impl IntoElement {
+    v_flex().gap_1p5().children(items.into_iter().map(|item| {
+        h_flex()
+            .items_start()
+            .gap_2()
+            .text_size(px(13.5))
+            .line_height(px(20.))
+            .text_color(palette::text_2())
+            .child(div().flex_none().child("\u{2022}"))
+            .child(div().flex_1().min_w_0().child(item))
+    }))
+}
+
+/// How a check came out.
+fn check_mark(result: CheckResult) -> impl IntoElement {
+    let mark = div()
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(18.))
-        .mt(px(1.))
-        .rounded_full()
-        .when(current, |mark| {
-            mark.border_2().border_color(palette::text())
-        })
-        .when(!current, |mark| mark.border_1().border_color(step_grey()))
-        .font_family(MONO_FONT)
-        .text_size(px(10.))
-        .when(current, |mark| mark.font_semibold())
-        .text_color(if current {
-            palette::text()
-        } else {
-            palette::text_3()
-        })
-        .child(number.to_string())
-}
-
-/// A step still to come, with what it will ask.
-fn pending_row(index: usize, step: &SetupStep, ruled: bool) -> AnyElement {
-    h_flex()
-        .items_start()
-        .gap_3()
-        .pt_3()
-        .pb(px(14.))
-        .when(ruled, |row| {
-            row.border_t_1().border_color(palette::line_soft())
-        })
-        .child(step_number(index + 1, false))
-        .child(
-            v_flex()
-                .min_w_0()
-                .gap_0p5()
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(palette::text_2())
-                        .child(step.label.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_3())
-                        .child(step.hint.clone()),
-                ),
-        )
-        .into_any_element()
+        .size(px(24.))
+        .rounded_full();
+    match result {
+        CheckResult::Passed => mark
+            .bg(palette::text())
+            .text_color(palette::page())
+            .child(Icon::new(IconName::Check).size(px(14.))),
+        CheckResult::Failed => mark
+            .border_1()
+            .border_color(palette::signal_line())
+            .bg(palette::signal_bg())
+            .child(StatusDot::new(Tone::Problem)),
+        CheckResult::Unknown => mark.border_1().border_color(step_grey()),
+    }
 }
 
 fn card_title(title: impl Into<SharedString>) -> Div {
@@ -2962,6 +3300,132 @@ struct SetupStep {
     done: bool,
     /// What the step asks for, shown while it's to do.
     hint: SharedString,
+}
+
+/// The checks from this PC to the headset's cameras, in the order they depend
+/// on each other.
+const CHECK_TOOL: usize = 0;
+const CHECK_FIND: usize = 1;
+const CHECK_APP: usize = 2;
+const CHECK_STREAM: usize = 3;
+const CHECK_COUNT: usize = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckResult {
+    Passed,
+    Failed,
+    /// Not known yet, as what it depends on hasn't passed.
+    Unknown,
+}
+
+/// How each check comes out. Only the first that doesn't pass is known, as the
+/// rest can't be read until it does.
+fn check_results(state: &SetupState, tool_broken: bool) -> [CheckResult; CHECK_COUNT] {
+    let known = |passed: Option<bool>| match passed {
+        Some(true) => CheckResult::Passed,
+        Some(false) => CheckResult::Failed,
+        None => CheckResult::Unknown,
+    };
+    let readings = [
+        known(state.adb.map(|found| found && !tool_broken)),
+        match state.device {
+            Some(SetupDevice::Ready) => CheckResult::Passed,
+            _ => CheckResult::Failed,
+        },
+        known(state.app_installed),
+        known(state.streaming),
+        if state.received {
+            CheckResult::Passed
+        } else {
+            CheckResult::Failed
+        },
+    ];
+    let mut results = [CheckResult::Unknown; CHECK_COUNT];
+    for (result, reading) in results.iter_mut().zip(readings) {
+        *result = reading;
+        if reading != CheckResult::Passed {
+            break;
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+
+    fn state() -> SetupState {
+        SetupState {
+            adb: Some(true),
+            device: Some(SetupDevice::Ready),
+            app_installed: Some(true),
+            streaming: Some(true),
+            received: false,
+        }
+    }
+
+    #[test]
+    fn stops_at_the_first_check_that_fails() {
+        use CheckResult::{Failed, Passed, Unknown};
+        let not_found = SetupState {
+            device: None,
+            ..state()
+        };
+        assert_eq!(
+            check_results(&not_found, false),
+            [Passed, Failed, Unknown, Unknown, Unknown]
+        );
+        let needs_permission = SetupState {
+            device: Some(SetupDevice::Unauthorized),
+            ..state()
+        };
+        assert_eq!(
+            check_results(&needs_permission, false),
+            [Passed, Failed, Unknown, Unknown, Unknown]
+        );
+        let stopped = SetupState {
+            streaming: Some(false),
+            ..state()
+        };
+        assert_eq!(
+            check_results(&stopped, false),
+            [Passed, Passed, Passed, Failed, Unknown]
+        );
+        assert_eq!(
+            check_results(&state(), false),
+            [Passed, Passed, Passed, Passed, Failed]
+        );
+    }
+
+    #[test]
+    fn the_connection_tool_comes_first() {
+        use CheckResult::{Failed, Unknown};
+        let missing = SetupState {
+            adb: Some(false),
+            ..state()
+        };
+        assert_eq!(check_results(&missing, false)[0], Failed);
+        assert_eq!(check_results(&state(), true)[0], Failed);
+        let looking = SetupState {
+            adb: None,
+            ..state()
+        };
+        assert_eq!(check_results(&looking, false), [Unknown; CHECK_COUNT]);
+    }
+
+    #[test]
+    fn not_read_yet_isnt_a_failure() {
+        use CheckResult::{Passed, Unknown};
+        let reading = SetupState {
+            app_installed: None,
+            streaming: None,
+            ..state()
+        };
+        assert_eq!(
+            check_results(&reading, false),
+            [Passed, Passed, Unknown, Unknown, Unknown]
+        );
+    }
 }
 
 /// The steps from nothing to VRFT receiving the headset's cameras. A step

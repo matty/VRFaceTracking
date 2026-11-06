@@ -157,8 +157,29 @@ impl GuiExtension for QuestProGui {
     }
 
     fn status(&self, cx: &App) -> Reading {
+        if let Some((done, total)) = self.setup_progress(cx) {
+            return Reading::new(
+                Tone::Waiting,
+                t!("lib.setting_up"),
+                t!("lib.steps_done", done = done, total = total),
+            );
+        }
         let state = self.state.read(cx);
-        summary::overall(state.status(), &state.rates())
+        let overall = summary::overall(state.status(), &state.rates());
+        // Only this page can tell a stopped stream from a headset out of
+        // reach, as it's the one that talks to the headset over adb.
+        if overall.tone != Tone::Problem && self.headset.read(cx).stream_stopped(cx) {
+            return Reading::new(Tone::Off, t!("headset.stream_stopped"), "");
+        }
+        overall
+    }
+
+    fn setup_progress(&self, cx: &App) -> Option<(usize, usize)> {
+        self.headset.read(cx).setup_progress(cx)
+    }
+
+    fn only_page(&self, cx: &App) -> Option<PageId> {
+        self.setup_progress(cx).map(|_| pages::HEADSET)
     }
 
     fn page_tone(&self, page: PageId, cx: &App) -> Option<Tone> {
@@ -182,13 +203,19 @@ impl GuiExtension for QuestProGui {
         let state = self.state.read(cx);
         let status = state.status();
         let rates = state.rates();
-        let headset = summary::headset(status);
+        let overall = self.status(cx);
         let cameras = summary::mouth_cameras(status, &rates);
-        let tone = if headset.tone == Tone::Problem {
-            Tone::Problem
-        } else {
-            cameras.tone
+        let problem = overall.tone == Tone::Problem;
+        let tone = if problem { Tone::Problem } else { cameras.tone };
+        // The page with the control that fixes it, or the headset's.
+        let page = match overall.fix {
+            Some(summary::Fix::Open(page)) => page,
+            _ => pages::HEADSET,
         };
+        let setting_up = self.setup_progress(cx).is_some();
+        // Set up, but no cameras: say so, and offer the way back.
+        let out_of_reach =
+            !setting_up && !problem && status.is_some_and(|status| status.source.is_none());
         Some(PathSource {
             icon: IconName::RectangleGoggles,
             label: vrft_quest_pro_protocol::NAME.into(),
@@ -196,8 +223,10 @@ impl GuiExtension for QuestProGui {
                 .camera_fps
                 .filter(|_| cameras.tone == Tone::Good)
                 .map(summary::fps),
+            detail: (setting_up || out_of_reach).then_some(overall.value),
+            action: out_of_reach.then(|| (t!("lib.reconnect").into_owned(), pages::HEADSET)),
             tone,
-            page: pages::HEADSET,
+            page,
         })
     }
 

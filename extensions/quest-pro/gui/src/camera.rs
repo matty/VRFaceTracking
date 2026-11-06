@@ -797,11 +797,7 @@ impl Render for MouthPage {
 
         v_flex()
             .gap(px(20.))
-            .child(
-                PageHeader::under_tab()
-                    .description(t!("camera.page_description"))
-                    .trailing(trailing),
-            )
+            .child(PageHeader::under_tab().trailing(trailing))
             .child(
                 div()
                     .flex()
