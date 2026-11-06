@@ -1,7 +1,5 @@
 _version: 2
 headset:
-  title:
-    en: "Headset"
   headset:
     en: "Headset"
   wifi_not_allowed:
@@ -84,32 +82,10 @@ headset:
     en: "All five cameras off from the next stream."
   looking_for_tool:
     en: "Looking for the connection tool…"
-  download_tool_to_set_up:
-    en: "Download the connection tool to set up the headset."
   tool_not_working:
     en: "The connection tool isn't working."
-  streaming_not_reachable:
-    en: "Quest Pro streaming. Not reachable over USB or Wi-Fi right now."
-  not_reachable:
-    en: "Not reachable over USB or Wi-Fi."
-  wifi_linked:
-    en: "%{name} over Wi-Fi."
-  wifi_almost:
-    en: "%{name} over Wi-Fi. Almost there."
-  wifi_streaming:
-    en: "%{name} over Wi-Fi. Streaming to this PC."
-  usb_linked:
-    en: "%{name}, plugged in over USB."
-  usb_almost:
-    en: "%{name}, plugged in over USB. Almost there."
-  usb_streaming:
-    en: "%{name}, plugged in over USB. Streaming to this PC."
-  waiting_for_debugging:
-    en: "%{name}, waiting for you to allow USB debugging."
   not_responding_replug:
     en: "%{name} isn't responding. Unplug it and plug it back in."
-  device_state:
-    en: "%{name}: %{state}."
   control:
     en: "Link"
   control_wifi:
@@ -158,14 +134,6 @@ headset:
     en: "VRFaceTracking %{version}"
   link_only_for_control:
     en: "Tracking keeps working without the USB or Wi-Fi link. It's only needed to install, start and stop the headset app."
-  set_up:
-    en: "Set up"
-  steps_done:
-    en: "%{done} of %{total}"
-  found:
-    en: "Found"
-  allowed:
-    en: "Allowed"
   download:
     en: "Download"
   download_tooltip:
@@ -318,6 +286,64 @@ headset:
     en: "The connection tool is Google's Platform-Tools. Downloading it means accepting the Android SDK terms."
   step_connect:
     en: "Connect the headset"
+  step_connect_mode:
+    en: "Turn on Developer Mode for the headset in the Meta Horizon app."
+  step_connect_plug:
+    en: "Plug it into this PC with a USB cable that carries data."
+  looking_for_headset:
+    en: "Looking for the headset…"
+  waiting_for_cameras:
+    en: "Waiting for the cameras…"
+  setup_needs:
+    en: "It needs a rooted Quest Pro. Everything else is installed for you here."
+  not_showing_up:
+    en: "It isn't showing up"
+  help_cable:
+    en: "Some USB cables only charge. Try one that carries data."
+  help_developer_mode:
+    en: "Check Developer Mode is on in the Meta Horizon app, then unplug the headset and plug it back in."
+  help_prompt:
+    en: "Put the headset on. It may be asking you to allow this computer."
+  help_wifi:
+    en: "If the headset already has wireless debugging on, enter its address under Wi-Fi."
+  checks_title:
+    en: "Connection checks"
+  check_again:
+    en: "Check again"
+  copy_details:
+    en: "Copy details"
+  run_setup_again:
+    en: "Run setup again"
+  stream_stopped:
+    en: "Stream stopped"
+  check_tool:
+    en: "Connection tool"
+  check_find:
+    en: "Find the headset"
+  check_app:
+    en: "Headset app"
+  check_stream:
+    en: "Camera stream"
+  check_ready:
+    en: "Ready"
+  check_not_found:
+    en: "Not found over USB or Wi-Fi"
+  check_needs_permission:
+    en: "Waiting for permission"
+  check_not_installed:
+    en: "Not installed"
+  check_cant_reach:
+    en: "Can't reach the stream"
+  try_wake:
+    en: "Wake the headset: put it on, or press its power button."
+  try_network:
+    en: "Keep the headset and this PC on the same network."
+  try_usb:
+    en: "Or plug it in with a USB cable."
+  try_firewall:
+    en: "Check that no VPN or firewall blocks port 27274."
+  try_address:
+    en: "Or set VRFT_QUEST_PRO_ADDR to the headset's IP:27274 and restart tracking."
   step_connect_hint:
     en: "Turn on Developer Mode for the headset in the Meta Horizon app, then plug it into this PC with a USB cable that carries data."
   step_allow:

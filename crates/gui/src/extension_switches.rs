@@ -1,5 +1,5 @@
-//! Turning the extensions built into this app on and off, on the Modules
-//! page. VRFT does it while it runs, restarting to apply it; while it
+//! Turning the extensions built into this app on and off, on Manage add-ons,
+//! and opening them. VRFT does it while it runs, restarting to apply it; while it
 //! doesn't, `config.json` is written directly.
 use crate::modules::icon_tile;
 use crate::shell::Extensions;
@@ -14,6 +14,7 @@ use gpui_kit::{
 use rust_i18n::t;
 use vrft_gui_core::launcher::Launcher;
 use vrft_gui_core::live::DaemonState;
+use vrft_gui_core::nav::open_page;
 use vrft_gui_core::palette;
 use vrft_gui_core::summary::{Connection, Tone};
 use vrft_gui_core::widgets::{card, hint, Notice, StatusDot};
@@ -156,12 +157,26 @@ impl ExtensionSwitches {
                         Some(true),
                         Some(error.clone()),
                     ),
-                    (None, true) => (
-                        Tone::Good,
-                        t!("extension_switches.running"),
-                        Some(true),
-                        None,
-                    ),
+                    // Its own status, so this can't say all's well while the
+                    // navigation warns.
+                    (None, true) => {
+                        let reading = extension.status(cx);
+                        if reading.tone == Tone::Problem {
+                            (
+                                Tone::Problem,
+                                t!("extension_switches.needs_attention"),
+                                Some(true),
+                                Some(reading.value),
+                            )
+                        } else {
+                            (
+                                Tone::Good,
+                                t!("extension_switches.running"),
+                                Some(true),
+                                None,
+                            )
+                        }
+                    }
                     (None, false) => (Tone::Off, t!("extension_switches.off"), Some(false), None),
                 },
             };
@@ -175,6 +190,17 @@ impl ExtensionSwitches {
                         switches.switch_pressed(id, *checked, cx)
                     }))
             });
+            // Its pages, once it's on and they have something to show.
+            let open = extensions
+                .shown(id, daemon)
+                .then(|| extensions.opening_page(extension.as_ref(), cx))
+                .flatten()
+                .map(|page| {
+                    Button::new(format!("open-extension-{id}"))
+                        .small()
+                        .label(t!("extension_switches.open"))
+                        .on_click(move |_, _, cx| open_page(page, cx))
+                });
             let confirm = confirming.map(|(_, target)| {
                 // The buttons wrap under the text when the card is narrow.
                 h_flex()
@@ -245,10 +271,7 @@ impl ExtensionSwitches {
                                                     .gap_2()
                                                     .text_sm()
                                                     .font_semibold()
-                                                    .child(t!(
-                                                        "extension_switches.add_on",
-                                                        name = extension.name()
-                                                    ))
+                                                    .child(extension.name())
                                                     .child(
                                                         h_flex()
                                                             .gap_1p5()
@@ -266,6 +289,7 @@ impl ExtensionSwitches {
                                                     .child(extension.description()),
                                             ),
                                     )
+                                    .children(open)
                                     .children(switch),
                             )
                             .children(reason.map(|reason| {

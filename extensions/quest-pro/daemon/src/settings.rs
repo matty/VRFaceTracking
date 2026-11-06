@@ -47,6 +47,17 @@ fn from_before_mouth_model(mut saved: Value) -> Value {
     saved
 }
 
+/// Settings saved before `setup_done` existed come from someone already using
+/// the add-on (every save writes every field), so setup doesn't start over.
+fn from_before_setup_done(mut saved: Value) -> Value {
+    if let Value::Object(fields) = &mut saved {
+        fields
+            .entry("setup_done")
+            .or_insert_with(|| Value::from(true));
+    }
+    saved
+}
+
 #[derive(Clone)]
 pub struct SettingsStore {
     path: PathBuf,
@@ -59,6 +70,7 @@ impl SettingsStore {
         let settings = match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Value>(&bytes)
                 .map(from_before_mouth_model)
+                .map(from_before_setup_done)
                 .and_then(serde_json::from_value::<QuestProSettings>)
                 .map_err(|error| error.to_string())
                 .and_then(validated)
@@ -137,6 +149,15 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn settings_saved_before_setup_done_count_as_set_up() {
+        let saved = from_before_setup_done(json!({ "pupils": true }));
+        assert_eq!(saved["setup_done"], json!(true));
+        // A save writes the flag, so a choice to run setup again stays.
+        let saved = from_before_setup_done(json!({ "setup_done": false }));
+        assert_eq!(saved["setup_done"], json!(false));
+    }
 
     fn temporary_root() -> PathBuf {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

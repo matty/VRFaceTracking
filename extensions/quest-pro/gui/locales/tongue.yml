@@ -1,9 +1,5 @@
 _version: 2
 tongue:
-  page_title:
-    en: "Training"
-  page_description:
-    en: "Fine-tune the QFTPlus Model on your own face, here on this PC, then switch to it."
   not_running:
     en: "Tracking isn't running"
   loading:

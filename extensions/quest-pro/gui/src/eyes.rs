@@ -934,7 +934,7 @@ impl Render for EyesPage {
                         .child(
                             Button::new("open-headset-eyes")
                                 .small()
-                                .icon(IconName::Glasses)
+                                .icon(IconName::RectangleGoggles)
                                 .label(t!("eyes.open_headset"))
                                 .on_click(|_, _, cx| open_page(pages::HEADSET, cx)),
                         ),
@@ -989,9 +989,15 @@ impl Render for EyesPage {
         v_flex()
             .gap(px(GAP))
             .child(
-                PageHeader::new(t!("eyes.title"))
-                    .description(t!("eyes.description"))
-                    .trailing(StatusPill::new(reading.tone, pill)),
+                // Beside the page's cards it wouldn't say what it's about.
+                PageHeader::under_tab().trailing(
+                    h_flex()
+                        .gap_2()
+                        .text_size(px(12.5))
+                        .text_color(palette::text_2())
+                        .child(t!("eyes.eye_gaze"))
+                        .child(StatusPill::new(reading.tone, pill)),
+                ),
             )
             .child(columns)
     }

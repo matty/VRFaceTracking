@@ -3,7 +3,6 @@
 //! installing in the background; this page starts it and follows along.
 //! Using a module, native or VRCFT (.NET), switches VRFT to it in place,
 //! without restarting.
-use crate::extension_switches::ExtensionSwitches;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -26,9 +25,7 @@ use vrft_gui_core::launcher::{Launcher, StartVrft};
 use vrft_gui_core::live::DaemonState;
 use vrft_gui_core::palette::{self, MONO_FONT};
 use vrft_gui_core::summary::{module_failure, module_state, Connection, Tone};
-use vrft_gui_core::widgets::{
-    cap, card, hint, mono, Meter, Notice, PageHeader, Section, StatusPill,
-};
+use vrft_gui_core::widgets::{cap, card, hint, mono, Meter, Notice, PageHeader, StatusPill};
 
 /// How often the page reads `/modules` while it shows.
 const POLL: Duration = Duration::from_secs(2);
@@ -59,8 +56,6 @@ enum Pending {
 pub struct ModulesPage {
     daemon: Entity<DaemonState>,
     launcher: Entity<Launcher>,
-    /// The add-ons' switches.
-    switches: Entity<ExtensionSwitches>,
     modules: Option<Modules>,
     search: Entity<InputState>,
     /// Why the last request failed, or what it did.
@@ -183,7 +178,6 @@ impl ModulesPage {
     pub fn new(
         daemon: Entity<DaemonState>,
         launcher: Entity<Launcher>,
-        switches: Entity<ExtensionSwitches>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -231,7 +225,6 @@ impl ModulesPage {
         Self {
             daemon,
             launcher,
-            switches,
             modules: None,
             search,
             message: None,
@@ -927,9 +920,7 @@ impl Render for ModulesPage {
         let page = v_flex()
             .gap_6()
             .child(PageHeader::new(t!("modules.title")).description(t!("modules.description")));
-        let add_ons = Section::new(t!("modules.add_ons")).child(self.switches.clone());
         if !online {
-            // Switching an add-on still works: it writes config.json.
             return page
                 .child(
                     v_flex()
@@ -938,22 +929,19 @@ impl Render for ModulesPage {
                         .child(hint(t!("modules.start_to_manage"), cx))
                         .child(StartVrft::new(self.launcher.clone())),
                 )
-                .child(add_ons)
                 .into_any_element();
         }
         let Some(modules) = self.modules.clone() else {
             return page
                 .child(hint(t!("modules.reading"), cx))
                 .children(self.message.clone())
-                .child(add_ons)
                 .into_any_element();
         };
         let installed = v_flex()
             .flex_1()
             .min_w_0()
             .gap_6()
-            .child(self.installed_section(&modules, cx))
-            .child(add_ons);
+            .child(self.installed_section(&modules, cx));
         let registry = self.registry_card(&modules, cx);
         let columns = if vrft_gui_core::content_width(window) >= TWO_COLUMNS_MIN {
             h_flex()

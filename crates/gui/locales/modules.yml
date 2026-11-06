@@ -74,8 +74,6 @@ modules:
     en: "Modules"
   description:
     en: "Where face tracking comes from. Switching is instant."
-  add_ons:
-    en: "Add-ons"
   start_to_manage:
     en: "Start tracking to install and manage modules."
   reading:

@@ -1,7 +1,6 @@
 //! The Quest Pro add-on for the desktop app: tongue tracking and better eye
-//! tracking. It adds the Headset, Mouth, Eyes and Training pages, its
-//! tiles on Home and its stage in Home's signal path. The daemon side is
-//! `vrft-quest-pro-daemon`.
+//! tracking. It adds the Headset, Mouth, Eyes and Training pages and its stage
+//! in Home's signal path. The daemon side is `vrft-quest-pro-daemon`.
 mod adb;
 mod camera;
 mod daemon;
@@ -18,23 +17,15 @@ use camera::MouthPage;
 use daemon::Camera;
 use eyes::EyesPage;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{h_flex, Sizable as _};
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{
-    canvas, div, point, px, size, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement,
-    PathBuilder, Pixels, Styled, Window,
-};
+use gpui_kit::{App, AppContext as _, Entity, Window};
 use headset::HeadsetPage;
 use live::{CameraFeed, QuestProState};
 use rust_i18n::t;
-use summary::{Tone, TongueReading, TongueState};
+use summary::Tone;
 use tongue::TongueTraining;
 use vrft_gui_core::extension::{
-    GuiExtension, GuiHost, PageEntry, PageId, PathSource, SetupOffer, StatTile,
+    GuiExtension, GuiHost, PageEntry, PageId, PathSource, Reading, SetupOffer,
 };
-use vrft_gui_core::palette::{self, MONO_FONT};
-use vrft_gui_core::widgets::fix_button;
 // Text in `locales/`, in the locale the app chose. Keys missing from a
 // language fall back to English.
 rust_i18n::i18n!("locales", fallback = "en");
@@ -105,22 +96,18 @@ pub fn create(host: &GuiHost, window: &mut Window, cx: &mut App) -> Box<dyn GuiE
     let pages = vec![
         PageEntry {
             page: pages::HEADSET,
-            icon: IconName::Glasses,
             view: headset.clone().into(),
         },
         PageEntry {
             page: pages::MOUTH,
-            icon: IconName::FaceGrinning,
             view: mouth.into(),
         },
         PageEntry {
             page: pages::EYES,
-            icon: IconName::ScanEye,
             view: eyes.into(),
         },
         PageEntry {
             page: pages::TRAINING,
-            icon: IconName::Sparkles,
             view: tongue.clone().into(),
         },
     ];
@@ -149,7 +136,7 @@ impl GuiExtension for QuestProGui {
     }
 
     fn icon(&self) -> IconName {
-        IconName::Glasses
+        IconName::RectangleGoggles
     }
 
     fn setup_offer(&self) -> Option<SetupOffer> {
@@ -169,7 +156,33 @@ impl GuiExtension for QuestProGui {
         &self.pages
     }
 
-    fn nav_tone(&self, page: PageId, cx: &App) -> Option<Tone> {
+    fn status(&self, cx: &App) -> Reading {
+        if let Some((done, total)) = self.setup_progress(cx) {
+            return Reading::new(
+                Tone::Waiting,
+                t!("lib.setting_up"),
+                t!("lib.steps_done", done = done, total = total),
+            );
+        }
+        let state = self.state.read(cx);
+        let overall = summary::overall(state.status(), &state.rates());
+        // Only this page can tell a stopped stream from a headset out of
+        // reach, as it's the one that talks to the headset over adb.
+        if overall.tone != Tone::Problem && self.headset.read(cx).stream_stopped(cx) {
+            return Reading::new(Tone::Off, t!("headset.stream_stopped"), "");
+        }
+        overall
+    }
+
+    fn setup_progress(&self, cx: &App) -> Option<(usize, usize)> {
+        self.headset.read(cx).setup_progress(cx)
+    }
+
+    fn only_page(&self, cx: &App) -> Option<PageId> {
+        self.setup_progress(cx).map(|_| pages::HEADSET)
+    }
+
+    fn page_tone(&self, page: PageId, cx: &App) -> Option<Tone> {
         let state = self.state.read(cx);
         let status = state.status();
         let tone = match page {
@@ -186,67 +199,34 @@ impl GuiExtension for QuestProGui {
         Some(tone)
     }
 
-    fn home_tiles(&self, cx: &App) -> Vec<StatTile> {
-        let state = self.state.read(cx);
-        let status = state.status();
-        let rates = state.rates();
-        let eyes = summary::eyes(status);
-        // With no eye data the fix is on another page than the eyes'.
-        let eyes_fix = eyes
-            .fix
-            .filter(|fix| *fix != summary::Fix::Open(pages::EYES))
-            .map(|fix| fix_button("fix-eyes", fix).ghost().xsmall());
-        let gaze = status.and_then(|status| status.eye_output_deg);
-        let tongue = status
-            .map(|status| summary::tongue(status, rates.tracking()))
-            .filter(|tongue| tongue.state == TongueState::Out);
-        vec![
-            StatTile::new(
-                IconName::Glasses,
-                t!("lib.tile_headset"),
-                summary::headset(status),
-            )
-            .page(pages::HEADSET),
-            StatTile::new(
-                IconName::FaceGrinning,
-                t!("lib.tile_mouth"),
-                summary::mouth_cameras(status, &rates),
-            )
-            .page(pages::MOUTH),
-            StatTile::new(IconName::ScanEye, t!("lib.tile_eyes"), eyes)
-                .page(pages::EYES)
-                .when_some(gaze, |tile, gaze| tile.visual(GazeGlyph { gaze }))
-                .when_some(eyes_fix, |tile, fix| tile.action(fix)),
-            StatTile::new(
-                IconName::Sparkles,
-                t!("lib.tile_training"),
-                summary::tongue_model(status),
-            )
-            .page(pages::TRAINING)
-            .when_some(tongue, |tile, tongue| tile.visual(TongueGlyph { tongue })),
-        ]
-    }
-
     fn path_source(&self, cx: &App) -> Option<PathSource> {
         let state = self.state.read(cx);
         let status = state.status();
         let rates = state.rates();
-        let headset = summary::headset(status);
+        let overall = self.status(cx);
         let cameras = summary::mouth_cameras(status, &rates);
-        let tone = if headset.tone == Tone::Problem {
-            Tone::Problem
-        } else {
-            cameras.tone
+        let problem = overall.tone == Tone::Problem;
+        let tone = if problem { Tone::Problem } else { cameras.tone };
+        // The page with the control that fixes it, or the headset's.
+        let page = match overall.fix {
+            Some(summary::Fix::Open(page)) => page,
+            _ => pages::HEADSET,
         };
+        let setting_up = self.setup_progress(cx).is_some();
+        // Set up, but no cameras: say so, and offer the way back.
+        let out_of_reach =
+            !setting_up && !problem && status.is_some_and(|status| status.source.is_none());
         Some(PathSource {
-            icon: IconName::Glasses,
-            label: t!("lib.add_on", name = vrft_quest_pro_protocol::NAME).into(),
+            icon: IconName::RectangleGoggles,
+            label: vrft_quest_pro_protocol::NAME.into(),
             value: rates
                 .camera_fps
                 .filter(|_| cameras.tone == Tone::Good)
                 .map(summary::fps),
+            detail: (setting_up || out_of_reach).then_some(overall.value),
+            action: out_of_reach.then(|| (t!("lib.reconnect").into_owned(), pages::HEADSET)),
             tone,
-            page: pages::HEADSET,
+            page,
         })
     }
 
@@ -270,93 +250,6 @@ impl GuiExtension for QuestProGui {
     fn wants_fast_status(&self, page: PageId) -> bool {
         // These pages show values that move with the wearer.
         page == pages::MOUTH || page == pages::TRAINING || page == pages::EYES
-    }
-}
-
-/// Both eyes' gaze from above, as on the Eyes page, small enough for a tile:
-/// the left eye's ray solid, the right eye's dashed.
-#[derive(IntoElement)]
-struct GazeGlyph {
-    gaze: [[f32; 2]; 2],
-}
-
-impl gpui_kit::RenderOnce for GazeGlyph {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let gaze = self.gaze;
-        canvas(
-            |_, _, _| {},
-            move |bounds: Bounds<Pixels>, _, window, _| {
-                let origin = bounds.origin;
-                let middle = bounds.size.width.as_f32() / 2.;
-                let base = bounds.size.height.as_f32() - 4.;
-                let at = |x: f32, y: f32| point(origin.x + px(x), origin.y + px(y));
-                for (index, offset) in [-13.0f32, 13.].into_iter().enumerate() {
-                    let x = middle + offset;
-                    // Yaw is positive to the right.
-                    let yaw = gaze[index][0].to_radians();
-                    let length = 28.;
-                    let mut ray = if index == 0 {
-                        PathBuilder::stroke(px(1.25))
-                    } else {
-                        PathBuilder::stroke(px(1.25)).dash_array(&[px(3.), px(3.)])
-                    };
-                    ray.move_to(at(x, base));
-                    ray.line_to(at(x + yaw.sin() * length, base - yaw.cos() * length));
-                    if let Ok(path) = ray.build() {
-                        window.paint_path(path, palette::text());
-                    }
-                    let dot = Bounds::centered_at(at(x, base), size(px(5.), px(5.)));
-                    window.paint_quad(gpui_kit::fill(dot, palette::text()).corner_radii(px(2.5)));
-                }
-            },
-        )
-        .size_full()
-    }
-}
-
-/// Where the tongue is, as a dot in a ring, and how far out.
-#[derive(IntoElement)]
-struct TongueGlyph {
-    tongue: TongueReading,
-}
-
-impl gpui_kit::RenderOnce for TongueGlyph {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let tongue = self.tongue;
-        let ring = 32.;
-        let dot = 8.;
-        let reach = (ring - dot) / 2. - 2.;
-        h_flex()
-            .h_full()
-            .gap_2p5()
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .size(px(ring))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(palette::line_focus())
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(ring / 2. - dot / 2. - 1. + tongue.horizontal * reach))
-                            .top(px(ring / 2. - dot / 2. - 1. - tongue.vertical * reach))
-                            .size(px(dot))
-                            .rounded_full()
-                            .bg(palette::text()),
-                    ),
-            )
-            .child(
-                div()
-                    .font_family(MONO_FONT)
-                    .text_size(px(11.))
-                    .text_color(palette::text_3())
-                    .child(t!(
-                        "lib.tongue_out",
-                        percent = format!("{:.0}", tongue.out * 100.)
-                    )),
-            )
     }
 }
 

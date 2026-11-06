@@ -3551,12 +3551,9 @@ impl TongueTraining {
 
 impl Render for TongueTraining {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header =
-            PageHeader::new(t!("tongue.page_title")).description(t!("tongue.page_description"));
         if !self.online(cx) {
             return v_flex()
                 .gap(px(COLUMN_GAP))
-                .child(header)
                 .child(card(cx).h(px(320.)).child(
                     EmptyState::new(IconName::Unplug, t!("tongue.not_running"), "").action(Some(
                         StartVrft::new(self.launcher.clone()).into_any_element(),
@@ -3564,7 +3561,7 @@ impl Render for TongueTraining {
                 ));
         }
         if let Some(reason) = self.unavailable.clone() {
-            return v_flex().gap(px(COLUMN_GAP)).child(header).child(reason);
+            return v_flex().gap(px(COLUMN_GAP)).child(reason);
         }
         let available = vrft_gui_core::content_width(window);
         let wide = available >= TWO_COLUMN_WIDTH;
@@ -3586,7 +3583,7 @@ impl Render for TongueTraining {
         }
         // The model in use is marked on the Try step too; the header says
         // which it is, or that training runs.
-        let header = header.trailing(self.header_pill(cx));
+        let header = PageHeader::under_tab().trailing(self.header_pill(cx));
         if self.models.is_none() {
             return v_flex()
                 .gap(px(COLUMN_GAP))

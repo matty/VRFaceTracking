@@ -130,10 +130,8 @@ eyes:
     en: "Camera 4, between the eyes. The headset sends it with its five-camera stream on."
   snapshot_age:
     en: "Snapshot %{sequence} · %{age} ms old"
-  title:
-    en: "Eyes"
-  description:
-    en: "Where your avatar looks, and how to line it up with you."
+  eye_gaze:
+    en: "Eye gaze"
   eye_angles:
     en: "%{across} · vertical %{vertical}"
   left_eye:

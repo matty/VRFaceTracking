@@ -16,10 +16,14 @@ extension_switches:
     en: "Didn't start"
   running:
     en: "Running"
+  needs_attention:
+    en: "Needs attention"
   add_on:
     en: "%{name} add-on"
   restart_to_apply:
     en: "Tracking restarts to apply this, so it stops for a few seconds."
+  open:
+    en: "Open"
   later:
     en: "Later"
   later_tooltip:

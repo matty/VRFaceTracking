@@ -52,8 +52,6 @@ home:
     en: Output
   rate_per_second:
     en: "%{rate}/s"
-  add_on_section:
-    en: "%{name} add-on"
   module_failed:
     en: "The tracking module couldn't load, so nothing reaches VRChat."
   choose_module:

@@ -6,7 +6,6 @@ use crate::launcher::Launcher;
 use crate::live::DaemonState;
 pub use crate::nav::{open_page, PageId};
 pub use crate::summary::{Fix, Reading, Tone};
-pub use crate::widgets::StatTile;
 use gpui_kit::assets::IconName;
 use gpui_kit::{AnyView, App, Entity, SharedString, Window};
 
@@ -20,10 +19,14 @@ pub struct GuiHost {
 /// module: data that joins the module's before smoothing and output.
 pub struct PathSource {
     pub icon: IconName,
-    /// What to call it, such as `Quest Pro add-on`.
+    /// What to call it, such as `Quest Pro`. Home marks it as an add-on.
     pub label: String,
     /// A rate in a few characters, such as `24 fps`, while it has one.
     pub value: Option<String>,
+    /// A few words under the label on why it isn't working.
+    pub detail: Option<String>,
+    /// A button on the stage: its label and the page it opens.
+    pub action: Option<(String, PageId)>,
     pub tone: Tone,
     /// The page that manages it; the stage opens it.
     pub page: PageId,
@@ -42,10 +45,9 @@ pub struct SetupOffer {
     pub next_page: PageId,
 }
 
-/// One page an extension adds to the navigation.
+/// One page of an extension, as a tab under its name.
 pub struct PageEntry {
     pub page: PageId,
-    pub icon: IconName,
     pub view: AnyView,
 }
 
@@ -53,14 +55,14 @@ pub trait GuiExtension {
     /// The daemon extension's id, such as `quest-pro`.
     fn id(&self) -> &'static str;
 
-    /// The navigation group's title and the Home section's, such as
+    /// What the navigation and the extension's own area call it, such as
     /// `Quest Pro`.
     fn name(&self) -> &'static str;
 
     /// One line on what turning the extension on adds.
     fn description(&self) -> SharedString;
 
-    /// The extension's mark, on Modules beside its switch.
+    /// The extension's mark, in the navigation and at the top of its pages.
     fn icon(&self) -> IconName {
         IconName::Puzzle
     }
@@ -71,18 +73,31 @@ pub trait GuiExtension {
         None
     }
 
-    /// The extension's pages, in navigation order.
+    /// The extension's pages, in tab order. The first opens by default.
     fn pages(&self) -> &[PageEntry];
 
-    /// The dot beside `page` in the navigation. Only a part that's doing
-    /// something, or needs attention, gets one.
-    fn nav_tone(&self, _page: PageId, _cx: &App) -> Option<Tone> {
+    /// How the extension stands as a whole, in one reading: beside its name
+    /// in the navigation and at the top of its pages. When several parts have
+    /// something to say, that's the one to act on first.
+    fn status(&self, _cx: &App) -> Reading {
+        Reading::new(Tone::Off, "", "")
+    }
+
+    /// How far through first-time setup it is, as steps done and steps in
+    /// all, while that's what it's doing.
+    fn setup_progress(&self, _cx: &App) -> Option<(usize, usize)> {
         None
     }
 
-    /// Tiles for the extension's section on Home.
-    fn home_tiles(&self, _cx: &App) -> Vec<StatTile> {
-        Vec::new()
+    /// The one page that shows for now, when the others have nothing to show,
+    /// such as during setup. Its tabs are hidden meanwhile.
+    fn only_page(&self, _cx: &App) -> Option<PageId> {
+        None
+    }
+
+    /// How `page` stands. Its tab is marked only when it needs attention.
+    fn page_tone(&self, _page: PageId, _cx: &App) -> Option<Tone> {
+        None
     }
 
     /// The extension's stage in Home's signal path, when it feeds tracking.

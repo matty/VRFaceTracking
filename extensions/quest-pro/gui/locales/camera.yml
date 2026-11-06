@@ -96,10 +96,6 @@ camera:
     en: "Retry"
   open_headset:
     en: "Open Headset"
-  page_title:
-    en: "Mouth"
-  page_description:
-    en: "What the mouth cameras see, and the tongue they find in it."
   waiting_title:
     en: "Waiting for the mouth cameras…"
   waiting_detail:
