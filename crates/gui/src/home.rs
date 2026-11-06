@@ -1,5 +1,6 @@
 //! Home: one card that answers "is it working?" with VRFT's controls beside
-//! the answer and the signal path under it, then each extension's tiles.
+//! the answer and the signal path under it. Add-ons appear only as what they
+//! add to that path; their own status lives in the navigation and their pages.
 //! Until tracking has been live, the answer is a short setup checklist.
 use crate::shell::Extensions;
 use gpui_kit::assets::IconName;
@@ -20,9 +21,7 @@ use vrft_gui_core::launcher::{LaunchState, Launcher, StartVrft};
 use vrft_gui_core::live::DaemonState;
 use vrft_gui_core::palette::{self, MONO_FONT};
 use vrft_gui_core::summary::{self, Connection, Fix, Rates, Tone};
-use vrft_gui_core::widgets::{
-    card, fix_button, ButtonExt as _, Notice, Section, StatTile, StatusDot,
-};
+use vrft_gui_core::widgets::{add_on_tag, card, fix_button, ButtonExt as _, Notice, StatusDot};
 
 pub struct HomePage {
     daemon: Entity<DaemonState>,
@@ -37,9 +36,6 @@ pub struct HomePage {
     _subscriptions: [Subscription; 3],
 }
 
-/// Narrowest a tile gets before the grid drops a column.
-const MIN_TILE_WIDTH: f32 = 200.;
-const TILE_GAP: f32 = 12.;
 /// A stage of the signal path.
 const NODE_HEIGHT: f32 = 56.;
 const NODE_GAP: f32 = 10.;
@@ -344,6 +340,9 @@ impl HomePage {
                         source.value,
                         source.tone,
                         source.page,
+                        // The first source is the tracking module; the rest
+                        // come from add-ons.
+                        index > 0,
                     )
                     .into_any_element()
                 }),
@@ -357,6 +356,7 @@ impl HomePage {
                 // Its value says it all while tracking.
                 if tracking { Tone::Good } else { Tone::Off },
                 PageId::TRACKING,
+                false,
             )))
             .child(link(tracking))
             .child(
@@ -372,38 +372,14 @@ impl HomePage {
                         .map(|rate| t!("home.rate_per_second", rate = format!("{rate:.0}")).into()),
                     downstream,
                     PageId::SETTINGS,
+                    false,
                 )),
             )
-    }
-
-    /// Each extension's tiles, under its name.
-    fn extension_sections(&self, available: f32, cx: &App) -> Vec<AnyElement> {
-        let daemon = self.daemon.read(cx);
-        let extensions = self.extensions.read(cx);
-        extensions
-            .list
-            .iter()
-            .filter(|extension| extensions.shown(extension.id(), daemon))
-            .map(|extension| {
-                (
-                    extension.name(),
-                    extension.description(),
-                    extension.home_tiles(cx),
-                )
-            })
-            .filter(|(_, _, tiles)| !tiles.is_empty())
-            .map(|(name, description, tiles)| {
-                Section::new(t!("home.add_on_section", name = name))
-                    .aside(description)
-                    .child(tile_grid(tiles, available))
-                    .into_any_element()
-            })
-            .collect()
     }
 }
 
 impl Render for HomePage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.daemon.read(cx);
         let status = state.status().cloned();
         let rates = state.rates();
@@ -599,8 +575,6 @@ impl Render for HomePage {
             }))
             .child(self.signal_path(status.as_ref(), &rates, cx));
 
-        let available = vrft_gui_core::content_width(window);
-        let sections = self.extension_sections(available, cx);
         let hero = card(cx)
             .when(problem, |card| card.border_color(palette::signal_line()))
             .flex()
@@ -608,11 +582,7 @@ impl Render for HomePage {
             .child(band)
             .child(body);
 
-        v_flex()
-            .gap_6()
-            .child(hero)
-            .children(config_error)
-            .children(sections)
+        v_flex().gap_6().child(hero).children(config_error)
     }
 }
 
@@ -783,6 +753,7 @@ fn path_node(
     value: Option<String>,
     tone: Tone,
     page: PageId,
+    add_on: bool,
 ) -> impl IntoElement {
     let problem = tone == Tone::Problem;
     let idle = matches!(tone, Tone::Off);
@@ -795,6 +766,7 @@ fn path_node(
         .pr_4()
         .rounded(px(11.))
         .border_1()
+        .when(add_on, |node| node.border_dashed())
         .border_color(if problem {
             palette::signal_line()
         } else {
@@ -833,18 +805,24 @@ fn path_node(
                 .child(Icon::new(icon).size(px(15.))),
         )
         .child(
-            div()
+            h_flex()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .text_size(px(13.5))
-                .font_medium()
-                .text_color(if idle {
-                    palette::text_2()
-                } else {
-                    palette::text()
-                })
-                .child(label),
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.5))
+                        .font_medium()
+                        .text_color(if idle {
+                            palette::text_2()
+                        } else {
+                            palette::text()
+                        })
+                        .child(label),
+                )
+                .when(add_on, |row| row.child(add_on_tag())),
         )
         .children(value.map(|value| {
             div()
@@ -925,20 +903,6 @@ fn line_color(flowing: bool) -> Hsla {
     } else {
         palette::line_strong()
     }
-}
-
-fn tile_grid(tiles: Vec<StatTile>, available: f32) -> AnyElement {
-    let columns = fitting_columns(available).min(tiles.len().max(1) as u16);
-    div()
-        .grid()
-        .grid_cols(columns)
-        .gap(px(TILE_GAP))
-        .children(tiles)
-        .into_any_element()
-}
-
-fn fitting_columns(available: f32) -> u16 {
-    (((available + TILE_GAP) / (MIN_TILE_WIDTH + TILE_GAP)).floor() as u16).max(1)
 }
 
 #[cfg(test)]
@@ -1024,11 +988,5 @@ mod tests {
             engine_buttons(false, false, true, false),
             buttons(false, false, false)
         );
-    }
-
-    #[test]
-    fn tiles_fill_the_width_they_have() {
-        assert_eq!(fitting_columns(100.), 1);
-        assert_eq!(fitting_columns(856.), 4);
     }
 }

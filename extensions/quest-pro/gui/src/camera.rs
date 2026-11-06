@@ -733,7 +733,7 @@ impl Render for MouthPage {
                 .child(
                     Button::new("open-headset")
                         .regular()
-                        .icon(IconName::Glasses)
+                        .icon(IconName::RectangleGoggles)
                         .label(t!("camera.open_headset"))
                         .on_click(cx.listener(|_, _, _, cx| open_page(pages::HEADSET, cx))),
                 )
@@ -798,7 +798,7 @@ impl Render for MouthPage {
         v_flex()
             .gap(px(20.))
             .child(
-                PageHeader::new(t!("camera.page_title"))
+                PageHeader::under_tab()
                     .description(t!("camera.page_description"))
                     .trailing(trailing),
             )

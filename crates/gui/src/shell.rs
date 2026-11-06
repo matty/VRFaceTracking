@@ -1,8 +1,10 @@
 //! The window: navigation down the left, from the top of the window, and
 //! the current page beside it under a strip that moves the window and holds
 //! its controls. Home, Modules, Tracking settings, Debug, Logs and Settings
-//! are the app's own; every other page comes from an extension. First-launch
+//! are the app's own. An extension gets one row under Add-ons, and its pages
+//! share an area of their own, under its name and a row of tabs. First-launch
 //! setup fills the window, without the navigation.
+use crate::add_ons::AddOnsPage;
 use crate::debug::DebugPage;
 use crate::extension_switches::ExtensionSwitches;
 use crate::home::HomePage;
@@ -25,7 +27,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, WindowControlArea,
 };
 use rust_i18n::t;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use vrft_gui_core::client::{DaemonClient, DEFAULT_ADDRESS};
 use vrft_gui_core::extension::{GuiExtension, GuiHost};
@@ -34,7 +36,7 @@ use vrft_gui_core::live::DaemonState;
 use vrft_gui_core::nav::{self, Navigation, PageId};
 use vrft_gui_core::palette;
 use vrft_gui_core::summary::{self, Tone};
-use vrft_gui_core::widgets::{cap, StatusDot};
+use vrft_gui_core::widgets::{add_on_tag, cap, IconBadge, StatusDot};
 use vrft_gui_core::{NAV_WIDTH, PAGE_MAX_WIDTH, PAGE_PADDING};
 
 /// The navigation's width with only its icons showing.
@@ -114,11 +116,14 @@ pub struct Workspace {
     home: Entity<HomePage>,
     settings: Entity<SettingsPage>,
     modules: Entity<ModulesPage>,
+    add_ons: Entity<AddOnsPage>,
     tracking: Entity<TrackingPage>,
     debug: Entity<DebugPage>,
     logs: Entity<LogsPage>,
     setup: Entity<SetupPage>,
     updater: Entity<Updater>,
+    /// The page last shown of each extension, by id, which its row reopens.
+    last_pages: HashMap<&'static str, PageId>,
     /// The navigation shows only its icons.
     nav_collapsed: bool,
     /// For capturing pages in development: `VRFT_GUI_SCROLL=<pixels>` holds
@@ -170,8 +175,8 @@ impl Workspace {
         let switches = cx.new(|cx| {
             ExtensionSwitches::new(daemon.clone(), launcher.clone(), extensions.clone(), cx)
         });
-        let modules =
-            cx.new(|cx| ModulesPage::new(daemon.clone(), launcher.clone(), switches, window, cx));
+        let add_ons = cx.new(|_| AddOnsPage::new(switches));
+        let modules = cx.new(|cx| ModulesPage::new(daemon.clone(), launcher.clone(), window, cx));
         let tracking = cx.new(|cx| TrackingPage::new(daemon.clone(), launcher.clone(), window, cx));
         let debug = cx.new(|cx| DebugPage::new(daemon.clone(), launcher.clone(), window, cx));
         let logs = cx.new(|cx| LogsPage::new(daemon.clone(), launcher.clone(), window, cx));
@@ -219,6 +224,7 @@ impl Workspace {
                     setup::PAGE,
                     PageId::HOME,
                     PageId::MODULES,
+                    PageId::ADD_ONS,
                     PageId::TRACKING,
                     PageId::DEBUG,
                     PageId::LOGS,
@@ -245,11 +251,13 @@ impl Workspace {
             home,
             settings,
             modules,
+            add_ons,
             tracking,
             debug,
             logs,
             setup,
             updater,
+            last_pages: HashMap::new(),
             nav_collapsed: false,
             dev_scroll: std::env::var("VRFT_GUI_SCROLL")
                 .ok()
@@ -262,6 +270,10 @@ impl Workspace {
 
     /// Tells extensions which page shows, so they only work while theirs do.
     fn show(&mut self, page: PageId, cx: &mut Context<Self>) {
+        if let Some(index) = self.page_owner(page, cx) {
+            let id = self.extensions.read(cx).list[index].id();
+            self.last_pages.insert(id, page);
+        }
         let fast = self.extensions.update(cx, |extensions, cx| {
             let mut fast = false;
             for extension in &mut extensions.list {
@@ -297,6 +309,7 @@ impl Workspace {
             || current == setup::PAGE
             || current == PageId::SETTINGS
             || current == PageId::MODULES
+            || current == PageId::ADD_ONS
             || current == PageId::TRACKING
             || current == PageId::DEBUG
             || current == PageId::LOGS
@@ -321,6 +334,16 @@ impl Workspace {
             .map(|entry| entry.view.clone())
     }
 
+    /// Which extension, as an index, shows `page`.
+    fn page_owner(&self, page: PageId, cx: &App) -> Option<usize> {
+        let daemon = self.daemon.read(cx);
+        let extensions = self.extensions.read(cx);
+        extensions.list.iter().position(|extension| {
+            extensions.shown(extension.id(), daemon)
+                && extension.pages().iter().any(|entry| entry.page == page)
+        })
+    }
+
     /// How things stand overall, as a mark beside Home: the same reading as
     /// Home's headline. Nothing when VRFT was stopped on purpose.
     fn home_tone(&self, cx: &App) -> Option<Tone> {
@@ -342,41 +365,176 @@ impl Workspace {
         tone: Option<Tone>,
         current: PageId,
     ) -> AnyElement {
-        let active = current == page;
+        nav_row(
+            icon,
+            page.label(),
+            tone,
+            current == page,
+            self.nav_collapsed,
+            page,
+        )
+    }
+
+    /// One row per extension that's on, then the way to manage them.
+    fn add_ons_group(&self, current: PageId, cx: &App) -> AnyElement {
         let collapsed = self.nav_collapsed;
-        // Only a part that's doing something, or needs attention, gets a mark.
-        let mark = tone.filter(|tone| *tone != Tone::Off);
-        h_flex()
-            .id(SharedString::from(format!("nav-{}", page.id)))
-            .h(px(34.))
-            .px(px(10.))
-            .gap(px(11.))
-            .rounded(px(8.))
-            .cursor_pointer()
-            .text_size(px(13.5))
-            .text_color(if active {
-                palette::text()
-            } else {
-                gpui_kit::rgb(0xa8a8a8).into()
-            })
-            .when(active, |item| item.bg(gpui_kit::rgb(0x1f1f23)))
-            .when(!active, |item| {
-                item.hover(|style| {
-                    style
-                        .bg(gpui_kit::rgb(0x17171a))
-                        .text_color(palette::text())
+        let daemon = self.daemon.read(cx);
+        let extensions = self.extensions.read(cx);
+        let rows = extensions
+            .list
+            .iter()
+            .filter(|extension| extensions.shown(extension.id(), daemon))
+            .filter_map(|extension| {
+                let first = extension.pages().first()?.page;
+                let page = self
+                    .last_pages
+                    .get(extension.id())
+                    .copied()
+                    .unwrap_or(first);
+                let active = extension.pages().iter().any(|entry| entry.page == current);
+                let tone = if extensions.failed(extension.id(), daemon) {
+                    Tone::Problem
+                } else {
+                    extension.status(cx).tone
+                };
+                Some(nav_row(
+                    extension.icon(),
+                    extension.name().into(),
+                    Some(tone),
+                    active,
+                    collapsed,
+                    page,
+                ))
+            });
+        let label = if collapsed {
+            div()
+                .mx_2()
+                .my(px(14.))
+                .h(px(1.))
+                .bg(palette::line_soft())
+                .into_any_element()
+        } else {
+            div()
+                .mx(px(10.))
+                .mt(px(22.))
+                .mb_2()
+                .child(cap(t!("shell.add_ons")))
+                .into_any_element()
+        };
+        v_flex()
+            .child(label)
+            .child(v_flex().gap_0p5().children(rows).child(self.nav_item(
+                IconName::Puzzle,
+                PageId::ADD_ONS,
+                None,
+                current,
+            )))
+            .into_any_element()
+    }
+
+    /// The top of an extension's pages: what it is and how it stands, marked
+    /// as an add-on, and its pages as tabs.
+    fn add_on_band(&self, index: usize, current: PageId, cx: &App) -> AnyElement {
+        let daemon = self.daemon.read(cx);
+        let extensions = self.extensions.read(cx);
+        let extension = &extensions.list[index];
+        let reading = extension.status(cx);
+        let failed = extensions.failed(extension.id(), daemon);
+        let tone = if failed { Tone::Problem } else { reading.tone };
+        let line = if failed {
+            t!("shell.extension_failed").to_string()
+        } else if reading.detail.is_empty() {
+            reading.value.to_string()
+        } else {
+            format!("{} · {}", reading.value, reading.detail)
+        };
+        let tabs = extension.pages().iter().map(|entry| {
+            let page = entry.page;
+            let active = page == current;
+            let needs_attention = extension.page_tone(page, cx) == Some(Tone::Problem);
+            h_flex()
+                .id(SharedString::from(format!("tab-{}", page.id)))
+                .h(px(32.))
+                .px_3()
+                .gap_2()
+                .rounded(px(8.))
+                .cursor_pointer()
+                .text_size(px(13.))
+                .font_medium()
+                .text_color(if active {
+                    palette::text()
+                } else {
+                    gpui_kit::rgb(0xa8a8a8).into()
                 })
-            })
-            .on_click(move |_, _, cx| nav::open_page(page, cx))
-            .child(Icon::new(icon).size(px(16.)))
-            .when(collapsed, |item| {
-                item.justify_center()
-                    .tooltip(move |window, cx| Tooltip::new(page.label()).build(window, cx))
-            })
-            .when(!collapsed, |item| {
-                item.child(div().flex_1().min_w_0().truncate().child(page.label()))
-                    .children(mark.map(StatusDot::new))
-            })
+                .when(active, |tab| tab.bg(gpui_kit::rgb(0x26262b)))
+                .when(!active, |tab| {
+                    tab.hover(|style| {
+                        style
+                            .bg(gpui_kit::rgb(0x17171a))
+                            .text_color(palette::text())
+                    })
+                })
+                .on_click(move |_, _, cx| nav::open_page(page, cx))
+                .child(page.label())
+                .when(needs_attention, |tab| {
+                    tab.child(StatusDot::new(Tone::Problem))
+                })
+        });
+        div()
+            .flex_none()
+            .w_full()
+            .bg(palette::sunken())
+            .border_t_1()
+            .border_b_1()
+            .border_color(palette::line_soft())
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(PAGE_MAX_WIDTH))
+                    .mx_auto()
+                    .px(px(PAGE_PADDING))
+                    .pt(px(16.))
+                    .pb(px(12.))
+                    .gap(px(14.))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(IconBadge::new(extension.icon()).size(40.))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(18.))
+                                                    .line_height(px(24.))
+                                                    .font_semibold()
+                                                    .child(extension.name()),
+                                            )
+                                            .child(add_on_tag()),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap(px(7.))
+                                            .text_size(px(13.))
+                                            .text_color(palette::text_2())
+                                            .child(StatusDot::new(tone))
+                                            .child(div().min_w_0().truncate().child(line)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("add-on-settings")
+                                    .ghost()
+                                    .small()
+                                    .label(t!("shell.add_on_settings"))
+                                    .on_click(|_, _, cx| nav::open_page(PageId::ADD_ONS, cx)),
+                            ),
+                    )
+                    .child(h_flex().flex_wrap().gap_1().children(tabs)),
+            )
             .into_any_element()
     }
 
@@ -450,54 +608,7 @@ impl Workspace {
     fn navigation(&self, current: PageId, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.nav_collapsed;
         let home_tone = self.home_tone(cx);
-        let groups: Vec<AnyElement> = {
-            let daemon = self.daemon.read(cx);
-            let extensions = self.extensions.read(cx);
-            extensions
-                .list
-                .iter()
-                .filter(|extension| extensions.shown(extension.id(), daemon))
-                .map(|extension| {
-                    let failed = extensions.failed(extension.id(), daemon);
-                    let items: Vec<AnyElement> = extension
-                        .pages()
-                        .iter()
-                        .map(|entry| {
-                            let tone = extension.nav_tone(entry.page, cx);
-                            self.nav_item(entry.icon, entry.page, tone, current)
-                        })
-                        .collect();
-                    let label = if collapsed {
-                        div()
-                            .mx_2()
-                            .my(px(14.))
-                            .h(px(1.))
-                            .bg(palette::line_soft())
-                            .into_any_element()
-                    } else {
-                        h_flex()
-                            .gap_2()
-                            .mx(px(10.))
-                            .mt(px(22.))
-                            .mb_2()
-                            .child(cap(extension.name()))
-                            .when(failed, |row| {
-                                row.child(StatusDot::new(Tone::Problem)).child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette::signal_text())
-                                        .child(t!("shell.extension_failed")),
-                                )
-                            })
-                            .into_any_element()
-                    };
-                    v_flex()
-                        .child(label)
-                        .child(v_flex().gap_0p5().children(items))
-                        .into_any_element()
-                })
-                .collect()
-        };
+        let add_ons = self.add_ons_group(current, cx);
         let version = self
             .daemon
             .read(cx)
@@ -535,7 +646,7 @@ impl Workspace {
                         current,
                     )),
             )
-            .children(groups)
+            .child(add_ons)
             .child(div().flex_1())
             .child(
                 v_flex()
@@ -589,6 +700,8 @@ impl Render for Workspace {
             self.settings.clone().into()
         } else if current == PageId::MODULES {
             self.modules.clone().into()
+        } else if current == PageId::ADD_ONS {
+            self.add_ons.clone().into()
         } else if current == PageId::TRACKING {
             self.tracking.clone().into()
         } else if current == PageId::DEBUG {
@@ -599,6 +712,10 @@ impl Render for Workspace {
             self.page_view(current, cx)
                 .unwrap_or_else(|| self.home.clone().into())
         };
+        let band = self
+            .page_owner(current, cx)
+            .map(|index| self.add_on_band(index, current, cx));
+        let has_band = band.is_some();
 
         h_flex()
             .size_full()
@@ -612,6 +729,7 @@ impl Render for Workspace {
                     .min_w_0()
                     .h_full()
                     .child(WindowStrip)
+                    .children(band)
                     .child(
                         // Each page keeps its own scroll position, so opening
                         // one starts where it was left rather than where the
@@ -631,7 +749,8 @@ impl Render for Workspace {
                                     .max_w(px(PAGE_MAX_WIDTH))
                                     .mx_auto()
                                     .px(px(PAGE_PADDING))
-                                    .pt(px(6.))
+                                    // Clear of the add-on's tabs, when they show.
+                                    .pt(px(if has_band { 24. } else { 6. }))
                                     .pb(px(40.))
                                     .child(page),
                             ),
@@ -639,6 +758,52 @@ impl Render for Workspace {
             )
             .into_any_element()
     }
+}
+
+/// A row in the navigation that opens `page`. Only a part that's doing
+/// something, or needs attention, gets a mark.
+fn nav_row(
+    icon: IconName,
+    label: SharedString,
+    tone: Option<Tone>,
+    active: bool,
+    collapsed: bool,
+    page: PageId,
+) -> AnyElement {
+    let mark = tone.filter(|tone| *tone != Tone::Off);
+    let tooltip = label.clone();
+    h_flex()
+        .id(SharedString::from(format!("nav-{}", page.id)))
+        .h(px(34.))
+        .px(px(10.))
+        .gap(px(11.))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .text_size(px(13.5))
+        .text_color(if active {
+            palette::text()
+        } else {
+            gpui_kit::rgb(0xa8a8a8).into()
+        })
+        .when(active, |item| item.bg(gpui_kit::rgb(0x1f1f23)))
+        .when(!active, |item| {
+            item.hover(|style| {
+                style
+                    .bg(gpui_kit::rgb(0x17171a))
+                    .text_color(palette::text())
+            })
+        })
+        .on_click(move |_, _, cx| nav::open_page(page, cx))
+        .child(Icon::new(icon).size(px(16.)))
+        .when(collapsed, |item| {
+            item.justify_center()
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        })
+        .when(!collapsed, |item| {
+            item.child(div().flex_1().min_w_0().truncate().child(label))
+                .children(mark.map(StatusDot::new))
+        })
+        .into_any_element()
 }
 
 /// VRFT's mark on the app icon's own tile: its blue, bright at the top and

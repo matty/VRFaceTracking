@@ -6,6 +6,8 @@ nav:
     en: Settings
   modules:
     en: Modules
+  add_ons:
+    en: Manage add-ons
   tracking:
     en: Tracking Settings
   logs:

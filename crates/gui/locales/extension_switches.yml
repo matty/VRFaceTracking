@@ -20,6 +20,8 @@ extension_switches:
     en: "%{name} add-on"
   restart_to_apply:
     en: "Tracking restarts to apply this, so it stops for a few seconds."
+  open:
+    en: "Open"
   later:
     en: "Later"
   later_tooltip:

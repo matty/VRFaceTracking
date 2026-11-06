@@ -77,15 +77,15 @@ setup:
   yes:
     en: "Yes, I have a %{name}"
   yes_detail:
-    en: "Turn the add-on on. Its pages join the navigation, starting with setting up the headset."
+    en: "Turn the add-on on. It joins the navigation, starting with setting up the headset."
   no:
     en: "No, I don't"
   no_detail:
-    en: "Leave it off. You can turn it on any time on the Modules page."
+    en: "Leave it off. You can turn it on any time under Manage add-ons."
   done_title:
     en: "You're all set"
   done_description:
-    en: "Here's how VRFaceTracking is set up. You can change any of it later on the Modules page."
+    en: "Here's how VRFaceTracking is set up. You can change your module on the Modules page, and add-ons under Manage add-ons."
   summary_module:
     en: "Tracking module"
   summary_no_module:

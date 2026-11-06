@@ -26,6 +26,7 @@ impl PageId {
     pub const HOME: PageId = PageId::translated("home", || t!("nav.home"));
     pub const SETTINGS: PageId = PageId::translated("settings", || t!("nav.settings"));
     pub const MODULES: PageId = PageId::translated("modules", || t!("nav.modules"));
+    pub const ADD_ONS: PageId = PageId::translated("add-ons", || t!("nav.add_ons"));
     pub const TRACKING: PageId = PageId::translated("tracking", || t!("nav.tracking"));
     pub const LOGS: PageId = PageId::translated("logs", || t!("nav.logs"));
     pub const DEBUG: PageId = PageId::translated("debug", || t!("nav.debug"));

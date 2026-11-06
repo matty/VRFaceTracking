@@ -2,6 +2,7 @@
 //! daemon's local API, and does not track anything itself.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod add_ons;
 mod assets;
 mod config_file;
 mod debug;

@@ -152,6 +152,36 @@ pub fn tongue_model(status: Option<&Status>) -> Reading {
     }
 }
 
+/// How the add-on stands as a whole: the headset, unless something behind it
+/// has failed. One cause reads as one message, not one per page. A headset
+/// that simply isn't connected yet isn't worth a mark in the navigation.
+pub fn overall(status: Option<&Status>, rates: &Rates) -> Reading {
+    if status.is_none() {
+        // There's no value to show, so the explanation stands alone.
+        let unavailable = Reading::unavailable();
+        return Reading::new(unavailable.tone, unavailable.detail, "");
+    }
+    let headset = headset(status);
+    if headset.tone == Tone::Problem {
+        return headset;
+    }
+    let parts = [
+        mouth_cameras(status, rates),
+        eyes(status),
+        tongue_model(status),
+    ];
+    if let Some(problem) = parts.into_iter().find(|part| part.tone == Tone::Problem) {
+        return problem;
+    }
+    if headset.tone == Tone::Waiting {
+        return Reading {
+            tone: Tone::Off,
+            ..headset
+        };
+    }
+    headset
+}
+
 /// Whether the mouth cameras can be recorded, and if not, why.
 pub fn recording_cameras(status: Option<&Status>) -> Reading {
     let Some(status) = status else {
@@ -395,6 +425,32 @@ mod tests {
         tracking_fps: Some(60.0),
         camera_fps: Some(24.0),
     };
+
+    #[test]
+    fn overall_is_one_message_with_the_problem_first() {
+        let unknown = overall(None, &LIVE);
+        assert_eq!(unknown.tone, Tone::Off);
+        assert!(unknown.detail.is_empty());
+
+        // Not connected yet reads quietly, not as something happening.
+        let mut status = tracking_status();
+        let waiting = overall(Some(&status), &LIVE);
+        assert_eq!(waiting.tone, Tone::Off);
+        assert_eq!(waiting.value, "Not streaming");
+
+        status.source = Some("192.168.1.20:27274".into());
+        status.frame_age_ms = Some(40);
+        let streaming = overall(Some(&status), &LIVE);
+        assert_eq!(streaming.tone, Tone::Good);
+        assert_eq!(streaming.value, "Streaming");
+
+        // A failure behind a working headset is what to act on.
+        status.settings.mouth_model = true;
+        status.model_error = Some("no model".into());
+        let failed = overall(Some(&status), &LIVE);
+        assert_eq!(failed.tone, Tone::Problem);
+        assert_eq!(failed.detail, "no model");
+    }
 
     #[test]
     fn headset_over_usb_is_named() {

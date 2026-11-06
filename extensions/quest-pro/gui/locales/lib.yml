@@ -20,15 +20,3 @@ lib:
     en: "Live views of the headset's mouth and eye cameras, and a tongue model you can train on your own face"
   setup_requirements:
     en: "It needs a rooted Quest Pro, with VRFaceTracking's app on the headset. The Headset page installs it."
-  tile_headset:
-    en: "Headset"
-  tile_mouth:
-    en: "Mouth"
-  tile_eyes:
-    en: "Eyes"
-  tile_training:
-    en: "Training"
-  add_on:
-    en: "%{name} add-on"
-  tongue_out:
-    en: "out %{percent}%"

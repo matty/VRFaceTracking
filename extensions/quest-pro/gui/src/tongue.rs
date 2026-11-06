@@ -3552,8 +3552,7 @@ impl TongueTraining {
 
 impl Render for TongueTraining {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header =
-            PageHeader::new(t!("tongue.page_title")).description(t!("tongue.page_description"));
+        let header = PageHeader::under_tab().description(t!("tongue.page_description"));
         if !self.online(cx) {
             return v_flex()
                 .gap(px(COLUMN_GAP))

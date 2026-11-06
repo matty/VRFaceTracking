@@ -1199,7 +1199,7 @@ impl HeadsetPage {
                     ))
                     .child(chain_link(control))
                     .child(chain_node(
-                        IconName::Glasses,
+                        IconName::RectangleGoggles,
                         headset_name.into(),
                         div().child(headset_detail).into_any_element(),
                         if reached {
@@ -1603,7 +1603,7 @@ impl HeadsetPage {
                 match details {
                     Some(_) if streaming => (Tone::Good, t!("headset.streaming").into()),
                     Some(_) => (Tone::Off, t!("headset.stopped").into()),
-                    None => (Tone::Off, "{2014}".into()),
+                    None => (Tone::Off, "\u{2014}".into()),
                 },
                 if received {
                     (Tone::Good, t!("headset.receiving").into())
@@ -1796,10 +1796,10 @@ impl HeadsetPage {
         let battery = details
             .and_then(|details| details.battery)
             .map(|battery| battery_text(battery, false))
-            .unwrap_or_else(|| "{2014}".into());
+            .unwrap_or_else(|| "\u{2014}".into());
         let firmware = details
             .and_then(|details| details.build.clone())
-            .unwrap_or_else(|| "{2014}".into());
+            .unwrap_or_else(|| "\u{2014}".into());
         // Installing from the setup step says how it went there.
         let outcome = if current == Some(INSTALL_STEP) {
             Vec::new()
@@ -2474,7 +2474,7 @@ impl Render for HeadsetPage {
         v_flex()
             .gap(px(GAP))
             .child(
-                PageHeader::new(t!("headset.title"))
+                PageHeader::under_tab()
                     .description(self.description(received, remaining))
                     .trailing(
                         Button::new("toggle-log")

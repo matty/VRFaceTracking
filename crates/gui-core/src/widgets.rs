@@ -1,17 +1,15 @@
 //! Small presentation pieces shared by the pages. Colours come from the
 //! theme's semantic tokens and [`crate::palette`], never written out here.
-use crate::nav::{open_page, PageId};
+use crate::nav::open_page;
 use crate::palette::{self, MONO_FONT};
-use crate::summary::{Fix, Reading, Tone};
+use crate::summary::{Fix, Tone};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, relative, AnyElement, App, ClipboardItem, Div, ElementId, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement as _, Styled, Window,
+    div, px, relative, AnyElement, App, ClipboardItem, Div, ElementId, Hsla, IntoElement,
+    ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use rust_i18n::t;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
@@ -144,6 +142,22 @@ impl RenderOnce for StatusDot {
             ),
         }
     }
+}
+
+/// Marks what comes from an add-on rather than the app itself.
+pub fn add_on_tag() -> Div {
+    h_flex()
+        .flex_none()
+        .h(px(18.))
+        .px(px(6.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(palette::line_strong())
+        .font_family(MONO_FONT)
+        .text_size(px(10.))
+        .font_medium()
+        .text_color(palette::text_2())
+        .child(SharedString::from(t!("widgets.add_on").to_uppercase()))
 }
 
 /// A thin bar filled to `fraction` (0..1). It follows live values without
@@ -413,10 +427,11 @@ impl RenderOnce for IconBadge {
 }
 
 /// A page's title, with a line on what it's for and optional trailing
-/// content such as a status pill.
+/// content such as a status pill. A page under a tab goes without the title,
+/// as its tab names it.
 #[derive(IntoElement)]
 pub struct PageHeader {
-    title: SharedString,
+    title: Option<SharedString>,
     description: Option<SharedString>,
     trailing: Option<AnyElement>,
 }
@@ -424,7 +439,16 @@ pub struct PageHeader {
 impl PageHeader {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
-            title: title.into(),
+            title: Some(title.into()),
+            description: None,
+            trailing: None,
+        }
+    }
+
+    /// The header of a page whose tab already names it.
+    pub fn under_tab() -> Self {
+        Self {
+            title: None,
             description: None,
             trailing: None,
         }
@@ -452,15 +476,15 @@ impl RenderOnce for PageHeader {
                 v_flex()
                     .gap_1p5()
                     .min_w_0()
-                    .child(
+                    .children(self.title.map(|title| {
                         div()
                             .text_size(px(26.))
                             .line_height(px(32.))
                             .font_semibold()
                             .truncate()
                             .text_color(palette::text())
-                            .child(self.title),
-                    )
+                            .child(title)
+                    }))
                     .children(self.description.map(|description| {
                         div()
                             .text_sm()
@@ -522,151 +546,6 @@ impl RenderOnce for Section {
                     ),
             )
             .children(self.children)
-    }
-}
-
-/// Roughly how many characters of detail fit on a tile's line.
-const TILE_DETAIL_FITS: usize = 34;
-
-/// One part of what an extension adds, on Home: what it is, how it stands,
-/// and a line of detail. The whole tile opens the part's page.
-#[derive(IntoElement)]
-pub struct StatTile {
-    icon: IconName,
-    label: SharedString,
-    reading: Reading,
-    page: Option<PageId>,
-    visual: Option<AnyElement>,
-    action: Option<AnyElement>,
-}
-
-impl StatTile {
-    pub fn new(icon: IconName, label: impl Into<SharedString>, reading: Reading) -> Self {
-        Self {
-            icon,
-            label: label.into(),
-            reading,
-            page: None,
-            visual: None,
-            action: None,
-        }
-    }
-
-    /// The page the tile opens.
-    pub fn page(mut self, page: PageId) -> Self {
-        self.page = Some(page);
-        self
-    }
-
-    /// A small live picture of the part, between the label and the value.
-    pub fn visual(mut self, visual: impl IntoElement) -> Self {
-        self.visual = Some(visual.into_any_element());
-        self
-    }
-
-    /// A command beside the value, such as the fix for a problem.
-    pub fn action(mut self, action: impl IntoElement) -> Self {
-        self.action = Some(action.into_any_element());
-        self
-    }
-}
-
-impl RenderOnce for StatTile {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.theme();
-        let tone = self.reading.tone;
-        let detail = (!self.reading.detail.is_empty()).then(|| self.reading.detail.clone());
-        let id = SharedString::from(format!("tile-{}", self.label));
-        let detail_id = SharedString::from(format!("tile-detail-{}", self.label));
-        let page = self.page;
-        v_flex()
-            .id(id)
-            .min_w_0()
-            .h(px(160.))
-            .justify_between()
-            .gap_3()
-            .p_4()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(if tone == Tone::Problem {
-                palette::signal_line()
-            } else {
-                palette::line()
-            })
-            .bg(palette::surface())
-            .when_some(page, |tile, page| {
-                tile.cursor_pointer()
-                    .hover(|style| style.border_color(palette::line_focus()))
-                    .on_click(move |_, _, cx| open_page(page, cx))
-            })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(palette::text_2())
-                    .child(Icon::new(self.icon).size(px(15.)))
-                    .child(div().flex_1().min_w_0().truncate().child(self.label))
-                    .when(page.is_some(), |row| {
-                        row.child(
-                            div()
-                                .text_color(palette::text_4())
-                                .child(Icon::new(IconName::ChevronRight).size(px(14.))),
-                        )
-                    }),
-            )
-            .children(self.visual.map(|visual| div().h(px(34.)).child(visual)))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_end()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .gap_0p5()
-                            .min_w_0()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .min_w_0()
-                                    .when(matches!(tone, Tone::Problem | Tone::Waiting), |row| {
-                                        row.child(StatusDot::new(tone))
-                                    })
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(px(17.))
-                                            .font_semibold()
-                                            .text_color(match tone {
-                                                Tone::Off => palette::text_2(),
-                                                _ => palette::text(),
-                                            })
-                                            .child(self.reading.value),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id(detail_id)
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(palette::text_3())
-                                    // One line can cut a long reason short;
-                                    // the whole of it shows on hover.
-                                    .when_some(
-                                        detail
-                                            .clone()
-                                            .filter(|detail| detail.len() > TILE_DETAIL_FITS),
-                                        |this, detail| {
-                                            this.tooltip(move |window, cx| {
-                                                Tooltip::new(detail.clone()).build(window, cx)
-                                            })
-                                        },
-                                    )
-                                    .children(detail),
-                            ),
-                    )
-                    .children(self.action.map(|action| div().flex_none().child(action))),
-            )
     }
 }
 

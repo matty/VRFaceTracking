@@ -1,7 +1,5 @@
 _version: 2
 headset:
-  title:
-    en: "Headset"
   headset:
     en: "Headset"
   wifi_not_allowed:

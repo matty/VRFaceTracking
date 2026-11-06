@@ -1,0 +1,6 @@
+_version: 2
+add_ons:
+  title:
+    en: Add-ons
+  description:
+    en: Extra features for specific hardware. Everything else in VRFaceTracking works without them.

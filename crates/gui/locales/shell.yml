@@ -6,5 +6,9 @@ shell:
     en: Show only icons
   extension_failed:
     en: Didn't start
+  add_ons:
+    en: Add-ons
+  add_on_settings:
+    en: Add-on settings
   version:
     en: VRFaceTracking %{version}
