@@ -82,6 +82,22 @@ impl VrchatTarget {
         state.discovered_port = osc_port.filter(|port| *port != 0);
     }
 
+    /// Whether VRChat is found but hasn't said which port it listens on, so
+    /// tracking is still going to the configured one.
+    pub fn needs_port(&self) -> bool {
+        let state = self.state.read().unwrap();
+        state.found && state.discovered_port.is_none()
+    }
+
+    /// The port from a later read, for when the read at discovery failed.
+    /// Ignored once VRChat has gone.
+    pub fn offer_port(&self, osc_port: u16) {
+        let mut state = self.state.write().unwrap();
+        if state.found && osc_port != 0 {
+            state.discovered_port.get_or_insert(osc_port);
+        }
+    }
+
     pub fn lost(&self) {
         let mut state = self.state.write().unwrap();
         state.found = false;
@@ -180,6 +196,26 @@ mod tests {
         target.found(None);
         assert_eq!(target.send_addr(), "127.0.0.1:9000");
         assert!(target.link().found);
+    }
+
+    #[test]
+    fn a_port_read_later_replaces_the_configured_one() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        assert!(!target.needs_port(), "VRChat isn't found yet");
+        target.found(None);
+        assert!(target.needs_port());
+        target.offer_port(9010);
+        assert!(!target.needs_port());
+        assert_eq!(target.send_addr(), "127.0.0.1:9010");
+    }
+
+    #[test]
+    fn a_port_read_after_vrchat_went_is_ignored() {
+        let target = VrchatTarget::new("127.0.0.1", 9000);
+        target.found(None);
+        target.lost();
+        target.offer_port(9010);
+        assert_eq!(target.send_addr(), "127.0.0.1:9000");
     }
 
     #[test]

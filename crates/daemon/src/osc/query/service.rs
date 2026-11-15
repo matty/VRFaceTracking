@@ -185,7 +185,14 @@ impl OscQueryService {
                                 let url = format!("{}/avatar", base);
 
                                 info!("VRChat Discovered at: {}", url);
-                                let osc_port = fetch_osc_port(&base);
+                                let osc_port = match fetch_osc_port(&base) {
+                                    Ok(osc_port) => osc_port,
+                                    Err(e) => {
+                                        // The poll asks again.
+                                        warn!("Failed to read VRChat HOST_INFO: {}", e);
+                                        None
+                                    }
+                                };
                                 if let Some(osc_port) = osc_port {
                                     info!("VRChat listens for OSC on port {}", osc_port);
                                 }
@@ -287,6 +294,16 @@ impl OscQueryService {
             thread::sleep(AVATAR_POLL_INTERVAL);
             let url = current_url_poll.lock().unwrap().clone();
             let Some(url) = url else { continue };
+            // The read at discovery can fail while VRChat loads. Until one
+            // works, tracking goes to the configured port, which is wrong for
+            // a VRChat started on another.
+            if target_poll.needs_port() {
+                let base = url.strip_suffix("/avatar").unwrap_or(&url);
+                if let Ok(Some(osc_port)) = fetch_osc_port(base) {
+                    info!("VRChat listens for OSC on port {}", osc_port);
+                    target_poll.offer_port(osc_port);
+                }
+            }
             // Quiet when this fails: that's VRChat loading, or its OSC being off.
             let Some(id) = fetch_avatar_id(&url) else {
                 continue;
@@ -443,24 +460,15 @@ static HTTP: LazyLock<ureq::Agent> = LazyLock::new(|| {
 });
 
 /// The OSC port VRChat reports in its OSCQuery `HOST_INFO`.
-fn fetch_osc_port(base: &str) -> Option<u16> {
+fn fetch_osc_port(base: &str) -> Result<Option<u16>, ureq::Error> {
     #[derive(Deserialize)]
     struct HostInfo {
         #[serde(rename = "OSC_PORT")]
         osc_port: Option<u16>,
     }
     let url = format!("{}/?HOST_INFO", base);
-    match HTTP
-        .get(&url)
-        .call()
-        .and_then(|mut resp| resp.body_mut().read_json::<HostInfo>())
-    {
-        Ok(info) => info.osc_port,
-        Err(e) => {
-            warn!("Failed to read VRChat HOST_INFO: {}", e);
-            None
-        }
-    }
+    let info: HostInfo = HTTP.get(&url).call()?.body_mut().read_json()?;
+    Ok(info.osc_port)
 }
 
 /// The ID of the avatar VRChat is on, asked of its OSCQuery server at `url`,
